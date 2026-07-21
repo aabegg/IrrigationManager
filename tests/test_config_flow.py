@@ -101,3 +101,71 @@ async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:
     assert subentry.data[CONF_METER_FAILURE_STRATEGY] == "abort"
     assert subentry.data[CONF_AUTOMATION_ENABLED] is False
     assert subentry.data[CONF_WATERING_WINDOWS] == ["04:00-06:00"]
+
+
+async def test_options_flow_updates_installation_and_zone_expert_settings(
+    hass: HomeAssistant,
+) -> None:
+    """Edit every creation-time expert setting without recreating stable IDs."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={"name": "Garden"},
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    zone_result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    zone_result = await hass.config_entries.subentries.async_configure(
+        zone_result["flow_id"],
+        {
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "default_duration": 600,
+            "min_flow": 5,
+            "max_flow": 20,
+        },
+    )
+    subentry = next(iter(entry.subentries.values()))
+    original_unique_id = subentry.unique_id
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "installation"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Garden expert",
+            CONF_FLOW_SENSOR: "sensor.flow",
+            "notify_entities": ["notify.mobile_app_phone"],
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.title == "Garden expert"
+    assert entry.data["notify_entities"] == ["notify.mobile_app_phone"]
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "zone"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"zone_subentry_id": subentry.subentry_id}
+    )
+    assert result["step_id"] == "zone_settings"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Lawn expert",
+            "zone_valve": "switch.lawn",
+            "default_duration": 900,
+            "min_flow": 6,
+            "max_flow": 21,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert subentry.title == "Lawn expert"
+    assert subentry.unique_id == original_unique_id
+    assert subentry.data["default_duration"] == 900

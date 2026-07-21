@@ -9,6 +9,7 @@ from homeassistant.config_entries import (
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
+    OptionsFlow,
     SubentryFlowResult,
 )
 from homeassistant.const import (
@@ -57,6 +58,7 @@ from .const import (
     CONF_MINIMUM_EFFECTIVE_LITERS,
     CONF_MINIMUM_INTERVAL_DAYS,
     CONF_MINIMUM_TRIGGER_LITERS,
+    CONF_NOTIFY_ENTITIES,
     CONF_RAIN_FACTOR,
     CONF_SOAK_DURATION,
     CONF_WATER_METER,
@@ -73,6 +75,8 @@ from .const import (
     WATERING_MODE_MINIMUM,
 )
 from .scheduler import parse_daily_window
+
+ATTR_ZONE_SUBENTRY_ID = "zone_subentry_id"
 
 INSTALLATION_SCHEMA = vol.Schema(
     {
@@ -116,6 +120,9 @@ INSTALLATION_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_WEATHER_ENTITY): EntitySelector(
             EntitySelectorConfig(domain=Platform.WEATHER)
+        ),
+        vol.Optional(CONF_NOTIFY_ENTITIES, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.NOTIFY, multiple=True)
         ),
     }
 )
@@ -283,6 +290,13 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     MINOR_VERSION = 1
 
     @override
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return the installation and zone expert settings flow."""
+        return IrrigationManagerOptionsFlow()
+
+    @override
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Create one physical irrigation installation."""
         if user_input is not None:
@@ -365,4 +379,89 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             subentry.subentry_id != excluding_subentry_id
             and subentry.data.get(CONF_ZONE_VALVE) == valve_entity_id
             for subentry in self._get_entry().subentries.values()
+        )
+
+
+class IrrigationManagerOptionsFlow(OptionsFlow):
+    """Edit installation and zone expert settings after setup."""
+
+    def __init__(self) -> None:
+        """Initialize transient zone selection."""
+        self._zone_subentry_id: str | None = None
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Offer installation and zone settings."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["installation", "zone"],
+        )
+
+    async def async_step_installation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Update installation sources, safety thresholds, and notifications."""
+        if user_input is not None:
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                title=str(user_input[CONF_NAME]),
+                data=user_input,
+            )
+            return self.async_create_entry(data={})
+        return self.async_show_form(
+            step_id="installation",
+            data_schema=self.add_suggested_values_to_schema(
+                INSTALLATION_SCHEMA,
+                self.config_entry.data,
+            ),
+        )
+
+    async def async_step_zone(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Select a zone whose expert settings should be edited."""
+        zones = self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+        if not zones:
+            return self.async_abort(reason="no_zones")
+        if user_input is not None:
+            self._zone_subentry_id = str(user_input[ATTR_ZONE_SUBENTRY_ID])
+            return await self.async_step_zone_settings()
+        return self.async_show_form(
+            step_id="zone",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ZONE_SUBENTRY_ID): SelectSelector(
+                        SelectSelectorConfig(options=[subentry.subentry_id for subentry in zones])
+                    )
+                }
+            ),
+        )
+
+    async def async_step_zone_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate and update all expert settings for the selected zone."""
+        subentry = self.config_entry.subentries.get(self._zone_subentry_id or "")
+        if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
+            return self.async_abort(reason="zone_not_found")
+        if user_input is not None:
+            if error := _validate_zone_input(user_input):
+                return self.async_show_form(
+                    step_id="zone_settings",
+                    data_schema=self.add_suggested_values_to_schema(ZONE_SCHEMA, user_input),
+                    errors={"base": error},
+                )
+            if any(
+                other.subentry_id != subentry.subentry_id
+                and other.data.get(CONF_ZONE_VALVE) == user_input[CONF_ZONE_VALVE]
+                for other in self.config_entry.subentries.values()
+            ):
+                return self.async_abort(reason="already_configured")
+            self.hass.config_entries.async_update_subentry(
+                self.config_entry,
+                subentry,
+                title=str(user_input[CONF_NAME]),
+                data=user_input,
+            )
+            return self.async_create_entry(data={})
+        return self.async_show_form(
+            step_id="zone_settings",
+            data_schema=self.add_suggested_values_to_schema(ZONE_SCHEMA, subentry.data),
         )

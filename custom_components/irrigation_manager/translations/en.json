@@ -56,6 +56,28 @@
         "zone_subentry_id": {"name": "Irrigation zone"},
         "at": {"name": "Opportunity time"}
       }
+    },
+    "export_config": {
+      "name": "Export portable configuration",
+      "description": "Return the versioned installation and zone configuration without secrets."
+    },
+    "export_history": {
+      "name": "Export irrigation history",
+      "description": "Return a bounded set of the newest irrigation executions as JSON or CSV.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "format": {"name": "Format"},
+        "limit": {"name": "Maximum records"}
+      }
+    },
+    "resolve_balance_reconciliation": {
+      "name": "Resolve balance reconciliation",
+      "description": "Apply current zone settings to an uncredited delivery or explicitly discard it.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "reconciliation_id": {"name": "Reconciliation ID"},
+        "resolution": {"name": "Resolution"}
+      }
     }
   },
   "selector": {
@@ -145,7 +167,8 @@
           "leak_flow_threshold": "Idle leak flow threshold",
           "leak_duration_seconds": "Leak confirmation duration",
           "flow_max_age_seconds": "Maximum flow data age",
-          "weather_entity": "Weather entity"
+          "weather_entity": "Weather entity",
+          "notify_entities": "Critical notification targets"
         },
         "data_description": {
           "main_valve": "Optional switch or valve that isolates the complete installation.",
@@ -160,6 +183,74 @@
     },
     "abort": {
       "already_configured": "This irrigation installation is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Irrigation Manager settings",
+        "menu_options": {
+          "installation": "Installation expert settings",
+          "zone": "Zone expert settings"
+        }
+      },
+      "installation": {
+        "title": "Installation expert settings",
+        "description": "Changes are saved immediately and applied after all open irrigation requests are finished.",
+        "data": {
+          "name": "Name",
+          "main_valve": "Main valve",
+          "water_meter": "Cumulative water meter",
+          "flow_sensor": "Flow sensor",
+          "leak_monitoring": "Monitor for leaks while idle",
+          "leak_flow_threshold": "Idle leak flow threshold",
+          "leak_duration_seconds": "Leak confirmation duration",
+          "flow_max_age_seconds": "Maximum flow data age",
+          "weather_entity": "Weather entity",
+          "notify_entities": "Critical notification targets"
+        }
+      },
+      "zone": {
+        "title": "Select irrigation zone",
+        "data": {"zone_subentry_id": "Irrigation zone"}
+      },
+      "zone_settings": {
+        "title": "Zone expert settings",
+        "description": "Changes are saved immediately and applied after all open irrigation requests are finished.",
+        "data": {
+          "name": "Name",
+          "zone_valve": "Zone valve",
+          "default_duration": "Default manual duration",
+          "min_flow": "Minimum expected flow",
+          "max_flow": "Maximum expected flow",
+          "flow_grace_seconds": "Flow stabilization time",
+          "meter_failure_strategy": "Meter failure strategy",
+          "max_dose_amount": "Maximum dose amount",
+          "max_dose_duration": "Maximum dose duration",
+          "soak_duration": "Soak duration",
+          "automation_enabled": "Automatic release",
+          "watering_mode": "Watering mode",
+          "area_m2": "Area in square meters",
+          "application_efficiency": "Application efficiency",
+          "crop_factor": "Crop and location factor",
+          "rain_factor": "Effective rain factor",
+          "maximum_deficit_mm": "Maximum water deficit",
+          "minimum_interval_days": "Minimum interval in days",
+          "maximum_interval_days": "Maximum interval in days",
+          "minimum_trigger_liters": "Minimum demand trigger",
+          "mandatory_amount_liters": "Mandatory minimum amount",
+          "minimum_effective_liters": "Effective irrigation threshold",
+          "maximum_target_liters": "Maximum automatic target",
+          "automatic_max_duration": "Maximum automatic duration",
+          "zone_priority": "Zone priority",
+          "watering_windows": "Daily watering windows"
+        }
+      }
+    },
+    "abort": {
+      "no_zones": "Add an irrigation zone before editing zone settings.",
+      "zone_not_found": "The selected irrigation zone no longer exists.",
+      "already_configured": "This zone valve is already configured."
     }
   },
   "config_subentries": {

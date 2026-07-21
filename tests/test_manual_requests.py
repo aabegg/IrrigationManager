@@ -126,6 +126,89 @@ async def test_split_request_persists_one_execution_across_soak_doses(
     ]
 
 
+async def test_options_update_during_watering_reloads_only_after_complete_idle(
+    hass: HomeAssistant,
+) -> None:
+    """Persist expert edits immediately without replacing an active runtime snapshot."""
+    entry, zones, operations = await _setup_installation(
+        hass,
+        zone_specs=(("Lawn", "switch.lawn", 60, 0),),
+    )
+    hass.states.async_set("switch.new_lawn", STATE_OFF)
+    old_manager = entry.runtime_data.manager
+    response = await hass.services.async_call(
+        DOMAIN,
+        "create_manual",
+        {
+            "config_entry_id": entry.entry_id,
+            "zone_subentry_id": zones[0].subentry_id,
+            "duration": 60,
+        },
+        blocking=True,
+        return_response=True,
+    )
+    await _wait_until(lambda: ("on", "switch.lawn") in operations)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "zone"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"zone_subentry_id": zones[0].subentry_id}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "New lawn",
+            "zone_valve": "switch.new_lawn",
+            "default_duration": 30,
+            "max_dose_duration": 30,
+            "area_m2": 20,
+            "application_efficiency": 0.6,
+            "maximum_deficit_mm": 25,
+            "minimum_effective_liters": 7,
+        },
+    )
+
+    assert result["type"].value == "create_entry"
+    assert entry.subentries[zones[0].subentry_id].data["zone_valve"] == "switch.new_lawn"
+    assert entry.runtime_data.manager is old_manager
+    assert old_manager._zone_valves() == ["switch.lawn"]
+    stored_during_execution = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored_during_execution.active_execution is not None
+    assert stored_during_execution.active_execution.zone_valve == "switch.lawn"
+    assert hass.states.get("switch.lawn").state == STATE_ON
+    assert ("on", "switch.new_lawn") not in operations
+
+    await hass.services.async_call(
+        DOMAIN,
+        "cancel_request",
+        {
+            "config_entry_id": entry.entry_id,
+            "request_id": response["request_id"],
+        },
+        blocking=True,
+    )
+    await _wait_until(lambda: entry.runtime_data.manager is not old_manager)
+
+    new_manager = entry.runtime_data.manager
+    stored_after_reload = await IrrigationStore(hass, entry.entry_id).async_load()
+    request = next(
+        item
+        for item in stored_after_reload.manual_requests
+        if item.request_id == response["request_id"]
+    )
+    assert request.status == "cancelled"
+    assert request.zone_valve == "switch.lawn"
+    assert new_manager._zone_valves() == ["switch.new_lawn"]
+    assert new_manager._zone_configs[0].data["area_m2"] == 20
+    assert new_manager._zone_configs[0].data["application_efficiency"] == 0.6
+    assert new_manager._zone_configs[0].data["maximum_deficit_mm"] == 25
+    assert new_manager._zone_configs[0].data["minimum_effective_liters"] == 7
+    assert ("off", "switch.lawn") in operations
+    assert ("on", "switch.new_lawn") not in operations
+
+
 async def test_other_zone_runs_during_soak_and_soaking_request_can_be_cancelled(
     hass: HomeAssistant,
 ) -> None:

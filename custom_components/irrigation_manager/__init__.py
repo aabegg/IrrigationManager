@@ -73,9 +73,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
         manager=manager,
     )
     hass.data[DOMAIN][entry.entry_id] = entry.runtime_data.manager
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply persisted updates now or defer them until the runtime is completely idle."""
+    manager = hass.data[DOMAIN].get(entry.entry_id)
+    if isinstance(manager, IrrigationManager):
+        await manager.async_request_config_reload()
+        return
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

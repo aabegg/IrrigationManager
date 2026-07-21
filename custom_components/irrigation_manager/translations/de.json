@@ -56,6 +56,28 @@
         "zone_subentry_id": {"name": "Bewässerungszone"},
         "at": {"name": "Zeitpunkt der Gelegenheit"}
       }
+    },
+    "export_config": {
+      "name": "Portable Konfiguration exportieren",
+      "description": "Gibt die versionierte Anlagen- und Zonenkonfiguration ohne Geheimnisse zurück."
+    },
+    "export_history": {
+      "name": "Bewässerungshistorie exportieren",
+      "description": "Gibt eine begrenzte Anzahl der neuesten Bewässerungsvorgänge als JSON oder CSV zurück.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "format": {"name": "Format"},
+        "limit": {"name": "Maximale Anzahl"}
+      }
+    },
+    "resolve_balance_reconciliation": {
+      "name": "Bilanzabgleich auflösen",
+      "description": "Verrechnet eine nicht gutgeschriebene Lieferung mit den aktuellen Zoneneinstellungen oder verwirft sie ausdrücklich.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "reconciliation_id": {"name": "Abgleich-ID"},
+        "resolution": {"name": "Auflösung"}
+      }
     }
   },
   "selector": {
@@ -145,7 +167,8 @@
           "leak_flow_threshold": "Durchflussgrenze für Leckage",
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
           "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
-          "weather_entity": "Wetter-Entity"
+          "weather_entity": "Wetter-Entity",
+          "notify_entities": "Ziele für kritische Benachrichtigungen"
         },
         "data_description": {
           "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
@@ -160,6 +183,74 @@
     },
     "abort": {
       "already_configured": "Diese Bewässerungsanlage ist bereits konfiguriert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Einstellungen des Irrigation Managers",
+        "menu_options": {
+          "installation": "Experteneinstellungen der Anlage",
+          "zone": "Experteneinstellungen einer Zone"
+        }
+      },
+      "installation": {
+        "title": "Experteneinstellungen der Anlage",
+        "description": "Änderungen werden sofort gespeichert und erst nach Abschluss aller offenen Bewässerungsaufträge angewendet.",
+        "data": {
+          "name": "Name",
+          "main_valve": "Hauptventil",
+          "water_meter": "Kumulativer Wasserzähler",
+          "flow_sensor": "Durchflusssensor",
+          "leak_monitoring": "Leckage im Leerlauf überwachen",
+          "leak_flow_threshold": "Durchflussgrenze für Leckage",
+          "leak_duration_seconds": "Bestätigungsdauer für Leckage",
+          "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
+          "weather_entity": "Wetter-Entity",
+          "notify_entities": "Ziele für kritische Benachrichtigungen"
+        }
+      },
+      "zone": {
+        "title": "Bewässerungszone auswählen",
+        "data": {"zone_subentry_id": "Bewässerungszone"}
+      },
+      "zone_settings": {
+        "title": "Experteneinstellungen der Zone",
+        "description": "Änderungen werden sofort gespeichert und erst nach Abschluss aller offenen Bewässerungsaufträge angewendet.",
+        "data": {
+          "name": "Name",
+          "zone_valve": "Zonenventil",
+          "default_duration": "Standarddauer für manuelle Bewässerung",
+          "min_flow": "Minimal erwarteter Durchfluss",
+          "max_flow": "Maximal erwarteter Durchfluss",
+          "flow_grace_seconds": "Durchfluss-Stabilisierungszeit",
+          "meter_failure_strategy": "Zählerausfallstrategie",
+          "max_dose_amount": "Maximale Teilgabemenge",
+          "max_dose_duration": "Maximale Teilgabedauer",
+          "soak_duration": "Sickerpause",
+          "automation_enabled": "Automatikfreigabe",
+          "watering_mode": "Bewässerungsmodus",
+          "area_m2": "Fläche in Quadratmetern",
+          "application_efficiency": "Anwendungseffizienz",
+          "crop_factor": "Pflanzen- und Standortfaktor",
+          "rain_factor": "Wirksamer Regenfaktor",
+          "maximum_deficit_mm": "Maximales Wasserdefizit",
+          "minimum_interval_days": "Minimaler Abstand in Tagen",
+          "maximum_interval_days": "Maximaler Abstand in Tagen",
+          "minimum_trigger_liters": "Mindestbedarf für Auslösung",
+          "mandatory_amount_liters": "Verbindliche Mindestmenge",
+          "minimum_effective_liters": "Wirksame Mindestmenge",
+          "maximum_target_liters": "Maximales automatisches Ziel",
+          "automatic_max_duration": "Maximale automatische Dauer",
+          "zone_priority": "Zonenpriorität",
+          "watering_windows": "Tägliche Bewässerungsfenster"
+        }
+      }
+    },
+    "abort": {
+      "no_zones": "Füge zuerst eine Bewässerungszone hinzu.",
+      "zone_not_found": "Die ausgewählte Bewässerungszone existiert nicht mehr.",
+      "already_configured": "Dieses Zonenventil ist bereits konfiguriert."
     }
   },
   "config_subentries": {

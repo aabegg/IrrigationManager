@@ -23,6 +23,10 @@ ATTR_AT = "at"
 ATTR_PERIOD_ID = "period_id"
 ATTR_REFERENCE_EVAPOTRANSPIRATION = "reference_evapotranspiration"
 ATTR_RAIN = "rain"
+ATTR_FORMAT = "format"
+ATTR_LIMIT = "limit"
+ATTR_RECONCILIATION_ID = "reconciliation_id"
+ATTR_RESOLUTION = "resolution"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
@@ -39,6 +43,9 @@ SERVICE_ASSIGN_WATER = "assign_water"
 SERVICE_PLAN_AUTOMATIC = "plan_automatic"
 SERVICE_FINALIZE_DAILY_WEATHER = "finalize_daily_weather"
 SERVICE_SKIP_AUTOMATIC = "skip_automatic"
+SERVICE_EXPORT_CONFIG = "export_config"
+SERVICE_EXPORT_HISTORY = "export_history"
+SERVICE_RESOLVE_BALANCE_RECONCILIATION = "resolve_balance_reconciliation"
 
 
 def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
@@ -108,6 +115,22 @@ FINALIZE_DAILY_WEATHER_SCHEMA = vol.Schema(
             vol.Coerce(float), vol.Range(min=0, max=100)
         ),
         vol.Required(ATTR_RAIN): vol.All(vol.Coerce(float), vol.Range(min=0, max=1_000)),
+    }
+)
+EXPORT_HISTORY_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_FORMAT, default="json"): vol.In({"json", "csv"}),
+        vol.Optional(ATTR_LIMIT, default=100): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=1_000)
+        ),
+    }
+)
+RECONCILIATION_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_RECONCILIATION_ID): cv.string,
+        vol.Required(ATTR_RESOLUTION): vol.In({"apply", "discard"}),
     }
 )
 
@@ -201,12 +224,48 @@ async def async_register_services(hass: HomeAssistant) -> None:
             now=cast(Any, call.data.get(ATTR_AT)),
         )
 
+    async def export_config(call: ServiceCall) -> dict[str, Any]:
+        return manager_for(call).export_portable_config()
+
+    async def export_history(call: ServiceCall) -> dict[str, Any]:
+        return manager_for(call).export_history(
+            limit=cast(int, call.data[ATTR_LIMIT]),
+            export_format=cast(str, call.data[ATTR_FORMAT]),
+        )
+
+    async def resolve_balance_reconciliation(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_resolve_balance_reconciliation(
+            reconciliation_id=cast(str, call.data[ATTR_RECONCILIATION_ID]),
+            resolution=cast(str, call.data[ATTR_RESOLUTION]),
+        )
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_START_MANUAL,
         start_manual,
         schema=START_MANUAL_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXPORT_CONFIG,
+        export_config,
+        schema=INSTALLATION_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXPORT_HISTORY,
+        export_history,
+        schema=EXPORT_HISTORY_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESOLVE_BALANCE_RECONCILIATION,
+        resolve_balance_reconciliation,
+        schema=RECONCILIATION_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
         DOMAIN,

@@ -179,10 +179,10 @@ async def test_replanning_reduces_then_withdraws_pending_automatic_request(
     assert manager._stored_state.manual_requests[0].status == "cancelled"
 
 
-async def test_recalculation_refreshes_all_balance_snapshot_fields_atomically(
+async def test_recalculation_keeps_all_balance_snapshot_fields_until_complete_idle(
     hass: HomeAssistant,
 ) -> None:
-    """Treat a changed automatic target as a newly finalized immutable snapshot."""
+    """Do not mix persisted expert edits into an already open automatic request."""
     entry, zone = await _setup_automatic_zone(hass)
     now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
     _make_zone_due(entry, now, deficit_mm=10)
@@ -216,7 +216,7 @@ async def test_recalculation_refreshes_all_balance_snapshot_fields_atomically(
         updated.balance_application_efficiency,
         updated.balance_maximum_deficit_mm,
         updated.balance_minimum_effective_liters,
-    ) == (20, 1, 25, 7)
+    ) == (10, 0.5, 50, 2)
 
 
 async def test_withdrawal_can_recreate_in_same_window_but_explicit_skip_stays_suppressed(

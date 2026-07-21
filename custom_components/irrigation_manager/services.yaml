@@ -261,3 +261,52 @@ skip_automatic:
       required: false
       selector:
         datetime:
+export_config:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+export_history:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    format:
+      required: false
+      default: json
+      selector:
+        select:
+          options:
+            - json
+            - csv
+    limit:
+      required: false
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 1000
+          step: 1
+          mode: box
+resolve_balance_reconciliation:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    reconciliation_id:
+      required: true
+      selector:
+        text:
+    resolution:
+      required: true
+      selector:
+        select:
+          options:
+            - apply
+            - discard

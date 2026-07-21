@@ -13,6 +13,7 @@ CONF_LEAK_MONITORING: Final = "leak_monitoring"
 CONF_LEAK_FLOW_THRESHOLD: Final = "leak_flow_threshold"
 CONF_LEAK_DURATION_SECONDS: Final = "leak_duration_seconds"
 CONF_WEATHER_ENTITY: Final = "weather_entity"
+CONF_NOTIFY_ENTITIES: Final = "notify_entities"
 CONF_ZONE_VALVE: Final = "zone_valve"
 CONF_DEFAULT_DURATION: Final = "default_duration"
 CONF_MIN_FLOW: Final = "min_flow"
@@ -46,3 +47,6 @@ METER_FAILURE_ABORT: Final = "abort"
 METER_FAILURE_ESTIMATED_TIME_FALLBACK: Final = "estimated_time_fallback"
 
 SUBENTRY_TYPE_ZONE: Final = "zone"
+
+EVENT_IRRIGATION_MANAGER: Final = "irrigation_manager_event"
+EXPORT_SCHEMA_VERSION: Final = 1
