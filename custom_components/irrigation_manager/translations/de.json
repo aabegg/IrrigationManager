@@ -4,6 +4,12 @@
     "binary_sensor": {
       "emergency_stop": {
         "name": "Not-Aus"
+      },
+      "zone_safety_lock": {
+        "name": "Sicherheitssperre"
+      },
+      "installation_safety_lock": {
+        "name": "Anlagen-Sicherheitssperre"
       }
     },
     "sensor": {
@@ -19,6 +25,7 @@
           "idle": "Leerlauf",
           "watering": "Bewässerung",
           "error": "Fehler",
+          "safety_lock": "Sicherheitssperre",
           "emergency_stop": "Not-Aus"
         }
       },
@@ -51,6 +58,7 @@
           "main_valve": "Hauptventil",
           "water_meter": "Kumulativer Wasserzähler",
           "flow_sensor": "Durchflusssensor",
+          "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity"
         },
         "data_description": {
@@ -77,7 +85,8 @@
             "zone_valve": "Zonenventil",
             "default_duration": "Standarddauer für manuelle Bewässerung",
             "min_flow": "Minimal erwarteter Durchfluss",
-            "max_flow": "Maximal erwarteter Durchfluss"
+            "max_flow": "Maximal erwarteter Durchfluss",
+            "flow_grace_seconds": "Durchfluss-Stabilisierungszeit"
           }
         },
         "reconfigure": {
@@ -87,7 +96,8 @@
             "zone_valve": "Zonenventil",
             "default_duration": "Standarddauer für manuelle Bewässerung",
             "min_flow": "Minimal erwarteter Durchfluss",
-            "max_flow": "Maximal erwarteter Durchfluss"
+            "max_flow": "Maximal erwarteter Durchfluss",
+            "flow_grace_seconds": "Durchfluss-Stabilisierungszeit"
           }
         }
       },

@@ -4,6 +4,12 @@
     "binary_sensor": {
       "emergency_stop": {
         "name": "Emergency stop"
+      },
+      "zone_safety_lock": {
+        "name": "Safety lock"
+      },
+      "installation_safety_lock": {
+        "name": "Installation safety lock"
       }
     },
     "sensor": {
@@ -19,6 +25,7 @@
           "idle": "Idle",
           "watering": "Watering",
           "error": "Error",
+          "safety_lock": "Safety lock",
           "emergency_stop": "Emergency stop"
         }
       },
@@ -51,6 +58,7 @@
           "main_valve": "Main valve",
           "water_meter": "Cumulative water meter",
           "flow_sensor": "Flow sensor",
+          "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity"
         },
         "data_description": {
@@ -77,7 +85,8 @@
             "zone_valve": "Zone valve",
             "default_duration": "Default manual duration",
             "min_flow": "Minimum expected flow",
-            "max_flow": "Maximum expected flow"
+            "max_flow": "Maximum expected flow",
+            "flow_grace_seconds": "Flow stabilization time"
           }
         },
         "reconfigure": {
@@ -87,7 +96,8 @@
             "zone_valve": "Zone valve",
             "default_duration": "Default manual duration",
             "min_flow": "Minimum expected flow",
-            "max_flow": "Maximum expected flow"
+            "max_flow": "Maximum expected flow",
+            "flow_grace_seconds": "Flow stabilization time"
           }
         }
       },

@@ -24,6 +24,8 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_DEFAULT_DURATION,
+    CONF_FLOW_GRACE_SECONDS,
+    CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
     CONF_MAIN_VALVE,
     CONF_MAX_FLOW,
@@ -46,6 +48,15 @@ INSTALLATION_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_FLOW_SENSOR): EntitySelector(
             EntitySelectorConfig(domain=Platform.SENSOR)
+        ),
+        vol.Optional(CONF_FLOW_MAX_AGE_SECONDS, default=30): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=3600,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
         ),
         vol.Optional(CONF_WEATHER_ENTITY): EntitySelector(
             EntitySelectorConfig(domain=Platform.WEATHER)
@@ -84,6 +95,15 @@ ZONE_SCHEMA = vol.Schema(
                 step=0.1,
                 mode=NumberSelectorMode.BOX,
                 unit_of_measurement=UnitOfVolumeFlowRate.LITERS_PER_MINUTE,
+            )
+        ),
+        vol.Optional(CONF_FLOW_GRACE_SECONDS, default=5): NumberSelector(
+            NumberSelectorConfig(
+                min=0,
+                max=300,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
             )
         ),
     }

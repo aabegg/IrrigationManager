@@ -173,7 +173,13 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
     ) -> None:
         """Initialize the installation status entity."""
         super().__init__(coordinator)
-        self._attr_options = ["idle", "watering", "error", "emergency_stop"]
+        self._attr_options = [
+            "idle",
+            "watering",
+            "error",
+            "safety_lock",
+            "emergency_stop",
+        ]
         self._attr_unique_id = f"{installation_id}_status"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, installation_id)},

@@ -11,7 +11,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, INTEGRATION_NAME
+from .const import DOMAIN, INTEGRATION_NAME, SUBENTRY_TYPE_ZONE
 from .coordinator import IrrigationCoordinator
 from .runtime import IrrigationConfigEntry
 
@@ -29,9 +29,28 @@ async def async_setup_entry(
                 coordinator=entry.runtime_data.coordinator,
                 entry=entry,
                 installation_id=installation_id,
-            )
+            ),
+            InstallationSafetyLockBinarySensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+            ),
         ]
     )
+    for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
+        zone_id = subentry.unique_id or subentry.subentry_id
+        async_add_entities(
+            [
+                ZoneSafetyLockBinarySensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                )
+            ],
+            config_subentry_id=subentry.subentry_id,
+        )
 
 
 class EmergencyStopBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):
@@ -63,3 +82,85 @@ class EmergencyStopBinarySensor(CoordinatorEntity[IrrigationCoordinator], Binary
     def is_on(self) -> bool:
         """Return true while the persistent safety lock is active."""
         return self.coordinator.data.emergency_stop
+
+
+class InstallationSafetyLockBinarySensor(
+    CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity
+):
+    """Expose the persistent installation safety lock."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "installation_safety_lock"
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+    ) -> None:
+        """Initialize the installation safety-lock entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{installation_id}_safety_lock"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        """Return true while the installation is safety-locked."""
+        return self.coordinator.data.installation_safety_lock is not None
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Expose the lock reason when present."""
+        reason = self.coordinator.data.installation_safety_lock
+        return {"reason": reason} if reason is not None else {}
+
+
+class ZoneSafetyLockBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):
+    """Expose a persistent safety lock for one irrigation zone."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "zone_safety_lock"
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_id: str,
+        zone_name: str,
+    ) -> None:
+        """Initialize the zone safety-lock entity."""
+        super().__init__(coordinator)
+        self._zone_id = zone_id
+        self._attr_unique_id = f"{zone_id}_safety_lock"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, zone_id)},
+            name=zone_name,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation zone",
+            via_device=(DOMAIN, installation_id),
+        )
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        """Return true while this zone is safety-locked."""
+        return self._zone_id in self.coordinator.data.zone_safety_locks
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Expose the lock reason when present."""
+        reason = self.coordinator.data.zone_safety_locks.get(self._zone_id)
+        return {"reason": reason} if reason is not None else {}

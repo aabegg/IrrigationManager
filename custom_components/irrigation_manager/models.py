@@ -12,10 +12,12 @@ class InstallationSnapshot:
     zone_measurement_quality: dict[str, str] = field(default_factory=dict)
     zone_last_delivered_liters: dict[str, float] = field(default_factory=dict)
     zone_last_duration_seconds: dict[str, float] = field(default_factory=dict)
+    zone_safety_locks: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
     status: str = "idle"
     active_zone_id: str | None = None
     emergency_stop: bool = False
+    installation_safety_lock: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,8 +91,10 @@ class StoredInstallationState:
     zone_measurement_quality: dict[str, str] = field(default_factory=dict)
     zone_last_delivered_liters: dict[str, float] = field(default_factory=dict)
     zone_last_duration_seconds: dict[str, float] = field(default_factory=dict)
+    zone_safety_locks: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
     emergency_stop: bool = False
+    installation_safety_lock: str | None = None
     active_execution: ActiveExecutionState | None = None
 
     @staticmethod
@@ -122,9 +126,17 @@ class StoredInstallationState:
             isinstance(key, str) and isinstance(value, str) for key, value in raw_quality.items()
         ):
             raise ValueError("Stored measurement quality is malformed")
+        raw_zone_locks = data.get("zone_safety_locks", {})
+        if not isinstance(raw_zone_locks, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in raw_zone_locks.items()
+        ):
+            raise ValueError("Stored zone safety locks are malformed")
         emergency_stop = data.get("emergency_stop", False)
         if not isinstance(emergency_stop, bool):
             raise ValueError("Stored emergency stop is not boolean")
+        installation_lock = data.get("installation_safety_lock")
+        if installation_lock is not None and not isinstance(installation_lock, str):
+            raise ValueError("Stored installation safety lock is malformed")
         raw_active_execution = data.get("active_execution")
         if raw_active_execution is not None and not isinstance(raw_active_execution, dict):
             raise ValueError("Stored active execution is malformed")
@@ -134,8 +146,10 @@ class StoredInstallationState:
             zone_measurement_quality=dict(raw_quality),
             zone_last_delivered_liters=last_delivered,
             zone_last_duration_seconds=last_duration,
+            zone_safety_locks=dict(raw_zone_locks),
             unassigned_total_liters=cls._float(data.get("unassigned_total_liters", 0.0)),
             emergency_stop=emergency_stop,
+            installation_safety_lock=installation_lock,
             active_execution=(
                 ActiveExecutionState.from_dict(raw_active_execution)
                 if raw_active_execution is not None
@@ -151,8 +165,10 @@ class StoredInstallationState:
             "zone_measurement_quality": self.zone_measurement_quality,
             "zone_last_delivered_liters": self.zone_last_delivered_liters,
             "zone_last_duration_seconds": self.zone_last_duration_seconds,
+            "zone_safety_locks": self.zone_safety_locks,
             "unassigned_total_liters": self.unassigned_total_liters,
             "emergency_stop": self.emergency_stop,
+            "installation_safety_lock": self.installation_safety_lock,
             "active_execution": (
                 self.active_execution.as_dict() if self.active_execution is not None else None
             ),

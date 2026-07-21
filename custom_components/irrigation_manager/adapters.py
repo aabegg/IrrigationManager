@@ -1,6 +1,8 @@
 """Home Assistant adapters for the executor ports."""
 
 import asyncio
+import math
+from datetime import UTC, datetime
 
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -10,11 +12,12 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
     UnitOfVolume,
+    UnitOfVolumeFlowRate,
 )
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_state_change_event
-from homeassistant.util.unit_conversion import VolumeConverter
+from homeassistant.util.unit_conversion import VolumeConverter, VolumeFlowRateConverter
 
 from .meter import CumulativeMeter
 
@@ -108,6 +111,39 @@ class HomeAssistantMeter:
         except ValueError as err:
             raise HomeAssistantError(f"Water meter {self._entity_id} is not numeric") from err
         return VolumeConverter.convert(value, unit, UnitOfVolume.LITERS)
+
+
+class HomeAssistantFlow:
+    """Normalize an instantaneous HA flow sensor to liters per minute."""
+
+    def __init__(self, hass: HomeAssistant, entity_id: str, max_age_seconds: float) -> None:
+        """Initialize the flow adapter."""
+        self._hass = hass
+        self._entity_id = entity_id
+        self._max_age_seconds = max_age_seconds
+
+    async def read_l_min(self) -> float:
+        """Return the current flow converted to liters per minute."""
+        state = self._hass.states.get(self._entity_id)
+        if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
+            raise HomeAssistantError(f"Flow sensor {self._entity_id} is not available")
+        age_seconds = (datetime.now(UTC) - state.last_reported).total_seconds()
+        if age_seconds > self._max_age_seconds:
+            raise HomeAssistantError(f"Flow sensor {self._entity_id} is stale")
+        unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+        if unit not in VolumeFlowRateConverter.VALID_UNITS:
+            raise HomeAssistantError(f"Flow sensor {self._entity_id} has unsupported unit {unit!r}")
+        try:
+            value = float(state.state)
+        except ValueError as err:
+            raise HomeAssistantError(f"Flow sensor {self._entity_id} is not numeric") from err
+        if not math.isfinite(value) or value < 0:
+            raise HomeAssistantError(f"Flow sensor {self._entity_id} is not plausible")
+        return VolumeFlowRateConverter.convert(
+            value,
+            unit,
+            UnitOfVolumeFlowRate.LITERS_PER_MINUTE,
+        )
 
 
 class HomeAssistantClock:

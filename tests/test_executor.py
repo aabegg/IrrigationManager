@@ -51,6 +51,16 @@ class FakeMeter:
         return next(self.readings)
 
 
+class FakeFlow:
+    """Return deterministic instantaneous flow readings."""
+
+    def __init__(self, readings: Sequence[float]) -> None:
+        self.readings = iter(readings)
+
+    async def read_l_min(self) -> float:
+        return next(self.readings)
+
+
 class FakeClock:
     """Record requested waits without delaying the test."""
 
@@ -222,4 +232,44 @@ async def test_monitor_closes_a_second_zone_that_opens_during_watering() -> None
     assert result.duration_seconds == 1
     assert result.delivered_liters == 5
     assert "switch.zone_beds opened unexpectedly" in result.safety_violation
+    assert actuators.open_valves == set()
+
+
+@pytest.mark.parametrize(
+    ("flow", "minimum", "maximum", "scope"),
+    [
+        (5.0, 10.0, 20.0, "zone"),
+        (25.0, 10.0, 20.0, "installation"),
+    ],
+)
+async def test_flow_outside_profile_stops_with_correct_safety_scope(
+    flow: float,
+    minimum: float,
+    maximum: float,
+    scope: str,
+) -> None:
+    """Low flow locks one zone while high flow locks the installation."""
+    actuators = FakeActuators()
+    executor = IrrigationExecutor(
+        actuators=actuators,
+        meter=FakeMeter([0, 1]),
+        flow=FakeFlow([flow]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve="switch.main",
+            duration_seconds=60,
+            monitor_interval_seconds=1,
+            minimum_flow_l_min=minimum,
+            maximum_flow_l_min=maximum,
+        )
+    )
+
+    assert result.duration_seconds == 1
+    assert result.safety_scope == scope
+    assert "flow" in result.safety_violation.lower()
     assert actuators.open_valves == set()

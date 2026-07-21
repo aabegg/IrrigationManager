@@ -10,8 +10,16 @@ from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from .adapters import HomeAssistantActuators, HomeAssistantClock, HomeAssistantMeter
+from .adapters import (
+    HomeAssistantActuators,
+    HomeAssistantClock,
+    HomeAssistantFlow,
+    HomeAssistantMeter,
+)
 from .const import (
+    CONF_FLOW_GRACE_SECONDS,
+    CONF_FLOW_MAX_AGE_SECONDS,
+    CONF_FLOW_SENSOR,
     CONF_MAIN_VALVE,
     CONF_MAX_FLOW,
     CONF_MIN_FLOW,
@@ -50,9 +58,20 @@ class IrrigationManager:
         self._has_meter = bool(entry.data.get(CONF_WATER_METER))
         self._actuators = HomeAssistantActuators(hass)
         self._meter = HomeAssistantMeter(hass, entry.data.get(CONF_WATER_METER))
+        flow_entity_id = entry.data.get(CONF_FLOW_SENSOR)
+        self._flow = (
+            HomeAssistantFlow(
+                hass,
+                flow_entity_id,
+                self._optional_float(entry.data, CONF_FLOW_MAX_AGE_SECONDS) or 30.0,
+            )
+            if isinstance(flow_entity_id, str)
+            else None
+        )
         self._executor = IrrigationExecutor(
             actuators=self._actuators,
             meter=self._meter,
+            flow=self._flow,
             clock=HomeAssistantClock(),
         )
         self._active_task: asyncio.Task[None] | None = None
@@ -166,8 +185,17 @@ class IrrigationManager:
             for subentry in self._entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
         ]
 
-    async def _async_preflight(self) -> None:
+    async def _async_preflight(
+        self,
+        *,
+        target_zone_id: str | None = None,
+        ignore_installation_lock: bool = False,
+    ) -> None:
         """Prove all managed valves are available and hydraulically closed."""
+        if self._stored_state.installation_safety_lock is not None and not ignore_installation_lock:
+            raise HomeAssistantError("The irrigation installation has a safety lock")
+        if target_zone_id in self._stored_state.zone_safety_locks:
+            raise HomeAssistantError("The irrigation zone has a safety lock")
         entity_ids = self._zone_valves()
         if main_valve := self._entry.data.get(CONF_MAIN_VALVE):
             entity_ids.append(main_valve)
@@ -238,10 +266,19 @@ class IrrigationManager:
         subentry = self._entry.subentries.get(zone_subentry_id)
         if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
             raise HomeAssistantError("The irrigation zone does not exist")
-        await self._async_preflight()
-
         zone_id = subentry.unique_id or subentry.subentry_id
+        await self._async_preflight(target_zone_id=zone_id)
+
         estimated_flow_l_min = self._estimated_flow(subentry.data)
+        minimum_flow_l_min = self._optional_float(subentry.data, CONF_MIN_FLOW)
+        maximum_flow_l_min = self._optional_float(subentry.data, CONF_MAX_FLOW)
+        if self._flow is not None and (
+            minimum_flow_l_min is not None or maximum_flow_l_min is not None
+        ):
+            await self._flow.read_l_min()
+        flow_grace_seconds = self._optional_float(subentry.data, CONF_FLOW_GRACE_SECONDS)
+        if flow_grace_seconds is None:
+            flow_grace_seconds = 5.0
         meter_raw_baseline_liters = await self._meter.read_raw_liters() if self._has_meter else None
         self._stored_state = replace(
             self._stored_state,
@@ -267,6 +304,9 @@ class IrrigationManager:
                     duration_seconds=duration_seconds,
                     managed_zone_valves=tuple(self._zone_valves()),
                     monitor_interval_seconds=1,
+                    minimum_flow_l_min=minimum_flow_l_min,
+                    maximum_flow_l_min=maximum_flow_l_min,
+                    flow_grace_seconds=flow_grace_seconds,
                     on_zone_opening=self._async_mark_zone_opening,
                 ),
                 estimated_flow_l_min=estimated_flow_l_min,
@@ -345,6 +385,47 @@ class IrrigationManager:
             await self._store.async_save(self._stored_state)
             self._publish(status="idle", active_zone_id=None)
 
+    async def async_reset_zone_safety(self, *, zone_subentry_id: str) -> None:
+        """Clear one zone lock only while the installation is safely idle."""
+        async with self._command_lock:
+            if self._active_task is not None and not self._active_task.done():
+                raise HomeAssistantError("The irrigation installation is busy")
+            subentry = self._entry.subentries.get(zone_subentry_id)
+            if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
+                raise HomeAssistantError("The irrigation zone does not exist")
+            await self._async_preflight()
+            zone_id = subentry.unique_id or subentry.subentry_id
+            zone_locks = dict(self._stored_state.zone_safety_locks)
+            zone_locks.pop(zone_id, None)
+            self._stored_state = replace(
+                self._stored_state,
+                zone_safety_locks=zone_locks,
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status="idle", active_zone_id=None)
+
+    async def async_reset_installation_safety(self) -> None:
+        """Clear the installation lock only after excessive flow has ended."""
+        async with self._command_lock:
+            if self._active_task is not None and not self._active_task.done():
+                raise HomeAssistantError("The irrigation installation is busy")
+            await self._async_preflight(ignore_installation_lock=True)
+            if self._flow is not None:
+                flow_l_min = await self._flow.read_l_min()
+                maximums = [
+                    value
+                    for subentry in self._entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+                    if (value := self._optional_float(subentry.data, CONF_MAX_FLOW)) is not None
+                ]
+                if maximums and flow_l_min > min(maximums):
+                    raise HomeAssistantError("Excessive flow is still present")
+            self._stored_state = replace(
+                self._stored_state,
+                installation_safety_lock=None,
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status="idle", active_zone_id=None)
+
     async def async_assign_water(self, *, zone_subentry_id: str, amount_liters: float) -> None:
         """Move measured unassigned consumption to one irrigation zone."""
         async with self._command_lock:
@@ -404,6 +485,12 @@ class IrrigationManager:
             last_delivered[request.zone_id] = delivered_liters
             last_duration = dict(self._stored_state.zone_last_duration_seconds)
             last_duration[request.zone_id] = result.duration_seconds
+            zone_locks = dict(self._stored_state.zone_safety_locks)
+            if result.safety_scope == "zone" and result.safety_violation:
+                zone_locks[request.zone_id] = result.safety_violation
+            installation_lock = self._stored_state.installation_safety_lock
+            if result.safety_scope == "installation" and result.safety_violation:
+                installation_lock = result.safety_violation
             self._stored_state = replace(
                 self._stored_state,
                 installation_total_liters=(
@@ -413,9 +500,8 @@ class IrrigationManager:
                 zone_measurement_quality=measurement_quality,
                 zone_last_delivered_liters=last_delivered,
                 zone_last_duration_seconds=last_duration,
-                emergency_stop=(
-                    self._stored_state.emergency_stop or result.safety_violation is not None
-                ),
+                zone_safety_locks=zone_locks,
+                installation_safety_lock=installation_lock,
                 active_execution=None,
             )
             await self._store.async_save(self._stored_state)
@@ -432,6 +518,8 @@ class IrrigationManager:
         """Publish one consistent snapshot from persisted runtime state."""
         if self._stored_state.emergency_stop:
             status = "emergency_stop"
+        elif self._stored_state.installation_safety_lock is not None:
+            status = "safety_lock"
         self._coordinator.set_snapshot(
             InstallationSnapshot(
                 installation_total_liters=(self._stored_state.installation_total_liters),
@@ -439,10 +527,12 @@ class IrrigationManager:
                 zone_measurement_quality=dict(self._stored_state.zone_measurement_quality),
                 zone_last_delivered_liters=dict(self._stored_state.zone_last_delivered_liters),
                 zone_last_duration_seconds=dict(self._stored_state.zone_last_duration_seconds),
+                zone_safety_locks=dict(self._stored_state.zone_safety_locks),
                 unassigned_total_liters=self._stored_state.unassigned_total_liters,
                 status=status,
                 active_zone_id=active_zone_id,
                 emergency_stop=self._stored_state.emergency_stop,
+                installation_safety_lock=(self._stored_state.installation_safety_lock),
             )
         )
 
@@ -455,3 +545,9 @@ class IrrigationManager:
             if isinstance((value := data.get(key)), int | float)
         ]
         return sum(values) / len(values) if values else None
+
+    @staticmethod
+    def _optional_float(data: Mapping[str, object], key: str) -> float | None:
+        """Return one optional numeric config value as a float."""
+        value = data.get(key)
+        return float(value) if isinstance(value, int | float) else None

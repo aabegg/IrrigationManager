@@ -26,6 +26,13 @@ class MeterPort(Protocol):
         """Return the current cumulative total in liters."""
 
 
+class FlowPort(Protocol):
+    """Read normalized instantaneous irrigation flow."""
+
+    async def read_l_min(self) -> float:
+        """Return the current flow in liters per minute."""
+
+
 class ClockPort(Protocol):
     """Provide elapsed-time waits without coupling domain logic to HA."""
 
@@ -51,6 +58,9 @@ class ExecutionRequest:
     settle_seconds: float = 0.0
     managed_zone_valves: tuple[str, ...] = ()
     monitor_interval_seconds: float = 0.0
+    minimum_flow_l_min: float | None = None
+    maximum_flow_l_min: float | None = None
+    flow_grace_seconds: float = 0.0
     on_zone_opening: Callable[[], Awaitable[None]] | None = None
 
 
@@ -63,6 +73,7 @@ class ExecutionResult:
     duration_seconds: float
     stopped: bool = False
     safety_violation: str | None = None
+    safety_scope: str | None = None
 
 
 class IrrigationExecutor:
@@ -73,11 +84,13 @@ class IrrigationExecutor:
         *,
         actuators: ActuatorPort,
         meter: MeterPort,
+        flow: FlowPort | None = None,
         clock: ClockPort,
     ) -> None:
         """Initialize the executor with hardware and timing ports."""
         self._actuators = actuators
         self._meter = meter
+        self._flow = flow
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -90,6 +103,7 @@ class IrrigationExecutor:
             watering_started_at: float | None = None
             delivered_duration_seconds = request.duration_seconds
             violations: list[str] = []
+            safety_scope: str | None = None
             execution_error: Exception | None = None
             try:
                 if request.main_valve is not None:
@@ -98,7 +112,9 @@ class IrrigationExecutor:
                     await request.on_zone_opening()
                 await self._open_and_confirm(request.zone_valve)
                 watering_started_at = self._clock.monotonic()
-                await self._water_and_monitor(request, violations, request.duration_seconds)
+                safety_scope = await self._water_and_monitor(
+                    request, violations, request.duration_seconds
+                )
                 if violations:
                     delivered_duration_seconds = min(
                         request.duration_seconds,
@@ -109,6 +125,7 @@ class IrrigationExecutor:
                     zone_closed = True
                 except Exception as err:  # noqa: BLE001
                     violations.append(f"Could not close {request.zone_valve}: {err}")
+                    safety_scope = safety_scope or "zone"
             except asyncio.CancelledError:
                 stopped = True
                 delivered_duration_seconds = (
@@ -121,17 +138,24 @@ class IrrigationExecutor:
                 )
             except Exception as err:  # noqa: BLE001
                 execution_error = err
+                if watering_started_at is not None:
+                    delivered_duration_seconds = min(
+                        request.duration_seconds,
+                        max(0.0, self._clock.monotonic() - watering_started_at),
+                    )
             finally:
                 if not zone_closed:
                     try:
                         await self._actuators.close(request.zone_valve)
                     except Exception as err:  # noqa: BLE001
                         violations.append(f"Could not close {request.zone_valve}: {err}")
+                        safety_scope = safety_scope or "zone"
                 if request.main_valve is not None:
                     try:
                         await self._actuators.close(request.main_valve)
                     except Exception as err:  # noqa: BLE001
                         violations.append(f"Could not close {request.main_valve}: {err}")
+                        safety_scope = "installation"
 
             if watering_started_at is None:
                 if execution_error is not None:
@@ -150,6 +174,7 @@ class IrrigationExecutor:
                 duration_seconds=delivered_duration_seconds,
                 stopped=stopped,
                 safety_violation="; ".join(dict.fromkeys(violations)) or None,
+                safety_scope=safety_scope,
             )
 
     async def _water_and_monitor(
@@ -157,11 +182,11 @@ class IrrigationExecutor:
         request: ExecutionRequest,
         violations: list[str],
         duration_seconds: float,
-    ) -> None:
+    ) -> str | None:
         """Water for the requested duration while enforcing valve exclusivity."""
         if request.monitor_interval_seconds <= 0:
             await self._clock.sleep(duration_seconds)
-            return
+            return None
 
         remaining = duration_seconds
         while remaining > 0:
@@ -170,7 +195,7 @@ class IrrigationExecutor:
             remaining -= step
             if not await self._actuators.is_open(request.zone_valve):
                 violations.append(f"{request.zone_valve} closed unexpectedly")
-                return
+                return "zone"
             for entity_id in request.managed_zone_valves:
                 if entity_id == request.zone_valve:
                     continue
@@ -180,7 +205,36 @@ class IrrigationExecutor:
                         await self._actuators.close(entity_id)
                     except Exception as err:  # noqa: BLE001
                         violations.append(f"Could not close {entity_id}: {err}")
-                    return
+                    return "installation"
+            if self._flow is not None and (
+                request.minimum_flow_l_min is not None or request.maximum_flow_l_min is not None
+            ):
+                elapsed = duration_seconds - remaining
+                if elapsed >= request.flow_grace_seconds:
+                    try:
+                        flow_l_min = await self._flow.read_l_min()
+                    except Exception as err:  # noqa: BLE001
+                        violations.append(f"Flow safety unavailable: {err}")
+                        return "installation"
+                    if (
+                        request.maximum_flow_l_min is not None
+                        and flow_l_min > request.maximum_flow_l_min
+                    ):
+                        violations.append(
+                            f"Flow {flow_l_min} L/min exceeds maximum "
+                            f"{request.maximum_flow_l_min} L/min"
+                        )
+                        return "installation"
+                    if (
+                        request.minimum_flow_l_min is not None
+                        and flow_l_min < request.minimum_flow_l_min
+                    ):
+                        violations.append(
+                            f"Flow {flow_l_min} L/min is below minimum "
+                            f"{request.minimum_flow_l_min} L/min"
+                        )
+                        return "zone"
+        return None
 
     async def _open_and_confirm(self, entity_id: str) -> None:
         """Open one actuator and reject missing feedback."""

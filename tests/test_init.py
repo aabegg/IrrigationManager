@@ -5,7 +5,12 @@ from types import MappingProxyType
 
 import pytest
 from homeassistant.config_entries import ConfigSubentry
-from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_OFF, STATE_ON
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    STATE_OFF,
+    STATE_ON,
+    UnitOfVolumeFlowRate,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -420,6 +425,123 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
     assert hass.states.get(zone_entity_id).attributes["measurement_quality"] == "unknown"
     assert hass.states.get(installation_entity_id).state == "10.0"
     assert hass.states.get(unassigned_entity_id).state == "6.0"
+
+
+@pytest.mark.parametrize(
+    ("flow_l_min", "error_text", "zone_locked", "installation_locked"),
+    [
+        (5, "below minimum", True, False),
+        (25, "exceeds maximum", False, True),
+    ],
+)
+async def test_flow_fault_stops_and_applies_correct_safety_scope(
+    hass: HomeAssistant,
+    flow_l_min: float,
+    error_text: str,
+    zone_locked: bool,
+    installation_locked: bool,
+) -> None:
+    """Persist a zone lock for low flow and installation lock for high flow."""
+
+    async def turn_on(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_ON)
+
+    async def turn_off(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_OFF)
+
+    hass.services.async_register("switch", "turn_on", turn_on)
+    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.states.async_set("switch.main", STATE_OFF)
+    hass.states.async_set("switch.zone_lawn", STATE_OFF)
+    hass.states.async_set(
+        "sensor.flow",
+        str(flow_l_min),
+        {ATTR_UNIT_OF_MEASUREMENT: (UnitOfVolumeFlowRate.LITERS_PER_MINUTE)},
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Gartenbewässerung",
+        data={
+            "name": "Gartenbewässerung",
+            "main_valve": "switch.main",
+            "flow_sensor": "sensor.flow",
+        },
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    subentry = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                "name": "Rasen",
+                "zone_valve": "switch.zone_lawn",
+                "default_duration": 600,
+                "min_flow": 10,
+                "max_flow": 20,
+                "flow_grace_seconds": 0,
+            }
+        ),
+        subentry_id="subentry-1",
+        subentry_type="zone",
+        title="Rasen",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, subentry)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    with pytest.raises(HomeAssistantError, match=error_text):
+        await hass.services.async_call(
+            DOMAIN,
+            "start_manual",
+            {
+                "config_entry_id": entry.entry_id,
+                "zone_subentry_id": subentry.subentry_id,
+                "duration": 1,
+            },
+            blocking=True,
+        )
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    zone_lock_entity_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, "zone-1_safety_lock"
+    )
+    emergency_entity_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, "installation-1_emergency_stop"
+    )
+    installation_lock_entity_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, "installation-1_safety_lock"
+    )
+    assert zone_lock_entity_id is not None
+    assert emergency_entity_id is not None
+    assert installation_lock_entity_id is not None
+    assert hass.states.get(zone_lock_entity_id).state == (STATE_ON if zone_locked else STATE_OFF)
+    assert hass.states.get(installation_lock_entity_id).state == (
+        STATE_ON if installation_locked else STATE_OFF
+    )
+    assert hass.states.get(emergency_entity_id).state == STATE_OFF
+
+    if installation_locked:
+        hass.states.async_set(
+            "sensor.flow",
+            "0",
+            {ATTR_UNIT_OF_MEASUREMENT: (UnitOfVolumeFlowRate.LITERS_PER_MINUTE)},
+        )
+    await hass.services.async_call(
+        DOMAIN,
+        ("reset_zone_safety" if zone_locked else "reset_installation_safety"),
+        (
+            {
+                "config_entry_id": entry.entry_id,
+                "zone_subentry_id": subentry.subentry_id,
+            }
+            if zone_locked
+            else {"config_entry_id": entry.entry_id}
+        ),
+        blocking=True,
+    )
+    assert hass.states.get(zone_lock_entity_id).state == STATE_OFF
+    assert hass.states.get(installation_lock_entity_id).state == STATE_OFF
+    assert hass.states.get(emergency_entity_id).state == STATE_OFF
 
 
 async def test_emergency_stop_blocks_manual_watering(hass: HomeAssistant) -> None:

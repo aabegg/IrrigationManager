@@ -39,6 +39,24 @@ reset_emergency_stop:
       selector:
         config_entry:
           integration: irrigation_manager
+reset_zone_safety:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id:
+      required: true
+      selector:
+        text:
+reset_installation_safety:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
 assign_water:
   fields:
     config_entry_id:
