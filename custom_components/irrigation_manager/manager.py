@@ -427,6 +427,7 @@ class IrrigationManager:
                 unassigned_total_liters=self._stored_state.unassigned_total_liters,
                 status=status,
                 active_zone_id=active_zone_id,
+                emergency_stop=self._stored_state.emergency_stop,
             )
         )
 

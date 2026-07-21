@@ -422,6 +422,14 @@ async def test_emergency_stop_blocks_manual_watering(hass: HomeAssistant) -> Non
         StoredInstallationState(emergency_stop=True)
     )
     assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    emergency_entity_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, "installation-1_emergency_stop"
+    )
+    assert emergency_entity_id is not None
+    assert hass.states.get(emergency_entity_id).state == STATE_ON
 
     with pytest.raises(HomeAssistantError, match="emergency stop"):
         await hass.services.async_call(
@@ -443,6 +451,7 @@ async def test_emergency_stop_blocks_manual_watering(hass: HomeAssistant) -> Non
     )
 
     assert not (await IrrigationStore(hass, entry.entry_id).async_load()).emergency_stop
+    assert hass.states.get(emergency_entity_id).state == STATE_OFF
 
 
 async def test_setup_recovers_interrupted_execution_from_meter_baseline(

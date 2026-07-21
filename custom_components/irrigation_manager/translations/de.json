@@ -1,6 +1,11 @@
 {
   "title": "Irrigation Manager",
   "entity": {
+    "binary_sensor": {
+      "emergency_stop": {
+        "name": "Not-Aus"
+      }
+    },
     "sensor": {
       "water_total": {
         "name": "Wasserverbrauch"

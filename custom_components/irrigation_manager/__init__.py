@@ -15,7 +15,7 @@ from .runtime import IrrigationConfigEntry, IrrigationRuntimeData
 from .services import async_register_services
 from .storage import IrrigationStore
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 LOGGER = logging.getLogger(__name__)
 
 
@@ -44,6 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             zone_measurement_quality=stored_state.zone_measurement_quality,
             unassigned_total_liters=stored_state.unassigned_total_liters,
             status="emergency_stop" if stored_state.emergency_stop else "idle",
+            emergency_stop=stored_state.emergency_stop,
         )
     )
     manager = IrrigationManager(

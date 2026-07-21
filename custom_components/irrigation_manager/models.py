@@ -13,6 +13,7 @@ class InstallationSnapshot:
     unassigned_total_liters: float = 0.0
     status: str = "idle"
     active_zone_id: str | None = None
+    emergency_stop: bool = False
 
 
 @dataclass(frozen=True, slots=True)

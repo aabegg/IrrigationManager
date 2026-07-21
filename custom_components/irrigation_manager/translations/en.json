@@ -1,6 +1,11 @@
 {
   "title": "Irrigation Manager",
   "entity": {
+    "binary_sensor": {
+      "emergency_stop": {
+        "name": "Emergency stop"
+      }
+    },
     "sensor": {
       "water_total": {
         "name": "Water consumption"
