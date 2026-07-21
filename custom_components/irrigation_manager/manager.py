@@ -1,17 +1,19 @@
 """Runtime orchestration for one irrigation installation."""
 
 import asyncio
+import json
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util import dt as dt_util
 
 from .adapters import (
     HomeAssistantActuators,
@@ -20,6 +22,11 @@ from .adapters import (
     HomeAssistantMeter,
 )
 from .const import (
+    CONF_APPLICATION_EFFICIENCY,
+    CONF_AREA_M2,
+    CONF_AUTOMATIC_MAX_DURATION,
+    CONF_AUTOMATION_ENABLED,
+    CONF_CROP_FACTOR,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
@@ -27,13 +34,25 @@ from .const import (
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
+    CONF_MANDATORY_AMOUNT_LITERS,
     CONF_MAX_DOSE_AMOUNT,
     CONF_MAX_DOSE_DURATION,
     CONF_MAX_FLOW,
+    CONF_MAXIMUM_DEFICIT_MM,
+    CONF_MAXIMUM_INTERVAL_DAYS,
+    CONF_MAXIMUM_TARGET_LITERS,
     CONF_METER_FAILURE_STRATEGY,
     CONF_MIN_FLOW,
+    CONF_MINIMUM_EFFECTIVE_LITERS,
+    CONF_MINIMUM_INTERVAL_DAYS,
+    CONF_MINIMUM_TRIGGER_LITERS,
+    CONF_RAIN_FACTOR,
     CONF_SOAK_DURATION,
     CONF_WATER_METER,
+    CONF_WATERING_MODE,
+    CONF_WATERING_WINDOWS,
+    CONF_WEATHER_ENTITY,
+    CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
@@ -48,9 +67,25 @@ from .models import (
     IrrigationExecutionState,
     ManualIrrigationRequest,
     StoredInstallationState,
+    UncreditedBalanceDelivery,
 )
-from .scheduler import dose_target, select_manual_request
+from .scheduler import (
+    WateringMode,
+    ZonePlanningInput,
+    ZoneScheduleDecision,
+    active_and_next_window,
+    decide_zone_schedule,
+    dose_target,
+    select_manual_request,
+)
 from .storage import IrrigationStore
+from .water_balance import (
+    WaterBalancePeriod,
+    ZoneWaterBalance,
+    apply_water_balance,
+    calculate_effective_irrigation_mm,
+    calculate_irrigation_target_liters,
+)
 
 
 class _StaleRequestClaimError(HomeAssistantError):
@@ -96,7 +131,9 @@ class IrrigationManager:
         )
         self._active_task: asyncio.Task[ExecutionResult] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
+        self._automatic_planner_task: asyncio.Task[None] | None = None
         self._queue_event = asyncio.Event()
+        self._planning_event = asyncio.Event()
         self._terminal_events: dict[str, asyncio.Event] = {}
         self._request_errors: dict[str, Exception] = {}
         self._cancel_requested: set[str] = set()
@@ -148,6 +185,7 @@ class IrrigationManager:
         await self._async_close_entities(list(dict.fromkeys(entity_ids)))
         await self._async_recover_interrupted_execution(could_have_flowed=active_could_have_flowed)
         await self._async_expire_requests()
+        await self._async_initialize_zone_balances()
         await self._async_ensure_idle_meter_baseline()
         if self._leak_monitoring and self._flow is not None:
             flow_entity_id = self._entry.data[CONF_FLOW_SENSOR]
@@ -163,14 +201,23 @@ class IrrigationManager:
             self._async_dispatch_requests(),
             "Irrigation Manager manual request dispatcher",
         )
+        self._automatic_planner_task = self._entry.async_create_background_task(
+            self._hass,
+            self._async_automatic_planner(),
+            "Irrigation Manager automatic planner",
+        )
 
     async def async_shutdown(self) -> None:
         """Stop runtime work and remove all Home Assistant listeners."""
         self._shutting_down = True
         dispatcher_task = self._dispatcher_task
         self._dispatcher_task = None
+        planner_task = self._automatic_planner_task
+        self._automatic_planner_task = None
         if dispatcher_task is not None:
             dispatcher_task.cancel()
+        if planner_task is not None:
+            planner_task.cancel()
         if self._unsubscribe_flow is not None:
             self._unsubscribe_flow()
             self._unsubscribe_flow = None
@@ -183,6 +230,8 @@ class IrrigationManager:
             await asyncio.gather(confirmation_task, return_exceptions=True)
         if dispatcher_task is not None:
             await asyncio.gather(dispatcher_task, return_exceptions=True)
+        if planner_task is not None:
+            await asyncio.gather(planner_task, return_exceptions=True)
         active_task = self._active_task
         if active_task is not None and not active_task.done():
             active_task.cancel()
@@ -519,11 +568,44 @@ class IrrigationManager:
             last_duration[active.zone_id] = delivered_duration_seconds
         requests = self._stored_state.manual_requests
         executions = self._stored_state.irrigation_executions
+        request = self._request(active.request_id) if active.request_id is not None else None
+        execution = (
+            self._execution(active.execution_id) if active.execution_id is not None else None
+        )
+        balance_snapshot = self._resolve_balance_snapshot(active, execution, request)
+        if balance_snapshot is not None:
+            active = replace(
+                active,
+                balance_area_m2=balance_snapshot[0],
+                balance_application_efficiency=balance_snapshot[1],
+                balance_maximum_deficit_mm=balance_snapshot[2],
+                balance_minimum_effective_liters=balance_snapshot[3],
+            )
+            if request is not None:
+                request = replace(
+                    request,
+                    balance_area_m2=balance_snapshot[0],
+                    balance_application_efficiency=balance_snapshot[1],
+                    balance_maximum_deficit_mm=balance_snapshot[2],
+                    balance_minimum_effective_liters=balance_snapshot[3],
+                )
+                requests = self._replace_request_in(requests, request)
+            if execution is not None:
+                execution = replace(
+                    execution,
+                    balance_area_m2=balance_snapshot[0],
+                    balance_application_efficiency=balance_snapshot[1],
+                    balance_maximum_deficit_mm=balance_snapshot[2],
+                    balance_minimum_effective_liters=balance_snapshot[3],
+                )
+                executions = self._replace_execution_in(executions, execution)
+        effective_delivery = self._crosses_effective_threshold(
+            previous_liters=0.0,
+            delivered_liters=delivered_liters,
+            minimum_effective_liters=active.balance_minimum_effective_liters,
+        )
         terminal_request_id: str | None = None
-        if (
-            active.request_id is not None
-            and (request := self._request(active.request_id)) is not None
-        ):
+        if request is not None:
             delivered_target = (
                 delivered_liters if request.target_type == "volume" else delivered_duration_seconds
             )
@@ -538,11 +620,9 @@ class IrrigationManager:
                 execution_id=request.execution_id if completed else None,
                 revision=request.revision + 1,
             )
-            requests = self._with_request(request)
-            if (
-                active.execution_id is not None
-                and (execution := self._execution(active.execution_id)) is not None
-            ):
+            requests = self._replace_request_in(requests, request)
+            if execution is not None:
+                prior_execution_liters = execution.delivered_liters
                 execution = replace(
                     execution,
                     remaining_value=0.0 if completed else remaining,
@@ -560,9 +640,35 @@ class IrrigationManager:
                         else "restart"
                     ),
                 )
-                executions = self._with_execution(execution)
+                executions = self._replace_execution_in(executions, execution)
+                effective_delivery = self._crosses_effective_threshold(
+                    previous_liters=prior_execution_liters,
+                    delivered_liters=delivered_liters,
+                    minimum_effective_liters=(execution.balance_minimum_effective_liters),
+                )
             if completed or expired:
                 terminal_request_id = request.request_id
+        deficits, last_effective = self._balance_after_delivery(
+            zone_id=active.zone_id,
+            delivered_liters=delivered_liters,
+            effective_delivery=effective_delivery,
+            delivered_at=datetime.now(UTC),
+            area_m2=active.balance_area_m2,
+            application_efficiency=active.balance_application_efficiency,
+            maximum_deficit_mm=active.balance_maximum_deficit_mm,
+        )
+        uncredited_deliveries = self._stored_state.uncredited_balance_deliveries
+        if delivered_liters > 0 and balance_snapshot is None:
+            uncredited_deliveries = (
+                *uncredited_deliveries,
+                self._uncredited_balance_delivery(
+                    zone_id=active.zone_id,
+                    delivered_liters=delivered_liters,
+                    delivered_at=datetime.now(UTC),
+                    request_id=active.request_id,
+                    execution_id=active.execution_id,
+                ),
+            )
         self._stored_state = replace(
             self._stored_state,
             installation_total_liters=(
@@ -575,12 +681,16 @@ class IrrigationManager:
             active_execution=None,
             manual_requests=requests,
             irrigation_executions=executions,
+            zone_deficit_mm=deficits,
+            zone_last_effective_irrigation=last_effective,
+            uncredited_balance_deliveries=uncredited_deliveries,
         )
         await self._store.async_save(self._stored_state)
         if terminal_request_id is not None:
             self._signal_terminal(terminal_request_id)
         await self._async_refresh_idle_meter_baseline()
         self._publish(status="idle", active_zone_id=None)
+        self._planning_event.set()
 
     async def _async_close_entities(self, entity_ids: list[str]) -> None:
         """Attempt every requested closure before reporting any failures."""
@@ -648,6 +758,451 @@ class IrrigationManager:
             raise error from close_error
         raise error
 
+    async def _async_initialize_zone_balances(self) -> None:
+        """Treat newly automated zones as freshly watered and persist that baseline."""
+        last_effective = dict(self._stored_state.zone_last_effective_irrigation)
+        now = dt_util.now().isoformat()
+        changed = False
+        for subentry in self._entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
+            zone_id = subentry.unique_id or subentry.subentry_id
+            if subentry.data.get(CONF_AUTOMATION_ENABLED, False) and zone_id not in last_effective:
+                last_effective[zone_id] = now
+                changed = True
+        if changed:
+            self._stored_state = replace(
+                self._stored_state,
+                zone_last_effective_irrigation=last_effective,
+            )
+            await self._store.async_save(self._stored_state)
+
+    def _zone_schedule_decisions(
+        self, *, now: datetime
+    ) -> list[tuple[ConfigSubentry, ZonePlanningInput, ZoneScheduleDecision]]:
+        """Build reproducible per-zone decisions from config and durable balance."""
+        decisions: list[tuple[ConfigSubentry, ZonePlanningInput, ZoneScheduleDecision]] = []
+        for subentry in self._entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
+            zone_id = subentry.unique_id or subentry.subentry_id
+            data = subentry.data
+            maximum_deficit = self._number(data, CONF_MAXIMUM_DEFICIT_MM, 50.0)
+            deficit = min(
+                maximum_deficit,
+                max(0.0, self._stored_state.zone_deficit_mm.get(zone_id, 0.0)),
+            )
+            area = self._number(data, CONF_AREA_M2, 1.0)
+            efficiency = self._number(data, CONF_APPLICATION_EFFICIENCY, 0.8)
+            target = calculate_irrigation_target_liters(
+                deficit_mm=deficit,
+                area_m2=area,
+                application_efficiency=efficiency,
+            )
+            flow = self._estimated_flow(data) or 0.0
+            maximum_target = self._number(data, CONF_MAXIMUM_TARGET_LITERS, 1_000.0)
+            if flow > 0:
+                maximum_target = min(
+                    maximum_target,
+                    flow * self._number(data, CONF_AUTOMATIC_MAX_DURATION, 3_600.0) / 60,
+                )
+            planning_input = ZonePlanningInput(
+                zone_id=zone_id,
+                mode=WateringMode(str(data.get(CONF_WATERING_MODE, WateringMode.DEMAND))),
+                calculated_target_liters=target,
+                minimum_target_liters=self._number(data, CONF_MANDATORY_AMOUNT_LITERS, 1.0),
+                maximum_target_liters=maximum_target,
+                minimum_effective_liters=self._number(data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1),
+                flow_liters_per_minute=flow,
+                relative_need=deficit / maximum_deficit if maximum_deficit > 0 else 0.0,
+                priority=int(self._number(data, CONF_ZONE_PRIORITY, 0.0)),
+                window_end=now,
+                enabled=bool(data.get(CONF_AUTOMATION_ENABLED, False)),
+                blocked=(
+                    self._stored_state.emergency_stop
+                    or self._stored_state.installation_safety_lock is not None
+                    or zone_id in self._stored_state.zone_safety_locks
+                ),
+            )
+            last_value = self._stored_state.zone_last_effective_irrigation.get(zone_id)
+            last_effective = datetime.fromisoformat(last_value) if last_value else None
+            raw_windows = data.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])
+            windows = (
+                [str(value) for value in raw_windows]
+                if isinstance(raw_windows, list | tuple)
+                else [str(raw_windows)]
+            )
+            decision = decide_zone_schedule(
+                now=now,
+                zone=planning_input,
+                watering_windows=windows,
+                last_effective_irrigation=last_effective,
+                minimum_interval=timedelta(
+                    days=self._number(data, CONF_MINIMUM_INTERVAL_DAYS, 1.0)
+                ),
+                maximum_interval=timedelta(
+                    days=self._number(data, CONF_MAXIMUM_INTERVAL_DAYS, 7.0)
+                ),
+                minimum_trigger_liters=self._number(data, CONF_MINIMUM_TRIGGER_LITERS, 1.0),
+            )
+            if (
+                decision.active_window is not None
+                and self._automatic_request_id(zone_id, decision.active_window.opportunity_id)
+                in self._stored_state.suppressed_automatic_opportunities
+            ):
+                decision = replace(
+                    decision,
+                    order=None,
+                    reason="opportunity_suppressed",
+                )
+            decisions.append((subentry, planning_input, decision))
+        return decisions
+
+    async def async_plan_automatic(
+        self, *, dry_run: bool = False, now: datetime | None = None
+    ) -> dict[str, object]:
+        """Plan current automatic opportunities and optionally persist their requests."""
+        planning_now = now or dt_util.now()
+        async with self._command_lock:
+            if not dry_run:
+                await self._async_expire_requests(now=planning_now)
+            decisions = self._zone_schedule_decisions(now=planning_now)
+            ordered = sorted(
+                decisions,
+                key=lambda item: (
+                    item[2].order is None,
+                    item[2].order.window_end
+                    if item[2].order
+                    else datetime.max.replace(tzinfo=planning_now.tzinfo),
+                    -item[1].relative_need,
+                    -item[1].priority,
+                    item[1].zone_id,
+                ),
+            )
+            created: list[str] = []
+            updated: list[str] = []
+            cancelled: list[str] = []
+            recreated: list[str] = []
+            requests = self._stored_state.manual_requests
+            sequence = self._stored_state.next_request_sequence
+            for subentry, planning_input, decision in ordered:
+                if decision.active_window is None:
+                    continue
+                request_id = self._automatic_request_id(
+                    planning_input.zone_id, decision.active_window.opportunity_id
+                )
+                existing = next(
+                    (request for request in requests if request.request_id == request_id), None
+                )
+                if decision.order is None:
+                    if existing is not None and existing.status == "pending":
+                        requests = tuple(
+                            replace(
+                                request,
+                                status="cancelled",
+                                revision=request.revision + 1,
+                            )
+                            if request.request_id == request_id
+                            else request
+                            for request in requests
+                        )
+                        cancelled.append(request_id)
+                    continue
+                order = decision.order
+                data = subentry.data
+                target_type = "volume" if self._has_meter else "duration"
+                target_value = (
+                    order.target_liters
+                    if target_type == "volume"
+                    else order.expected_duration_seconds
+                )
+                remaining_window = max(
+                    1.0,
+                    (decision.active_window.end - planning_now).total_seconds(),
+                )
+                hard_limit = min(
+                    remaining_window,
+                    self._number(data, CONF_AUTOMATIC_MAX_DURATION, 3_600.0),
+                )
+                balance_snapshot = self._balance_snapshot(data)
+                if existing is not None and existing.status in {"cancelled", "expired"}:
+                    requests = tuple(
+                        replace(
+                            request,
+                            sequence=sequence,
+                            target_type=target_type,
+                            target_value=target_value,
+                            remaining_value=target_value,
+                            created_at=planning_now.isoformat(),
+                            expires_at=decision.active_window.end.isoformat(),
+                            status="pending",
+                            execution_id=None,
+                            hard_time_limit_seconds=(
+                                hard_limit if target_type == "volume" else None
+                            ),
+                            automatic_window_end=decision.active_window.end.isoformat(),
+                            automatic_relative_need=planning_input.relative_need,
+                            automatic_priority=planning_input.priority,
+                            balance_area_m2=balance_snapshot[0],
+                            balance_application_efficiency=balance_snapshot[1],
+                            balance_maximum_deficit_mm=balance_snapshot[2],
+                            balance_minimum_effective_liters=balance_snapshot[3],
+                            revision=request.revision + 1,
+                        )
+                        if request.request_id == request_id
+                        else request
+                        for request in requests
+                    )
+                    sequence += 1
+                    recreated.append(request_id)
+                    continue
+                if existing is not None and existing.status != "pending":
+                    continue
+                if existing is not None:
+                    if (
+                        existing.target_type != target_type
+                        or abs(existing.target_value - target_value) > 1e-6
+                        or existing.automatic_window_end != decision.active_window.end.isoformat()
+                        or abs(
+                            (existing.automatic_relative_need or 0.0) - planning_input.relative_need
+                        )
+                        > 1e-6
+                        or existing.automatic_priority != planning_input.priority
+                    ):
+                        requests = tuple(
+                            replace(
+                                request,
+                                target_type=target_type,
+                                target_value=target_value,
+                                remaining_value=target_value,
+                                hard_time_limit_seconds=(
+                                    hard_limit if target_type == "volume" else None
+                                ),
+                                automatic_window_end=decision.active_window.end.isoformat(),
+                                automatic_relative_need=planning_input.relative_need,
+                                automatic_priority=planning_input.priority,
+                                balance_area_m2=balance_snapshot[0],
+                                balance_application_efficiency=balance_snapshot[1],
+                                balance_maximum_deficit_mm=balance_snapshot[2],
+                                balance_minimum_effective_liters=balance_snapshot[3],
+                                revision=request.revision + 1,
+                            )
+                            if request.request_id == request_id
+                            else request
+                            for request in requests
+                        )
+                        updated.append(request_id)
+                    continue
+                request = ManualIrrigationRequest(
+                    request_id=request_id,
+                    sequence=sequence,
+                    zone_id=planning_input.zone_id,
+                    zone_subentry_id=subentry.subentry_id,
+                    zone_name=subentry.title,
+                    zone_valve=str(data[CONF_ZONE_VALVE]),
+                    main_valve=self._entry.data.get(CONF_MAIN_VALVE),
+                    target_type=target_type,
+                    target_value=target_value,
+                    remaining_value=target_value,
+                    created_at=planning_now.isoformat(),
+                    expires_at=decision.active_window.end.isoformat(),
+                    source="automatic",
+                    automatic_window_end=decision.active_window.end.isoformat(),
+                    automatic_relative_need=planning_input.relative_need,
+                    automatic_priority=planning_input.priority,
+                    hard_time_limit_seconds=hard_limit if target_type == "volume" else None,
+                    max_dose_value=self._optional_float(
+                        data,
+                        CONF_MAX_DOSE_AMOUNT if target_type == "volume" else CONF_MAX_DOSE_DURATION,
+                    ),
+                    soak_duration_seconds=self._number(data, CONF_SOAK_DURATION, 0.0),
+                    meter_failure_strategy=str(
+                        data.get(CONF_METER_FAILURE_STRATEGY, METER_FAILURE_ABORT)
+                    ),
+                    estimated_flow_l_min=self._estimated_flow(data),
+                    minimum_flow_l_min=self._optional_float(data, CONF_MIN_FLOW),
+                    maximum_flow_l_min=self._optional_float(data, CONF_MAX_FLOW),
+                    flow_grace_seconds=self._number(data, CONF_FLOW_GRACE_SECONDS, 5.0),
+                    balance_area_m2=balance_snapshot[0],
+                    balance_application_efficiency=balance_snapshot[1],
+                    balance_maximum_deficit_mm=balance_snapshot[2],
+                    balance_minimum_effective_liters=balance_snapshot[3],
+                )
+                requests = (*requests, request)
+                sequence += 1
+                created.append(request_id)
+            changed = bool(created or updated or cancelled or recreated)
+            if not dry_run and changed:
+                self._stored_state = replace(
+                    self._stored_state,
+                    manual_requests=requests,
+                    next_request_sequence=sequence,
+                )
+                await self._store.async_save(self._stored_state)
+                self._queue_event.set()
+            if not dry_run:
+                self._publish(status=self._coordinator.data.status, active_zone_id=None)
+            return {
+                "dry_run": dry_run,
+                "created_request_ids": [] if dry_run else created,
+                "would_create_request_ids": created if dry_run else [],
+                "updated_request_ids": [] if dry_run else updated,
+                "cancelled_request_ids": [] if dry_run else cancelled,
+                "recreated_request_ids": [] if dry_run else recreated,
+                "weather_entity": self._weather_snapshot(),
+                "zones": [
+                    {
+                        "zone_id": planning_input.zone_id,
+                        "needed": decision.needed,
+                        "target_liters": decision.target_liters,
+                        "planned_liters": (
+                            decision.order.target_liters if decision.order else None
+                        ),
+                        "reason": decision.reason,
+                        "window_end": (
+                            decision.active_window.end.isoformat()
+                            if decision.active_window
+                            else None
+                        ),
+                        "next_window": (
+                            decision.next_window_start.isoformat()
+                            if decision.next_window_start
+                            else None
+                        ),
+                    }
+                    for _, planning_input, decision in ordered
+                ],
+            }
+
+    async def async_skip_automatic(
+        self, *, zone_subentry_id: str, now: datetime | None = None
+    ) -> dict[str, object]:
+        """Suppress exactly the current automatic watering opportunity."""
+        planning_now = now or dt_util.now()
+        request_id: str
+        should_cancel = False
+        async with self._command_lock:
+            subentry = self._entry.subentries.get(zone_subentry_id)
+            if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
+                raise HomeAssistantError("The irrigation zone does not exist")
+            raw_windows = subentry.data.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])
+            windows = (
+                [str(value) for value in raw_windows]
+                if isinstance(raw_windows, list | tuple)
+                else [str(raw_windows)]
+            )
+            active_window, _ = active_and_next_window(now=planning_now, values=windows)
+            if active_window is None:
+                raise HomeAssistantError("The irrigation zone has no active watering window")
+            zone_id = subentry.unique_id or subentry.subentry_id
+            request_id = self._automatic_request_id(zone_id, active_window.opportunity_id)
+            suppressions = self._stored_state.suppressed_automatic_opportunities
+            if request_id not in suppressions:
+                self._stored_state = replace(
+                    self._stored_state,
+                    suppressed_automatic_opportunities=(*suppressions, request_id),
+                )
+                await self._store.async_save(self._stored_state)
+            request = self._request(request_id)
+            should_cancel = request is not None and request.status not in {
+                "completed",
+                "cancelled",
+                "expired",
+            }
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+        if should_cancel:
+            await self.async_cancel_request(request_id)
+        self._planning_event.set()
+        return {"opportunity_id": request_id, "suppressed": True}
+
+    async def async_finalize_daily_weather(
+        self,
+        *,
+        period_id: str,
+        reference_evapotranspiration_mm: float,
+        rain_mm: float,
+    ) -> dict[str, object]:
+        """Apply one finalized daily weather contribution exactly once."""
+        signature = json.dumps([reference_evapotranspiration_mm, rain_mm], separators=(",", ":"))
+        async with self._command_lock:
+            previous = self._stored_state.finalized_weather_periods.get(period_id)
+            if previous is not None:
+                if previous != signature:
+                    raise HomeAssistantError(
+                        "This weather period was already finalized with different values"
+                    )
+                return {"applied": False, "period_id": period_id}
+            deficits = dict(self._stored_state.zone_deficit_mm)
+            for subentry in self._entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
+                zone_id = subentry.unique_id or subentry.subentry_id
+                data = subentry.data
+                maximum = self._number(data, CONF_MAXIMUM_DEFICIT_MM, 50.0)
+                updated = apply_water_balance(
+                    ZoneWaterBalance(deficits.get(zone_id, 0.0), maximum),
+                    WaterBalancePeriod(
+                        crop_evapotranspiration_mm=(
+                            reference_evapotranspiration_mm
+                            * self._number(data, CONF_CROP_FACTOR, 1.0)
+                        ),
+                        effective_rain_mm=rain_mm * self._number(data, CONF_RAIN_FACTOR, 1.0),
+                        effective_irrigation_mm=0.0,
+                    ),
+                )
+                deficits[zone_id] = updated.deficit_mm
+            periods = dict(self._stored_state.finalized_weather_periods)
+            periods[period_id] = signature
+            self._stored_state = replace(
+                self._stored_state,
+                zone_deficit_mm=deficits,
+                finalized_weather_periods=periods,
+            )
+            await self._store.async_save(self._stored_state)
+            self._planning_event.set()
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+            return {"applied": True, "period_id": period_id, "zone_deficit_mm": deficits}
+
+    async def _async_automatic_planner(self) -> None:
+        """Replan at window boundaries and after water-balance changes."""
+        while not self._shutting_down:
+            self._planning_event.clear()
+            try:
+                await self.async_plan_automatic()
+                delay = self._seconds_until_next_automatic_change()
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._planning_event.wait(), timeout=delay)
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001
+                await asyncio.sleep(60)
+
+    def _seconds_until_next_automatic_change(self) -> float:
+        """Return a bounded delay to the next start or end of a configured window."""
+        now = dt_util.now()
+        boundaries: list[datetime] = []
+        for subentry in self._entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
+            raw = subentry.data.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])
+            values = [str(value) for value in raw] if isinstance(raw, list | tuple) else [str(raw)]
+            active, next_start = active_and_next_window(now=now, values=values)
+            if active is not None:
+                boundaries.append(active.end)
+            if next_start is not None:
+                boundaries.append(next_start)
+        if not boundaries:
+            return 3_600.0
+        return max(0.1, min((boundary - now).total_seconds() for boundary in boundaries))
+
+    def _weather_snapshot(self) -> dict[str, object] | None:
+        """Expose configured native weather state as planning context without templates."""
+        entity_id = self._entry.data.get(CONF_WEATHER_ENTITY)
+        state = self._hass.states.get(entity_id) if isinstance(entity_id, str) else None
+        if state is None:
+            return None
+        return {
+            "entity_id": entity_id,
+            "state": state.state,
+            "attributes": {
+                key: state.attributes[key]
+                for key in ("temperature", "humidity", "wind_speed", "pressure")
+                if key in state.attributes
+            },
+        }
+
     async def async_start_manual(
         self,
         *,
@@ -677,6 +1232,7 @@ class IrrigationManager:
             max_dose_key = (
                 CONF_MAX_DOSE_AMOUNT if target_type == "volume" else CONF_MAX_DOSE_DURATION
             )
+            balance_snapshot = self._balance_snapshot(subentry.data)
             request = ManualIrrigationRequest(
                 request_id=request_id,
                 sequence=self._stored_state.next_request_sequence,
@@ -707,6 +1263,10 @@ class IrrigationManager:
                     is not None
                     else 5.0
                 ),
+                balance_area_m2=balance_snapshot[0],
+                balance_application_efficiency=balance_snapshot[1],
+                balance_maximum_deficit_mm=balance_snapshot[2],
+                balance_minimum_effective_liters=balance_snapshot[3],
             )
             self._stored_state = replace(
                 self._stored_state,
@@ -852,6 +1412,7 @@ class IrrigationManager:
             result.delivered_liters if request.target_type == "volume" else result.duration_seconds
         )
         remaining = max(0.0, request.remaining_value - delivered_target)
+        prior_execution_liters = execution.delivered_liters
         execution = replace(
             execution,
             remaining_value=remaining,
@@ -881,6 +1442,39 @@ class IrrigationManager:
             with suppress(HomeAssistantError):
                 idle_meter_baseline = await self._meter.read_raw_liters()
         now = datetime.now(UTC)
+        deficits, last_effective = self._balance_after_delivery(
+            zone_id=request.zone_id,
+            delivered_liters=result.delivered_liters,
+            effective_delivery=self._crosses_effective_threshold(
+                previous_liters=prior_execution_liters,
+                delivered_liters=result.delivered_liters,
+                minimum_effective_liters=execution.balance_minimum_effective_liters,
+            ),
+            delivered_at=now,
+            area_m2=execution.balance_area_m2,
+            application_efficiency=execution.balance_application_efficiency,
+            maximum_deficit_mm=execution.balance_maximum_deficit_mm,
+        )
+        uncredited_deliveries = self._stored_state.uncredited_balance_deliveries
+        if result.delivered_liters > 0 and any(
+            value is None
+            for value in (
+                execution.balance_area_m2,
+                execution.balance_application_efficiency,
+                execution.balance_maximum_deficit_mm,
+                execution.balance_minimum_effective_liters,
+            )
+        ):
+            uncredited_deliveries = (
+                *uncredited_deliveries,
+                self._uncredited_balance_delivery(
+                    zone_id=request.zone_id,
+                    delivered_liters=result.delivered_liters,
+                    delivered_at=now,
+                    request_id=request.request_id,
+                    execution_id=execution.execution_id,
+                ),
+            )
         terminal = False
         if request_id in self._cancel_requested:
             self._cancel_requested.discard(request_id)
@@ -990,11 +1584,15 @@ class IrrigationManager:
             active_execution=None,
             manual_requests=self._with_request(request),
             irrigation_executions=self._with_execution(execution),
+            zone_deficit_mm=deficits,
+            zone_last_effective_irrigation=last_effective,
+            uncredited_balance_deliveries=uncredited_deliveries,
         )
         await self._store.async_save(self._stored_state)
         if terminal:
             self._signal_terminal(request_id)
         self._queue_event.set()
+        self._planning_event.set()
 
     async def _async_fail_request(self, request_id: str, error: Exception) -> None:
         """Finalize an order that could not safely execute."""
@@ -1023,9 +1621,9 @@ class IrrigationManager:
         self._request_errors[request_id] = error
         self._signal_terminal(request_id)
 
-    async def _async_expire_requests(self) -> None:
+    async def _async_expire_requests(self, *, now: datetime | None = None) -> None:
         """Expire durable orders that have not completed before their deadline."""
-        now = datetime.now(UTC)
+        now = now or datetime.now(UTC)
         changed = False
         expired_request_ids: list[str] = []
         requests: list[ManualIrrigationRequest] = []
@@ -1095,6 +1693,10 @@ class IrrigationManager:
     def list_irrigation_executions(self) -> list[dict[str, object]]:
         """Return persisted irrigation executions in creation order."""
         return [execution.as_dict() for execution in self._stored_state.irrigation_executions]
+
+    def list_uncredited_balance_deliveries(self) -> list[dict[str, object]]:
+        """Return deliveries requiring explicit water-balance reconciliation."""
+        return [delivery.as_dict() for delivery in self._stored_state.uncredited_balance_deliveries]
 
     async def async_cancel_request(self, request_id: str) -> None:
         """Cancel one selected pending, soaking, paused, or active order."""
@@ -1203,17 +1805,32 @@ class IrrigationManager:
     def _with_request(
         self, request: ManualIrrigationRequest
     ) -> tuple[ManualIrrigationRequest, ...]:
-        return tuple(
-            request if item.request_id == request.request_id else item
-            for item in self._stored_state.manual_requests
-        )
+        return self._replace_request_in(self._stored_state.manual_requests, request)
 
     def _with_execution(
         self, execution: IrrigationExecutionState
     ) -> tuple[IrrigationExecutionState, ...]:
+        return self._replace_execution_in(self._stored_state.irrigation_executions, execution)
+
+    @staticmethod
+    def _replace_request_in(
+        requests: tuple[ManualIrrigationRequest, ...],
+        request: ManualIrrigationRequest,
+    ) -> tuple[ManualIrrigationRequest, ...]:
+        """Replace one request in an explicitly selected durable collection."""
+        return tuple(
+            request if item.request_id == request.request_id else item for item in requests
+        )
+
+    @staticmethod
+    def _replace_execution_in(
+        executions: tuple[IrrigationExecutionState, ...],
+        execution: IrrigationExecutionState,
+    ) -> tuple[IrrigationExecutionState, ...]:
+        """Replace one execution in an explicitly selected durable collection."""
         return tuple(
             execution if item.execution_id == execution.execution_id else item
-            for item in self._stored_state.irrigation_executions
+            for item in executions
         )
 
     def _signal_terminal(self, request_id: str) -> None:
@@ -1258,6 +1875,7 @@ class IrrigationManager:
         subentry = self._entry.subentries.get(manual_request.zone_subentry_id)
         if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
             raise HomeAssistantError("The irrigation zone does not exist")
+        manual_request = self._with_balance_snapshot(manual_request, subentry.data)
         zone_id = manual_request.zone_id
         await self._async_preflight(target_zone_id=zone_id)
         self._cancel_leak_observation()
@@ -1305,6 +1923,10 @@ class IrrigationManager:
                 status="watering",
                 created_at=now,
                 dose_number=dose_number,
+                balance_area_m2=manual_request.balance_area_m2,
+                balance_application_efficiency=(manual_request.balance_application_efficiency),
+                balance_maximum_deficit_mm=manual_request.balance_maximum_deficit_mm,
+                balance_minimum_effective_liters=(manual_request.balance_minimum_effective_liters),
             )
             executions = (*self._stored_state.irrigation_executions, execution)
         else:
@@ -1313,6 +1935,19 @@ class IrrigationManager:
                 execution,
                 status="watering",
                 dose_number=dose_number,
+                balance_area_m2=(execution.balance_area_m2 or manual_request.balance_area_m2),
+                balance_application_efficiency=(
+                    execution.balance_application_efficiency
+                    or manual_request.balance_application_efficiency
+                ),
+                balance_maximum_deficit_mm=(
+                    execution.balance_maximum_deficit_mm
+                    or manual_request.balance_maximum_deficit_mm
+                ),
+                balance_minimum_effective_liters=(
+                    execution.balance_minimum_effective_liters
+                    or manual_request.balance_minimum_effective_liters
+                ),
             )
             executions = self._with_execution(execution)
         manual_request = replace(
@@ -1342,6 +1977,10 @@ class IrrigationManager:
                 execution_id=execution_id,
                 dose_number=dose_number,
                 dose_target_value=dose_value,
+                balance_area_m2=execution.balance_area_m2,
+                balance_application_efficiency=execution.balance_application_efficiency,
+                balance_maximum_deficit_mm=execution.balance_maximum_deficit_mm,
+                balance_minimum_effective_liters=(execution.balance_minimum_effective_liters),
             ),
         )
         await self._store.async_save(self._stored_state)
@@ -1583,13 +2222,31 @@ class IrrigationManager:
         zone_id = subentry.unique_id or subentry.subentry_id
         zone_totals = dict(self._stored_state.zone_totals_liters)
         zone_totals[zone_id] = zone_totals.get(zone_id, 0.0) + amount_liters
+        deficits, last_effective = self._balance_after_delivery(
+            zone_id=zone_id,
+            delivered_liters=amount_liters,
+            effective_delivery=self._crosses_effective_threshold(
+                previous_liters=0.0,
+                delivered_liters=amount_liters,
+                minimum_effective_liters=self._number(
+                    subentry.data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1
+                ),
+            ),
+            delivered_at=datetime.now(UTC),
+            area_m2=self._number(subentry.data, CONF_AREA_M2, 1.0),
+            application_efficiency=self._number(subentry.data, CONF_APPLICATION_EFFICIENCY, 0.8),
+            maximum_deficit_mm=self._number(subentry.data, CONF_MAXIMUM_DEFICIT_MM, 50.0),
+        )
         self._stored_state = replace(
             self._stored_state,
             zone_totals_liters=zone_totals,
             unassigned_total_liters=(self._stored_state.unassigned_total_liters - amount_liters),
+            zone_deficit_mm=deficits,
+            zone_last_effective_irrigation=last_effective,
         )
         await self._store.async_save(self._stored_state)
         self._publish(status="idle", active_zone_id=None)
+        self._planning_event.set()
 
     async def _async_execute(
         self, *, request: ExecutionRequest, estimated_flow_l_min: float | None
@@ -1649,6 +2306,7 @@ class IrrigationManager:
         selected_execution = (
             self._execution(selected_request.execution_id) if selected_request is not None else None
         )
+        schedule_decisions = self._zone_schedule_decisions(now=dt_util.now())
         self._coordinator.set_snapshot(
             InstallationSnapshot(
                 installation_total_liters=(self._stored_state.installation_total_liters),
@@ -1698,6 +2356,24 @@ class IrrigationManager:
                 active_execution_id=(
                     selected_execution.execution_id if selected_execution else None
                 ),
+                zone_deficit_mm=dict(self._stored_state.zone_deficit_mm),
+                zone_target_liters={
+                    planning_input.zone_id: decision.target_liters
+                    for _, planning_input, decision in schedule_decisions
+                },
+                zone_automation_needed={
+                    planning_input.zone_id: decision.needed
+                    for _, planning_input, decision in schedule_decisions
+                },
+                zone_next_window={
+                    planning_input.zone_id: decision.next_window_start.isoformat()
+                    for _, planning_input, decision in schedule_decisions
+                    if decision.next_window_start is not None
+                },
+                zone_planning_reason={
+                    planning_input.zone_id: decision.reason
+                    for _, planning_input, decision in schedule_decisions
+                },
             )
         )
 
@@ -1707,6 +2383,130 @@ class IrrigationManager:
         self._active_target_value = None
         self._active_remaining_value = None
         self._active_measurement_quality = None
+
+    def _balance_after_delivery(
+        self,
+        *,
+        zone_id: str,
+        delivered_liters: float,
+        effective_delivery: bool,
+        delivered_at: datetime,
+        area_m2: float | None,
+        application_efficiency: float | None,
+        maximum_deficit_mm: float | None,
+    ) -> tuple[dict[str, float], dict[str, str]]:
+        """Return durable balance maps after one physically delivered contribution."""
+        deficits = dict(self._stored_state.zone_deficit_mm)
+        last_effective = dict(self._stored_state.zone_last_effective_irrigation)
+        if (
+            delivered_liters <= 0
+            or area_m2 is None
+            or application_efficiency is None
+            or maximum_deficit_mm is None
+        ):
+            return deficits, last_effective
+        effective_mm = calculate_effective_irrigation_mm(
+            delivered_liters=delivered_liters,
+            area_m2=area_m2,
+            application_efficiency=application_efficiency,
+        )
+        deficits[zone_id] = apply_water_balance(
+            ZoneWaterBalance(deficits.get(zone_id, 0.0), maximum_deficit_mm),
+            WaterBalancePeriod(0.0, 0.0, effective_mm),
+        ).deficit_mm
+        if effective_delivery:
+            last_effective[zone_id] = delivered_at.isoformat()
+        return deficits, last_effective
+
+    def _crosses_effective_threshold(
+        self,
+        *,
+        previous_liters: float,
+        delivered_liters: float,
+        minimum_effective_liters: float | None,
+    ) -> bool:
+        """Return whether an execution newly reached the configured effective amount."""
+        if minimum_effective_liters is None:
+            return False
+        return previous_liters < minimum_effective_liters <= previous_liters + delivered_liters
+
+    @classmethod
+    def _with_balance_snapshot(
+        cls, request: ManualIrrigationRequest, data: Mapping[str, object]
+    ) -> ManualIrrigationRequest:
+        """Hydrate a legacy pending request once before its durable claim."""
+        snapshot = cls._balance_snapshot(data)
+        return replace(
+            request,
+            balance_area_m2=(request.balance_area_m2 or snapshot[0]),
+            balance_application_efficiency=(request.balance_application_efficiency or snapshot[1]),
+            balance_maximum_deficit_mm=(request.balance_maximum_deficit_mm or snapshot[2]),
+            balance_minimum_effective_liters=(
+                request.balance_minimum_effective_liters or snapshot[3]
+            ),
+        )
+
+    @staticmethod
+    def _resolve_balance_snapshot(
+        active: ActiveExecutionState,
+        execution: IrrigationExecutionState | None,
+        request: ManualIrrigationRequest | None,
+    ) -> tuple[float, float, float, float] | None:
+        """Resolve a complete immutable snapshot from linked durable records."""
+        sources = (active, execution, request)
+
+        def first(field: str) -> float | None:
+            return next(
+                (
+                    value
+                    for source in sources
+                    if source is not None and (value := getattr(source, field)) is not None
+                ),
+                None,
+            )
+
+        area = first("balance_area_m2")
+        efficiency = first("balance_application_efficiency")
+        maximum = first("balance_maximum_deficit_mm")
+        threshold = first("balance_minimum_effective_liters")
+        if area is None or efficiency is None or maximum is None or threshold is None:
+            return None
+        return area, efficiency, maximum, threshold
+
+    @staticmethod
+    def _uncredited_balance_delivery(
+        *,
+        zone_id: str,
+        delivered_liters: float,
+        delivered_at: datetime,
+        request_id: str | None,
+        execution_id: str | None,
+    ) -> UncreditedBalanceDelivery:
+        """Create an explicit reconciliation item instead of dropping balance credit."""
+        return UncreditedBalanceDelivery(
+            reconciliation_id=uuid4().hex,
+            zone_id=zone_id,
+            delivered_liters=delivered_liters,
+            delivered_at=delivered_at.isoformat(),
+            reason="missing_immutable_balance_snapshot",
+            request_id=request_id,
+            execution_id=execution_id,
+        )
+
+    @classmethod
+    def _balance_snapshot(cls, data: Mapping[str, object]) -> tuple[float, float, float, float]:
+        """Capture immutable parameters used for later delivery accounting."""
+        return (
+            cls._number(data, CONF_AREA_M2, 1.0),
+            cls._number(data, CONF_APPLICATION_EFFICIENCY, 0.8),
+            cls._number(data, CONF_MAXIMUM_DEFICIT_MM, 50.0),
+            cls._number(data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1),
+        )
+
+    @staticmethod
+    def _automatic_request_id(zone_id: str, opportunity_id: str) -> str:
+        """Return the durable identity shared by planning and skip-once."""
+        return f"automatic:{zone_id}:{opportunity_id}"
 
     @staticmethod
     def _estimated_flow(data: Mapping[str, object]) -> float | None:
@@ -1723,3 +2523,9 @@ class IrrigationManager:
         """Return one optional numeric config value as a float."""
         value = data.get(key)
         return float(value) if isinstance(value, int | float) else None
+
+    @staticmethod
+    def _number(data: Mapping[str, object], key: str, default: float) -> float:
+        """Read a numeric config value while preserving additive migration defaults."""
+        value = data.get(key, default)
+        return float(value) if isinstance(value, int | float) else default

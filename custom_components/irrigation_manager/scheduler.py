@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 
 from .models import IrrigationExecutionState, ManualIrrigationRequest
@@ -42,6 +42,138 @@ class PlannedOrder:
     expected_duration_seconds: float
     is_partial: bool
     window_end: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class WateringWindow:
+    """One resolved daily watering opportunity."""
+
+    start: datetime
+    end: datetime
+
+    @property
+    def opportunity_id(self) -> str:
+        """Return a stable identity for restart-safe automatic planning."""
+        return self.start.isoformat()
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneScheduleDecision:
+    """Explain whether a zone should produce an order at one instant."""
+
+    order: PlannedOrder | None
+    needed: bool
+    target_liters: float
+    reason: str
+    active_window: WateringWindow | None
+    next_window_start: datetime | None
+
+
+def parse_daily_window(value: str) -> tuple[time, time]:
+    """Parse a UI-storable fixed daily window in HH:MM-HH:MM form."""
+    try:
+        start_value, end_value = value.split("-", maxsplit=1)
+        start = time.fromisoformat(start_value.strip())
+        end = time.fromisoformat(end_value.strip())
+    except (TypeError, ValueError) as err:
+        raise ValueError("Watering windows must use HH:MM-HH:MM") from err
+    if start == end:
+        raise ValueError("Watering window start and end must differ")
+    return start, end
+
+
+def resolve_daily_windows(*, now: datetime, values: Iterable[str]) -> list[WateringWindow]:
+    """Resolve current and next fixed daily windows, including midnight crossings."""
+    windows: list[WateringWindow] = []
+    for value in values:
+        start_time, end_time = parse_daily_window(value)
+        for day_offset in (-1, 0, 1):
+            day = now.date() + timedelta(days=day_offset)
+            start = _combine(day, start_time, now)
+            end_day = day + timedelta(days=1) if end_time <= start_time else day
+            end = _combine(end_day, end_time, now)
+            if end > now or start > now:
+                windows.append(WateringWindow(start=start, end=end))
+    return sorted(set(windows), key=lambda window: (window.start, window.end))
+
+
+def active_and_next_window(
+    *, now: datetime, values: Iterable[str]
+) -> tuple[WateringWindow | None, datetime | None]:
+    """Return the active opportunity and next future start."""
+    windows = resolve_daily_windows(now=now, values=values)
+    active = next((window for window in windows if window.start <= now < window.end), None)
+    next_start = next((window.start for window in windows if window.start > now), None)
+    return active, next_start
+
+
+def _combine(day: date, value: time, reference: datetime) -> datetime:
+    """Combine a wall-clock value using the planning instant's timezone."""
+    return datetime.combine(day, value, tzinfo=reference.tzinfo)
+
+
+def decide_zone_schedule(
+    *,
+    now: datetime,
+    zone: ZonePlanningInput,
+    watering_windows: Iterable[str],
+    last_effective_irrigation: datetime | None,
+    minimum_interval: timedelta,
+    maximum_interval: timedelta,
+    minimum_trigger_liters: float,
+) -> ZoneScheduleDecision:
+    """Apply rhythm and window policy before producing one deterministic order."""
+    active_window, next_window_start = active_and_next_window(now=now, values=watering_windows)
+    age = now - last_effective_irrigation if last_effective_irrigation is not None else None
+    if not zone.enabled:
+        return ZoneScheduleDecision(
+            None, False, 0.0, "automation_disabled", None, next_window_start
+        )
+    if zone.blocked:
+        return ZoneScheduleDecision(None, False, 0.0, "safety_blocked", None, next_window_start)
+    if age is not None and age < minimum_interval:
+        return ZoneScheduleDecision(
+            None, False, 0.0, "minimum_interval", active_window, next_window_start
+        )
+
+    calculated = max(0.0, zone.calculated_target_liters)
+    maximum_due = age is None or age >= maximum_interval
+    mandatory_due = zone.mode is WateringMode.MINIMUM and maximum_due
+    target = max(calculated, zone.minimum_target_liters if mandatory_due else 0.0)
+    target = min(target, zone.maximum_target_liters)
+    needed = mandatory_due or target >= minimum_trigger_liters
+    if not needed:
+        return ZoneScheduleDecision(
+            None, False, target, "demand_below_trigger", active_window, next_window_start
+        )
+    if active_window is None:
+        return ZoneScheduleDecision(
+            None, True, target, "outside_watering_window", None, next_window_start
+        )
+
+    planning_input = ZonePlanningInput(
+        zone_id=zone.zone_id,
+        mode=WateringMode.DEMAND,
+        calculated_target_liters=target,
+        minimum_target_liters=0.0,
+        maximum_target_liters=zone.maximum_target_liters,
+        minimum_effective_liters=zone.minimum_effective_liters,
+        flow_liters_per_minute=zone.flow_liters_per_minute,
+        relative_need=zone.relative_need,
+        priority=zone.priority,
+        window_end=active_window.end,
+        enabled=True,
+        blocked=False,
+    )
+    order = _plan_zone(now=now, zone=planning_input)
+    return ZoneScheduleDecision(
+        order,
+        True,
+        target,
+        "planned" if order is not None else "insufficient_window_time",
+        active_window,
+        next_window_start,
+    )
 
 
 def plan_orders(*, now: datetime, zones: Iterable[ZonePlanningInput]) -> list[PlannedOrder]:
@@ -123,7 +255,22 @@ def select_manual_request(
             or datetime.fromisoformat(request.soak_until) <= now
         )
     ]
-    return min(ready, key=lambda request: (request.sequence, request.request_id), default=None)
+    return min(ready, key=_request_priority, default=None)
+
+
+def _request_priority(request: ManualIrrigationRequest) -> tuple[object, ...]:
+    """Keep manual FIFO ahead of lexicographically ordered automatic work."""
+    if request.source == "manual":
+        return (0, request.sequence, request.request_id)
+    window_end = request.automatic_window_end or request.expires_at
+    return (
+        1,
+        datetime.fromisoformat(window_end).timestamp(),
+        -(request.automatic_relative_need or 0.0),
+        -(request.automatic_priority or 0),
+        request.zone_id,
+        request.request_id,
+    )
 
 
 def dose_target(request: ManualIrrigationRequest) -> float:

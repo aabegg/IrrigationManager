@@ -8,6 +8,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager.const import (
+    CONF_AUTOMATION_ENABLED,
     CONF_FLOW_SENSOR,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
@@ -15,6 +16,7 @@ from custom_components.irrigation_manager.const import (
     CONF_MAIN_VALVE,
     CONF_METER_FAILURE_STRATEGY,
     CONF_WATER_METER,
+    CONF_WATERING_WINDOWS,
     CONF_WEATHER_ENTITY,
     DOMAIN,
 )
@@ -97,3 +99,5 @@ async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:
     assert subentry.unique_id == "zone-1"
     assert subentry.data["zone_valve"] == "switch.relais_11"
     assert subentry.data[CONF_METER_FAILURE_STRATEGY] == "abort"
+    assert subentry.data[CONF_AUTOMATION_ENABLED] is False
+    assert subentry.data[CONF_WATERING_WINDOWS] == ["04:00-06:00"]

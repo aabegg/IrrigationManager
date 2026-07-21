@@ -18,6 +18,11 @@ ATTR_HARD_TIME_LIMIT = "hard_time_limit"
 ATTR_EXPIRY = "expiry"
 ATTR_REQUEST_ID = "request_id"
 ATTR_EXECUTION_ID = "execution_id"
+ATTR_DRY_RUN = "dry_run"
+ATTR_AT = "at"
+ATTR_PERIOD_ID = "period_id"
+ATTR_REFERENCE_EVAPOTRANSPIRATION = "reference_evapotranspiration"
+ATTR_RAIN = "rain"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
@@ -31,6 +36,9 @@ SERVICE_RESET_EMERGENCY_STOP = "reset_emergency_stop"
 SERVICE_RESET_ZONE_SAFETY = "reset_zone_safety"
 SERVICE_RESET_INSTALLATION_SAFETY = "reset_installation_safety"
 SERVICE_ASSIGN_WATER = "assign_water"
+SERVICE_PLAN_AUTOMATIC = "plan_automatic"
+SERVICE_FINALIZE_DAILY_WEATHER = "finalize_daily_weather"
+SERVICE_SKIP_AUTOMATIC = "skip_automatic"
 
 
 def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
@@ -85,6 +93,23 @@ ASSIGN_WATER_SCHEMA = vol.Schema(
         vol.Required(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
     }
 )
+PLAN_AUTOMATIC_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_DRY_RUN, default=False): cv.boolean,
+        vol.Optional(ATTR_AT): cv.datetime,
+    }
+)
+FINALIZE_DAILY_WEATHER_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_PERIOD_ID): cv.string,
+        vol.Required(ATTR_REFERENCE_EVAPOTRANSPIRATION): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=100)
+        ),
+        vol.Required(ATTR_RAIN): vol.All(vol.Coerce(float), vol.Range(min=0, max=1_000)),
+    }
+)
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -117,6 +142,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         return {
             "requests": manager.list_manual_requests(),
             "executions": manager.list_irrigation_executions(),
+            "uncredited_balance_deliveries": (manager.list_uncredited_balance_deliveries()),
         }
 
     async def stop(call: ServiceCall) -> None:
@@ -154,11 +180,45 @@ async def async_register_services(hass: HomeAssistant) -> None:
             amount_liters=cast(float, call.data[ATTR_AMOUNT]),
         )
 
+    async def plan_automatic(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_plan_automatic(
+            dry_run=cast(bool, call.data[ATTR_DRY_RUN]),
+            now=cast(Any, call.data.get(ATTR_AT)),
+        )
+
+    async def finalize_daily_weather(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_finalize_daily_weather(
+            period_id=cast(str, call.data[ATTR_PERIOD_ID]),
+            reference_evapotranspiration_mm=cast(
+                float, call.data[ATTR_REFERENCE_EVAPOTRANSPIRATION]
+            ),
+            rain_mm=cast(float, call.data[ATTR_RAIN]),
+        )
+
+    async def skip_automatic(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_skip_automatic(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
+            now=cast(Any, call.data.get(ATTR_AT)),
+        )
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_START_MANUAL,
         start_manual,
         schema=START_MANUAL_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SKIP_AUTOMATIC,
+        skip_automatic,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+                vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+                vol.Optional(ATTR_AT): cv.datetime,
+            }
+        ),
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
@@ -219,4 +279,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
         SERVICE_ASSIGN_WATER,
         assign_water,
         schema=ASSIGN_WATER_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PLAN_AUTOMATIC,
+        plan_automatic,
+        schema=PLAN_AUTOMATIC_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_FINALIZE_DAILY_WEATHER,
+        finalize_daily_weather,
+        schema=FINALIZE_DAILY_WEATHER_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )

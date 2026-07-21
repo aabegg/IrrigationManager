@@ -97,3 +97,14 @@ def calculate_irrigation_target_liters(
         msg = "application_efficiency must be greater than 0 and at most 1"
         raise ValueError(msg)
     return max(0.0, deficit_mm) * max(0.0, area_m2) / application_efficiency
+
+
+def calculate_effective_irrigation_mm(
+    *, delivered_liters: float, area_m2: float, application_efficiency: float
+) -> float:
+    """Convert delivered gross liters to effective net water depth."""
+    if area_m2 <= 0:
+        raise ValueError("area_m2 must be greater than 0")
+    if not 0 < application_efficiency <= 1:
+        raise ValueError("application_efficiency must be greater than 0 and at most 1")
+    return max(0.0, delivered_liters) * application_efficiency / area_m2

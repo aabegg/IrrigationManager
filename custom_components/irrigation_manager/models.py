@@ -22,6 +22,9 @@ class ManualIrrigationRequest:
     expires_at: str
     status: str = "pending"
     source: str = "manual"
+    automatic_window_end: str | None = None
+    automatic_relative_need: float | None = None
+    automatic_priority: int | None = None
     execution_id: str | None = None
     hard_time_limit_seconds: float | None = None
     max_dose_value: float | None = None
@@ -32,6 +35,10 @@ class ManualIrrigationRequest:
     minimum_flow_l_min: float | None = None
     maximum_flow_l_min: float | None = None
     flow_grace_seconds: float = 5.0
+    balance_area_m2: float | None = None
+    balance_application_efficiency: float | None = None
+    balance_maximum_deficit_mm: float | None = None
+    balance_minimum_effective_liters: float | None = None
     revision: int = 1
 
     @classmethod
@@ -52,12 +59,13 @@ class ManualIrrigationRequest:
         main_valve = data.get("main_valve")
         execution_id = data.get("execution_id")
         soak_until = data.get("soak_until")
+        automatic_window_end = data.get("automatic_window_end")
         status = data.get("status", "pending")
         source = data.get("source", "manual")
         if (
             not all(
                 value is None or isinstance(value, str)
-                for value in (main_valve, execution_id, soak_until)
+                for value in (main_valve, execution_id, soak_until, automatic_window_end)
             )
             or not isinstance(status, str)
             or not isinstance(source, str)
@@ -66,6 +74,7 @@ class ManualIrrigationRequest:
         main_valve = cast(str | None, main_valve)
         execution_id = cast(str | None, execution_id)
         soak_until = cast(str | None, soak_until)
+        automatic_window_end = cast(str | None, automatic_window_end)
         return cls(
             request_id=str(data["request_id"]),
             sequence=int(StoredInstallationState._float(data.get("sequence"))),
@@ -81,6 +90,13 @@ class ManualIrrigationRequest:
             expires_at=str(data["expires_at"]),
             status=status,
             source=source,
+            automatic_window_end=automatic_window_end,
+            automatic_relative_need=_optional_stored_float(data, "automatic_relative_need"),
+            automatic_priority=(
+                int(StoredInstallationState._float(data["automatic_priority"]))
+                if data.get("automatic_priority") is not None
+                else None
+            ),
             execution_id=execution_id,
             hard_time_limit_seconds=_optional_stored_float(data, "hard_time_limit_seconds"),
             max_dose_value=_optional_stored_float(data, "max_dose_value"),
@@ -97,6 +113,14 @@ class ManualIrrigationRequest:
             minimum_flow_l_min=_optional_stored_float(data, "minimum_flow_l_min"),
             maximum_flow_l_min=_optional_stored_float(data, "maximum_flow_l_min"),
             flow_grace_seconds=StoredInstallationState._float(data.get("flow_grace_seconds", 5.0)),
+            balance_area_m2=_optional_stored_float(data, "balance_area_m2"),
+            balance_application_efficiency=_optional_stored_float(
+                data, "balance_application_efficiency"
+            ),
+            balance_maximum_deficit_mm=_optional_stored_float(data, "balance_maximum_deficit_mm"),
+            balance_minimum_effective_liters=_optional_stored_float(
+                data, "balance_minimum_effective_liters"
+            ),
             revision=int(StoredInstallationState._float(data.get("revision", 1))),
         )
 
@@ -122,6 +146,10 @@ class IrrigationExecutionState:
     delivered_duration_seconds: float = 0.0
     ended_at: str | None = None
     result: str | None = None
+    balance_area_m2: float | None = None
+    balance_application_efficiency: float | None = None
+    balance_maximum_deficit_mm: float | None = None
+    balance_minimum_effective_liters: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> IrrigationExecutionState:
@@ -151,6 +179,14 @@ class IrrigationExecutionState:
             ),
             ended_at=ended_at,
             result=result,
+            balance_area_m2=_optional_stored_float(data, "balance_area_m2"),
+            balance_application_efficiency=_optional_stored_float(
+                data, "balance_application_efficiency"
+            ),
+            balance_maximum_deficit_mm=_optional_stored_float(data, "balance_maximum_deficit_mm"),
+            balance_minimum_effective_liters=_optional_stored_float(
+                data, "balance_minimum_effective_liters"
+            ),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -162,6 +198,43 @@ def _optional_stored_float(data: dict[str, object], key: str) -> float | None:
     """Read one optional persisted number."""
     value = data.get(key)
     return None if value is None else StoredInstallationState._float(value)
+
+
+@dataclass(frozen=True, slots=True)
+class UncreditedBalanceDelivery:
+    """Delivered water awaiting reconciliation because its snapshot was unavailable."""
+
+    reconciliation_id: str
+    zone_id: str
+    delivered_liters: float
+    delivered_at: str
+    reason: str
+    request_id: str | None = None
+    execution_id: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> UncreditedBalanceDelivery:
+        """Deserialize one explicit uncredited delivery record."""
+        required = ("reconciliation_id", "zone_id", "delivered_at", "reason")
+        if not all(isinstance(data.get(key), str) for key in required):
+            raise ValueError("Stored uncredited balance delivery is malformed")
+        request_id = data.get("request_id")
+        execution_id = data.get("execution_id")
+        if not all(value is None or isinstance(value, str) for value in (request_id, execution_id)):
+            raise ValueError("Stored uncredited balance delivery links are malformed")
+        return cls(
+            reconciliation_id=str(data["reconciliation_id"]),
+            zone_id=str(data["zone_id"]),
+            delivered_liters=StoredInstallationState._float(data.get("delivered_liters")),
+            delivered_at=str(data["delivered_at"]),
+            reason=str(data["reason"]),
+            request_id=cast(str | None, request_id),
+            execution_id=cast(str | None, execution_id),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize one reconciliation record."""
+        return {field: getattr(self, field) for field in self.__dataclass_fields__}
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +262,11 @@ class InstallationSnapshot:
     current_dose_number: int | None = None
     active_request_id: str | None = None
     active_execution_id: str | None = None
+    zone_deficit_mm: dict[str, float] = field(default_factory=dict)
+    zone_target_liters: dict[str, float] = field(default_factory=dict)
+    zone_automation_needed: dict[str, bool] = field(default_factory=dict)
+    zone_next_window: dict[str, str] = field(default_factory=dict)
+    zone_planning_reason: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +292,10 @@ class ActiveExecutionState:
     execution_id: str | None = None
     dose_number: int = 1
     dose_target_value: float | None = None
+    balance_area_m2: float | None = None
+    balance_application_efficiency: float | None = None
+    balance_maximum_deficit_mm: float | None = None
+    balance_minimum_effective_liters: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> ActiveExecutionState:
@@ -265,6 +347,10 @@ class ActiveExecutionState:
             execution_id=optional_string("execution_id"),
             dose_number=int(StoredInstallationState._float(data.get("dose_number", 1))),
             dose_target_value=optional_float("dose_target_value"),
+            balance_area_m2=optional_float("balance_area_m2"),
+            balance_application_efficiency=optional_float("balance_application_efficiency"),
+            balance_maximum_deficit_mm=optional_float("balance_maximum_deficit_mm"),
+            balance_minimum_effective_liters=optional_float("balance_minimum_effective_liters"),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -289,6 +375,10 @@ class ActiveExecutionState:
             "execution_id": self.execution_id,
             "dose_number": self.dose_number,
             "dose_target_value": self.dose_target_value,
+            "balance_area_m2": self.balance_area_m2,
+            "balance_application_efficiency": self.balance_application_efficiency,
+            "balance_maximum_deficit_mm": self.balance_maximum_deficit_mm,
+            "balance_minimum_effective_liters": self.balance_minimum_effective_liters,
         }
 
 
@@ -312,6 +402,11 @@ class StoredInstallationState:
     manual_requests: tuple[ManualIrrigationRequest, ...] = ()
     irrigation_executions: tuple[IrrigationExecutionState, ...] = ()
     next_request_sequence: int = 1
+    zone_deficit_mm: dict[str, float] = field(default_factory=dict)
+    zone_last_effective_irrigation: dict[str, str] = field(default_factory=dict)
+    finalized_weather_periods: dict[str, str] = field(default_factory=dict)
+    suppressed_automatic_opportunities: tuple[str, ...] = ()
+    uncredited_balance_deliveries: tuple[UncreditedBalanceDelivery, ...] = ()
 
     @staticmethod
     def _float(value: object) -> float:
@@ -372,6 +467,31 @@ class StoredInstallationState:
             raise ValueError("Stored unassigned measurement metadata is malformed")
         raw_idle_baseline = data.get("idle_meter_raw_baseline_liters")
         idle_baseline = None if raw_idle_baseline is None else cls._float(raw_idle_baseline)
+        raw_deficits = data.get("zone_deficit_mm", {})
+        raw_last_effective = data.get("zone_last_effective_irrigation", {})
+        raw_weather_periods = data.get("finalized_weather_periods", {})
+        raw_suppressions = data.get("suppressed_automatic_opportunities", [])
+        raw_uncredited_deliveries = data.get("uncredited_balance_deliveries", [])
+        if not isinstance(raw_deficits, dict):
+            raise ValueError("Stored zone water deficits are malformed")
+        if not isinstance(raw_last_effective, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_last_effective.items()
+        ):
+            raise ValueError("Stored effective irrigation timestamps are malformed")
+        if not isinstance(raw_weather_periods, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_weather_periods.items()
+        ):
+            raise ValueError("Stored finalized weather periods are malformed")
+        if not isinstance(raw_suppressions, list) or not all(
+            isinstance(value, str) for value in raw_suppressions
+        ):
+            raise ValueError("Stored automatic opportunity suppressions are malformed")
+        if not isinstance(raw_uncredited_deliveries, list) or not all(
+            isinstance(value, dict) for value in raw_uncredited_deliveries
+        ):
+            raise ValueError("Stored uncredited balance deliveries are malformed")
         return cls(
             installation_total_liters=cls._float(data.get("installation_total_liters", 0.0)),
             zone_totals_liters=zone_totals,
@@ -396,6 +516,13 @@ class StoredInstallationState:
             ),
             next_request_sequence=int(
                 cls._float(data.get("next_request_sequence", len(raw_requests) + 1))
+            ),
+            zone_deficit_mm={str(key): cls._float(value) for key, value in raw_deficits.items()},
+            zone_last_effective_irrigation=dict(raw_last_effective),
+            finalized_weather_periods=dict(raw_weather_periods),
+            suppressed_automatic_opportunities=tuple(raw_suppressions),
+            uncredited_balance_deliveries=tuple(
+                UncreditedBalanceDelivery.from_dict(value) for value in raw_uncredited_deliveries
             ),
         )
 
@@ -422,4 +549,11 @@ class StoredInstallationState:
                 execution.as_dict() for execution in self.irrigation_executions
             ],
             "next_request_sequence": self.next_request_sequence,
+            "zone_deficit_mm": self.zone_deficit_mm,
+            "zone_last_effective_irrigation": self.zone_last_effective_irrigation,
+            "finalized_weather_periods": self.finalized_weather_periods,
+            "suppressed_automatic_opportunities": list(self.suppressed_automatic_opportunities),
+            "uncredited_balance_deliveries": [
+                delivery.as_dict() for delivery in self.uncredited_balance_deliveries
+            ],
         }

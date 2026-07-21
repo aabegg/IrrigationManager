@@ -8,7 +8,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 9
+STORAGE_MINOR_VERSION = 12
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -22,7 +22,19 @@ class _StateStore(Store[dict[str, object]]):
         old_data: dict[str, object],
     ) -> dict[str, object]:
         """Add fields introduced by additive 1.x schema revisions."""
-        if old_major_version == 1 and old_minor_version in {1, 2, 3, 4, 5, 6, 7, 8}:
+        if old_major_version == 1 and old_minor_version in {
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+        }:
             migrated = dict(old_data)
             if old_minor_version == 1:
                 migrated["active_execution"] = None
@@ -68,8 +80,71 @@ class _StateStore(Store[dict[str, object]]):
                         {**request, "revision": 1} if isinstance(request, dict) else request
                         for request in raw_requests
                     ]
+            if old_minor_version < 10:
+                migrated["zone_deficit_mm"] = {}
+                migrated["zone_last_effective_irrigation"] = {}
+                migrated["finalized_weather_periods"] = {}
+            if old_minor_version < 11:
+                migrated["suppressed_automatic_opportunities"] = []
+                snapshot_defaults = {
+                    "balance_area_m2": None,
+                    "balance_application_efficiency": None,
+                    "balance_maximum_deficit_mm": None,
+                    "balance_minimum_effective_liters": None,
+                }
+                for key in ("manual_requests", "irrigation_executions"):
+                    records = migrated.get(key, [])
+                    if isinstance(records, list):
+                        migrated[key] = [
+                            {**record, **snapshot_defaults} if isinstance(record, dict) else record
+                            for record in records
+                        ]
+                raw_active = migrated.get("active_execution")
+                if isinstance(raw_active, dict):
+                    migrated["active_execution"] = {**raw_active, **snapshot_defaults}
+            if old_minor_version < 12:
+                migrated["uncredited_balance_deliveries"] = []
+                requests = migrated.get("manual_requests", [])
+                executions = migrated.get("irrigation_executions", [])
+                request_records = requests if isinstance(requests, list) else []
+                execution_records = executions if isinstance(executions, list) else []
+                request_by_id = {
+                    request.get("request_id"): request
+                    for request in request_records
+                    if isinstance(request, dict) and isinstance(request.get("request_id"), str)
+                }
+                execution_by_id = {
+                    execution.get("execution_id"): execution
+                    for execution in execution_records
+                    if isinstance(execution, dict)
+                    and isinstance(execution.get("execution_id"), str)
+                }
+                for execution in execution_by_id.values():
+                    linked_request = request_by_id.get(execution.get("request_id"))
+                    if isinstance(linked_request, dict):
+                        _backfill_balance_snapshot(execution, linked_request)
+                raw_active = migrated.get("active_execution")
+                if isinstance(raw_active, dict):
+                    linked_execution = execution_by_id.get(raw_active.get("execution_id"))
+                    linked_request = request_by_id.get(raw_active.get("request_id"))
+                    if isinstance(linked_execution, dict):
+                        _backfill_balance_snapshot(raw_active, linked_execution)
+                    if isinstance(linked_request, dict):
+                        _backfill_balance_snapshot(raw_active, linked_request)
             return migrated
         raise NotImplementedError
+
+
+def _backfill_balance_snapshot(target: dict[str, object], source: dict[str, object]) -> None:
+    """Copy only missing immutable balance fields between linked durable records."""
+    for field in (
+        "balance_area_m2",
+        "balance_application_efficiency",
+        "balance_maximum_deficit_mm",
+        "balance_minimum_effective_liters",
+    ):
+        if target.get(field) is None and source.get(field) is not None:
+            target[field] = source[field]
 
 
 class IrrigationStore:

@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import override
 
@@ -11,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfTime, UnitOfVolume
+from homeassistant.const import UnitOfLength, UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -137,6 +138,38 @@ async def async_setup_entry(
                     installation_id=installation_id,
                     zone_id=zone_id,
                     zone_name=subentry.title,
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="water_deficit",
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="automatic_target",
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="next_watering_window",
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="planning_reason",
                 ),
             ],
             config_subentry_id=subentry.subentry_id,
@@ -457,3 +490,52 @@ class ZoneMeasurementQualitySensor(_ZoneObservationSensor):
     def native_value(self) -> str:
         """Return the latest contribution's measurement quality."""
         return self.coordinator.data.zone_measurement_quality.get(self._zone_id, "unknown")
+
+
+class ZonePlanningValueSensor(_ZoneObservationSensor):
+    """Expose one current automatic-planning value for a zone."""
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_id: str,
+        zone_name: str,
+        key: str,
+    ) -> None:
+        """Initialize one planning sensor with the appropriate native metadata."""
+        self._observation_key = key
+        super().__init__(
+            coordinator=coordinator,
+            entry=entry,
+            installation_id=installation_id,
+            zone_id=zone_id,
+            zone_name=zone_name,
+        )
+        self._attr_translation_key = key
+        if key == "water_deficit":
+            self._attr_native_unit_of_measurement = UnitOfLength.MILLIMETERS
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._attr_suggested_display_precision = 1
+        elif key == "automatic_target":
+            self._attr_native_unit_of_measurement = UnitOfVolume.LITERS
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._attr_suggested_display_precision = 1
+        elif key == "next_watering_window":
+            self._attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    @property
+    @override
+    def native_value(self) -> Decimal | datetime | str | None:
+        """Return the selected planning value from the atomic coordinator snapshot."""
+        snapshot = self.coordinator.data
+        if self._observation_key == "water_deficit":
+            return Decimal(str(snapshot.zone_deficit_mm.get(self._zone_id, 0.0)))
+        if self._observation_key == "automatic_target":
+            return Decimal(str(snapshot.zone_target_liters.get(self._zone_id, 0.0)))
+        if self._observation_key == "next_watering_window":
+            value = snapshot.zone_next_window.get(self._zone_id)
+            return datetime.fromisoformat(value) if value is not None else None
+        return snapshot.zone_planning_reason.get(self._zone_id, "automation_disabled")

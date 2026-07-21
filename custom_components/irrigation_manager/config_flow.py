@@ -32,6 +32,11 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_APPLICATION_EFFICIENCY,
+    CONF_AREA_M2,
+    CONF_AUTOMATIC_MAX_DURATION,
+    CONF_AUTOMATION_ENABLED,
+    CONF_CROP_FACTOR,
     CONF_DEFAULT_DURATION,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
@@ -40,20 +45,34 @@ from .const import (
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
+    CONF_MANDATORY_AMOUNT_LITERS,
     CONF_MAX_DOSE_AMOUNT,
     CONF_MAX_DOSE_DURATION,
     CONF_MAX_FLOW,
+    CONF_MAXIMUM_DEFICIT_MM,
+    CONF_MAXIMUM_INTERVAL_DAYS,
+    CONF_MAXIMUM_TARGET_LITERS,
     CONF_METER_FAILURE_STRATEGY,
     CONF_MIN_FLOW,
+    CONF_MINIMUM_EFFECTIVE_LITERS,
+    CONF_MINIMUM_INTERVAL_DAYS,
+    CONF_MINIMUM_TRIGGER_LITERS,
+    CONF_RAIN_FACTOR,
     CONF_SOAK_DURATION,
     CONF_WATER_METER,
+    CONF_WATERING_MODE,
+    CONF_WATERING_WINDOWS,
     CONF_WEATHER_ENTITY,
+    CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
     DOMAIN,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
     SUBENTRY_TYPE_ZONE,
+    WATERING_MODE_DEMAND,
+    WATERING_MODE_MINIMUM,
 )
+from .scheduler import parse_daily_window
 
 INSTALLATION_SCHEMA = vol.Schema(
     {
@@ -176,15 +195,92 @@ ZONE_SCHEMA = vol.Schema(
                 unit_of_measurement=UnitOfTime.SECONDS,
             )
         ),
+        vol.Optional(CONF_AUTOMATION_ENABLED, default=False): BooleanSelector(),
+        vol.Optional(CONF_WATERING_MODE, default=WATERING_MODE_DEMAND): SelectSelector(
+            SelectSelectorConfig(
+                options=[WATERING_MODE_DEMAND, WATERING_MODE_MINIMUM],
+                translation_key=CONF_WATERING_MODE,
+            )
+        ),
+        vol.Optional(CONF_AREA_M2, default=1): NumberSelector(
+            NumberSelectorConfig(min=0.1, max=100_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_APPLICATION_EFFICIENCY, default=0.8): NumberSelector(
+            NumberSelectorConfig(min=0.01, max=1, step=0.01, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_CROP_FACTOR, default=1): NumberSelector(
+            NumberSelectorConfig(min=0, max=5, step=0.05, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_RAIN_FACTOR, default=1): NumberSelector(
+            NumberSelectorConfig(min=0, max=1, step=0.05, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_MAXIMUM_DEFICIT_MM, default=50): NumberSelector(
+            NumberSelectorConfig(min=0.1, max=1_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_MINIMUM_INTERVAL_DAYS, default=1): NumberSelector(
+            NumberSelectorConfig(min=0, max=365, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_MAXIMUM_INTERVAL_DAYS, default=7): NumberSelector(
+            NumberSelectorConfig(min=0.1, max=365, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_MINIMUM_TRIGGER_LITERS, default=1): NumberSelector(
+            NumberSelectorConfig(min=0, max=1_000_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_MANDATORY_AMOUNT_LITERS, default=1): NumberSelector(
+            NumberSelectorConfig(min=0, max=1_000_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_MINIMUM_EFFECTIVE_LITERS, default=0.1): NumberSelector(
+            NumberSelectorConfig(min=0.001, max=1_000_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_MAXIMUM_TARGET_LITERS, default=1_000): NumberSelector(
+            NumberSelectorConfig(min=0.001, max=1_000_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_AUTOMATIC_MAX_DURATION, default=3600): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=14_400,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_ZONE_PRIORITY, default=0): NumberSelector(
+            NumberSelectorConfig(min=-100, max=100, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_WATERING_WINDOWS, default=["04:00-06:00"]): TextSelector(
+            {"multiple": True}
+        ),
     }
 )
+
+
+def _validate_zone_input(user_input: dict[str, Any]) -> str | None:
+    """Return a form error for invalid interval/window automation settings."""
+    try:
+        windows = user_input.get(CONF_WATERING_WINDOWS, [])
+        if not isinstance(windows, list) or not windows:
+            raise ValueError
+        for value in windows:
+            parse_daily_window(value)
+        if float(user_input[CONF_MAXIMUM_INTERVAL_DAYS]) < float(
+            user_input[CONF_MINIMUM_INTERVAL_DAYS]
+        ):
+            return "invalid_intervals"
+        if user_input.get(CONF_AUTOMATION_ENABLED) and not all(
+            isinstance(user_input.get(key), int | float) and float(user_input[key]) > 0
+            for key in (CONF_MIN_FLOW, CONF_MAX_FLOW)
+        ):
+            return "automation_requires_flow_profile"
+    except KeyError, TypeError, ValueError:
+        return "invalid_watering_windows"
+    return None
 
 
 class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create and reconfigure irrigation installations."""
 
     VERSION = 1
-    MINOR_VERSION = 0
+    MINOR_VERSION = 1
 
     @override
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -214,6 +310,10 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Add a zone to the parent irrigation installation."""
         if user_input is not None:
+            if error := _validate_zone_input(user_input):
+                return self.async_show_form(
+                    step_id="user", data_schema=ZONE_SCHEMA, errors={"base": error}
+                )
             if self._valve_is_configured(user_input[CONF_ZONE_VALVE]):
                 return self.async_abort(reason="already_configured")
             return self.async_create_entry(
@@ -231,6 +331,12 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry()
         if user_input is not None:
+            if error := _validate_zone_input(user_input):
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=self.add_suggested_values_to_schema(ZONE_SCHEMA, user_input),
+                    errors={"base": error},
+                )
             if self._valve_is_configured(
                 user_input[CONF_ZONE_VALVE],
                 excluding_subentry_id=subentry.subentry_id,

@@ -201,3 +201,63 @@ assign_water:
           step: 0.001
           unit_of_measurement: L
           mode: box
+plan_automatic:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    dry_run:
+      required: false
+      default: false
+      selector:
+        boolean:
+    at:
+      required: false
+      selector:
+        datetime:
+finalize_daily_weather:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    period_id:
+      required: true
+      selector:
+        text:
+    reference_evapotranspiration:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.01
+          unit_of_measurement: mm
+          mode: box
+    rain:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 0.01
+          unit_of_measurement: mm
+          mode: box
+skip_automatic:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id:
+      required: true
+      selector:
+        text:
+    at:
+      required: false
+      selector:
+        datetime:

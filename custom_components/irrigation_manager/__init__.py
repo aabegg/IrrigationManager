@@ -78,6 +78,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Mark legacy entries compatible with additive automatic-planning defaults."""
+    if entry.version != 1:
+        return False
+    if entry.minor_version < 1:
+        hass.config_entries.async_update_entry(entry, minor_version=1)
+    return True
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -> bool:
     """Unload one irrigation installation."""
     await entry.runtime_data.manager.async_shutdown()

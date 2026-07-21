@@ -28,13 +28,47 @@
     "list_requests": {"name": "Bewässerungsaufträge auflisten", "description": "Gibt persistierte manuelle Bewässerungsaufträge zurück."},
     "cancel_request": {"name": "Bewässerungsauftrag stornieren", "description": "Storniert einen ausgewählten Auftrag."},
     "pause_request": {"name": "Bewässerungsauftrag pausieren", "description": "Pausiert einen Auftrag und bewahrt sein Restziel."},
-    "resume_request": {"name": "Bewässerungsauftrag fortsetzen", "description": "Setzt einen pausierten Auftrag fort."}
+    "resume_request": {"name": "Bewässerungsauftrag fortsetzen", "description": "Setzt einen pausierten Auftrag fort."},
+    "plan_automatic": {
+      "name": "Automatische Bewässerung planen",
+      "description": "Plant aktuelle Bewässerungsgelegenheiten deterministisch, optional als Trockenlauf.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "dry_run": {"name": "Trockenlauf"},
+        "at": {"name": "Planungszeitpunkt"}
+      }
+    },
+    "finalize_daily_weather": {
+      "name": "Tageswetter finalisieren",
+      "description": "Verrechnet finale Referenzverdunstung und Regen je Bilanzzeitraum genau einmal.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "period_id": {"name": "Zeitraum-ID"},
+        "reference_evapotranspiration": {"name": "Referenzverdunstung"},
+        "rain": {"name": "Gemessener Regen"}
+      }
+    },
+    "skip_automatic": {
+      "name": "Automatische Bewässerung einmal überspringen",
+      "description": "Unterdrückt die aktuelle Bewässerungsgelegenheit einer Zone auch über Neustarts hinweg.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "zone_subentry_id": {"name": "Bewässerungszone"},
+        "at": {"name": "Zeitpunkt der Gelegenheit"}
+      }
+    }
   },
   "selector": {
     "meter_failure_strategy": {
       "options": {
         "abort": "Abbrechen",
         "estimated_time_fallback": "Geschätzter Zeitersatz"
+      }
+    },
+    "watering_mode": {
+      "options": {
+        "demand": "Bedarfsbewässerung",
+        "minimum": "Mindestbewässerung"
       }
     }
   },
@@ -48,6 +82,9 @@
       },
       "installation_safety_lock": {
         "name": "Anlagen-Sicherheitssperre"
+      },
+      "automation_needed": {
+        "name": "Automatische Bewässerung benötigt"
       }
     },
     "sensor": {
@@ -87,7 +124,11 @@
           "estimated": "Geschätzt",
           "unknown": "Unbekannt"
         }
-      }
+      },
+      "water_deficit": {"name": "Wasserdefizit"},
+      "automatic_target": {"name": "Automatisches Ziel"},
+      "next_watering_window": {"name": "Nächstes Bewässerungsfenster"},
+      "planning_reason": {"name": "Planungsgrund"}
     }
   },
   "config": {
@@ -138,10 +179,27 @@
             "meter_failure_strategy": "Zählerausfallstrategie",
             "max_dose_amount": "Maximale Teilgabemenge",
             "max_dose_duration": "Maximale Teilgabedauer",
-            "soak_duration": "Sickerpause"
+            "soak_duration": "Sickerpause",
+            "automation_enabled": "Automatikfreigabe",
+            "watering_mode": "Bewässerungsmodus",
+            "area_m2": "Fläche in Quadratmetern",
+            "application_efficiency": "Anwendungseffizienz",
+            "crop_factor": "Pflanzen- und Standortfaktor",
+            "rain_factor": "Wirksamer Regenfaktor",
+            "maximum_deficit_mm": "Maximales Wasserdefizit",
+            "minimum_interval_days": "Minimaler Abstand in Tagen",
+            "maximum_interval_days": "Maximaler Abstand in Tagen",
+            "minimum_trigger_liters": "Mindestbedarf für Auslösung",
+            "mandatory_amount_liters": "Verbindliche Mindestmenge",
+            "minimum_effective_liters": "Wirksame Mindestmenge",
+            "maximum_target_liters": "Maximales automatisches Ziel",
+            "automatic_max_duration": "Maximale automatische Dauer",
+            "zone_priority": "Zonenpriorität",
+            "watering_windows": "Tägliche Bewässerungsfenster"
           },
           "data_description": {
-            "meter_failure_strategy": "Gilt nur beim Ausfall eines konfigurierten kumulativen Zählers. Der geschätzte Ersatz setzt zeitgesteuert mit dem Durchflussprofil der Zone fort. Ohne kumulativen Zähler sind Mengenziele nicht verfügbar."
+            "meter_failure_strategy": "Gilt beim Ausfall eines konfigurierten kumulativen Zählers. Ohne Zähler laufen automatische Ziele zeitgesteuert anhand des Durchflussprofils.",
+            "watering_windows": "Ein oder mehrere tägliche Zeiträume im Format HH:MM-HH:MM. Ein früheres Ende reicht über Mitternacht."
           }
         },
         "reconfigure": {
@@ -156,15 +214,37 @@
             "meter_failure_strategy": "Zählerausfallstrategie",
             "max_dose_amount": "Maximale Teilgabemenge",
             "max_dose_duration": "Maximale Teilgabedauer",
-            "soak_duration": "Sickerpause"
+            "soak_duration": "Sickerpause",
+            "automation_enabled": "Automatikfreigabe",
+            "watering_mode": "Bewässerungsmodus",
+            "area_m2": "Fläche in Quadratmetern",
+            "application_efficiency": "Anwendungseffizienz",
+            "crop_factor": "Pflanzen- und Standortfaktor",
+            "rain_factor": "Wirksamer Regenfaktor",
+            "maximum_deficit_mm": "Maximales Wasserdefizit",
+            "minimum_interval_days": "Minimaler Abstand in Tagen",
+            "maximum_interval_days": "Maximaler Abstand in Tagen",
+            "minimum_trigger_liters": "Mindestbedarf für Auslösung",
+            "mandatory_amount_liters": "Verbindliche Mindestmenge",
+            "minimum_effective_liters": "Wirksame Mindestmenge",
+            "maximum_target_liters": "Maximales automatisches Ziel",
+            "automatic_max_duration": "Maximale automatische Dauer",
+            "zone_priority": "Zonenpriorität",
+            "watering_windows": "Tägliche Bewässerungsfenster"
           },
           "data_description": {
-            "meter_failure_strategy": "Gilt nur beim Ausfall eines konfigurierten kumulativen Zählers. Der geschätzte Ersatz setzt zeitgesteuert mit dem Durchflussprofil der Zone fort. Ohne kumulativen Zähler sind Mengenziele nicht verfügbar."
+            "meter_failure_strategy": "Gilt beim Ausfall eines konfigurierten kumulativen Zählers. Ohne Zähler laufen automatische Ziele zeitgesteuert anhand des Durchflussprofils.",
+            "watering_windows": "Ein oder mehrere tägliche Zeiträume im Format HH:MM-HH:MM. Ein früheres Ende reicht über Mitternacht."
           }
         }
       },
       "abort": {
         "already_configured": "Dieses Zonenventil ist bereits konfiguriert."
+      },
+      "error": {
+        "invalid_intervals": "Der maximale Abstand darf nicht kürzer als der minimale Abstand sein.",
+        "invalid_watering_windows": "Mindestens ein gültiges Bewässerungsfenster im Format HH:MM-HH:MM ist erforderlich.",
+        "automation_requires_flow_profile": "Die Automatikfreigabe benötigt minimalen und maximalen Durchfluss."
       }
     }
   }

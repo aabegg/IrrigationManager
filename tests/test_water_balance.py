@@ -8,6 +8,7 @@ from custom_components.irrigation_manager.water_balance import (
     WaterBalancePeriod,
     ZoneWaterBalance,
     apply_water_balance,
+    calculate_effective_irrigation_mm,
     calculate_fao56_daily,
     calculate_hargreaves_daily,
     calculate_irrigation_target_liters,
@@ -67,3 +68,12 @@ def test_calculate_irrigation_target_accounts_for_application_efficiency() -> No
         area_m2=20.0,
         application_efficiency=0.8,
     ) == pytest.approx(300.0)
+
+
+def test_delivered_gross_water_converts_back_to_effective_depth() -> None:
+    """Apply the inverse area/efficiency conversion when accounting delivery."""
+    assert calculate_effective_irrigation_mm(
+        delivered_liters=300,
+        area_m2=20,
+        application_efficiency=0.8,
+    ) == pytest.approx(12)

@@ -10,6 +10,8 @@ from custom_components.irrigation_manager.models import (
 from custom_components.irrigation_manager.scheduler import (
     WateringMode,
     ZonePlanningInput,
+    active_and_next_window,
+    decide_zone_schedule,
     dose_target,
     plan_orders,
     select_manual_request,
@@ -100,6 +102,87 @@ def test_plan_orders_creates_partial_only_when_minimum_effective_dose_fits() -> 
     assert orders[0].is_partial is True
 
 
+def _automatic_zone(*, mode: WateringMode, target: float) -> ZonePlanningInput:
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    return ZonePlanningInput(
+        zone_id="lawn",
+        mode=mode,
+        calculated_target_liters=target,
+        minimum_target_liters=20,
+        maximum_target_liters=100,
+        minimum_effective_liters=1,
+        flow_liters_per_minute=10,
+        relative_need=target / 100,
+        priority=1,
+        window_end=now + timedelta(hours=2),
+    )
+
+
+def test_demand_mode_skips_below_trigger_even_after_maximum_interval() -> None:
+    """A maximum interval does not manufacture demand in demand mode."""
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    decision = decide_zone_schedule(
+        now=now,
+        zone=_automatic_zone(mode=WateringMode.DEMAND, target=4),
+        watering_windows=["03:00-05:00"],
+        last_effective_irrigation=now - timedelta(days=10),
+        minimum_interval=timedelta(days=1),
+        maximum_interval=timedelta(days=7),
+        minimum_trigger_liters=5,
+    )
+
+    assert decision.order is None
+    assert decision.reason == "demand_below_trigger"
+
+
+def test_minimum_mode_releases_mandatory_amount_at_maximum_interval() -> None:
+    """Guarantee the configured minimum only when the maximum interval is due."""
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    decision = decide_zone_schedule(
+        now=now,
+        zone=_automatic_zone(mode=WateringMode.MINIMUM, target=0),
+        watering_windows=["03:00-05:00"],
+        last_effective_irrigation=now - timedelta(days=7),
+        minimum_interval=timedelta(days=1),
+        maximum_interval=timedelta(days=7),
+        minimum_trigger_liters=5,
+    )
+
+    assert decision.order is not None
+    assert decision.order.target_liters == 20
+
+
+def test_minimum_interval_blocks_an_otherwise_needed_zone() -> None:
+    """Never create an automatic target before the effective minimum interval."""
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    decision = decide_zone_schedule(
+        now=now,
+        zone=_automatic_zone(mode=WateringMode.DEMAND, target=50),
+        watering_windows=["03:00-05:00"],
+        last_effective_irrigation=now - timedelta(hours=12),
+        minimum_interval=timedelta(days=1),
+        maximum_interval=timedelta(days=7),
+        minimum_trigger_liters=5,
+    )
+
+    assert decision.order is None
+    assert decision.reason == "minimum_interval"
+
+
+def test_cross_midnight_window_resolves_to_one_stable_opportunity() -> None:
+    """Keep both sides of midnight in the opportunity that began the prior day."""
+    before_midnight = datetime(2026, 7, 21, 23, 30, tzinfo=UTC)
+    after_midnight = datetime(2026, 7, 22, 1, 0, tzinfo=UTC)
+
+    first, _ = active_and_next_window(now=before_midnight, values=["22:00-02:00"])
+    second, _ = active_and_next_window(now=after_midnight, values=["22:00-02:00"])
+
+    assert first is not None
+    assert second is not None
+    assert first.opportunity_id == second.opportunity_id
+    assert first.end == datetime(2026, 7, 22, 2, 0, tzinfo=UTC)
+
+
 def _manual_request(
     *, sequence: int, status: str = "pending", soak_until: datetime | None = None
 ) -> ManualIrrigationRequest:
@@ -174,3 +257,33 @@ def test_manual_scheduler_blocks_every_request_for_a_zone_that_is_still_soaking(
         )
         == other_zone
     )
+
+
+def test_manual_request_has_priority_over_an_older_automatic_request() -> None:
+    """Let explicit user intent pass every not-yet-started automatic order."""
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    automatic = replace(_manual_request(sequence=1), source="automatic")
+    manual = _manual_request(sequence=2)
+
+    assert select_manual_request(now=now, requests=[automatic, manual]) == manual
+
+
+def test_automatic_requests_use_window_need_and_priority_not_creation_sequence() -> None:
+    """Preserve scheduler priority when requests were created by different replans."""
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    later = replace(
+        _manual_request(sequence=1),
+        source="automatic",
+        automatic_window_end=(now + timedelta(hours=2)).isoformat(),
+        automatic_relative_need=1.0,
+        automatic_priority=10,
+    )
+    urgent = replace(
+        _manual_request(sequence=2),
+        source="automatic",
+        automatic_window_end=(now + timedelta(hours=1)).isoformat(),
+        automatic_relative_need=0.1,
+        automatic_priority=0,
+    )
+
+    assert select_manual_request(now=now, requests=[later, urgent]) == urgent

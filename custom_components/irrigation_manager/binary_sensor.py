@@ -47,7 +47,14 @@ async def async_setup_entry(
                     installation_id=installation_id,
                     zone_id=zone_id,
                     zone_name=subentry.title,
-                )
+                ),
+                ZoneAutomationNeededBinarySensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                ),
             ],
             config_subentry_id=subentry.subentry_id,
         )
@@ -164,3 +171,49 @@ class ZoneSafetyLockBinarySensor(CoordinatorEntity[IrrigationCoordinator], Binar
         """Expose the lock reason when present."""
         reason = self.coordinator.data.zone_safety_locks.get(self._zone_id)
         return {"reason": reason} if reason is not None else {}
+
+
+class ZoneAutomationNeededBinarySensor(
+    CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity
+):
+    """Expose whether current deficit/rhythm policy calls for automatic water."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "automation_needed"
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_id: str,
+        zone_name: str,
+    ) -> None:
+        """Initialize one zone demand indicator."""
+        super().__init__(coordinator)
+        self._zone_id = zone_id
+        self._attr_unique_id = f"{zone_id}_automation_needed"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, zone_id)},
+            name=zone_name,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation zone",
+            via_device=(DOMAIN, installation_id),
+        )
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        """Return true while automatic irrigation is needed."""
+        return self.coordinator.data.zone_automation_needed.get(self._zone_id, False)
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Expose the current scheduler explanation."""
+        return {
+            "reason": self.coordinator.data.zone_planning_reason.get(
+                self._zone_id, "automation_disabled"
+            )
+        }

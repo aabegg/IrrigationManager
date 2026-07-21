@@ -28,13 +28,47 @@
     "list_requests": {"name": "List irrigation requests", "description": "Return persisted manual irrigation requests."},
     "cancel_request": {"name": "Cancel irrigation request", "description": "Cancel one selected request."},
     "pause_request": {"name": "Pause irrigation request", "description": "Pause one selected request and preserve its remaining target."},
-    "resume_request": {"name": "Resume irrigation request", "description": "Resume one paused request."}
+    "resume_request": {"name": "Resume irrigation request", "description": "Resume one paused request."},
+    "plan_automatic": {
+      "name": "Plan automatic irrigation",
+      "description": "Deterministically plan the current watering opportunities, optionally without creating requests.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "dry_run": {"name": "Dry run"},
+        "at": {"name": "Planning time", "description": "Optional deterministic planning instant."}
+      }
+    },
+    "finalize_daily_weather": {
+      "name": "Finalize daily weather",
+      "description": "Apply one finalized ET0 and rain period to every zone exactly once.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "period_id": {"name": "Period ID", "description": "Stable date or accounting-period identifier."},
+        "reference_evapotranspiration": {"name": "Reference evapotranspiration"},
+        "rain": {"name": "Measured rain"}
+      }
+    },
+    "skip_automatic": {
+      "name": "Skip automatic watering once",
+      "description": "Suppress the current watering opportunity for one zone, including across restarts.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "zone_subentry_id": {"name": "Irrigation zone"},
+        "at": {"name": "Opportunity time"}
+      }
+    }
   },
   "selector": {
     "meter_failure_strategy": {
       "options": {
         "abort": "Abort",
         "estimated_time_fallback": "Estimated time fallback"
+      }
+    },
+    "watering_mode": {
+      "options": {
+        "demand": "Demand watering",
+        "minimum": "Minimum watering"
       }
     }
   },
@@ -48,6 +82,9 @@
       },
       "installation_safety_lock": {
         "name": "Installation safety lock"
+      },
+      "automation_needed": {
+        "name": "Automatic irrigation needed"
       }
     },
     "sensor": {
@@ -87,7 +124,11 @@
           "estimated": "Estimated",
           "unknown": "Unknown"
         }
-      }
+      },
+      "water_deficit": {"name": "Water deficit"},
+      "automatic_target": {"name": "Automatic target"},
+      "next_watering_window": {"name": "Next watering window"},
+      "planning_reason": {"name": "Planning reason"}
     }
   },
   "config": {
@@ -138,10 +179,27 @@
             "meter_failure_strategy": "Meter failure strategy",
             "max_dose_amount": "Maximum dose amount",
             "max_dose_duration": "Maximum dose duration",
-            "soak_duration": "Soak duration"
+            "soak_duration": "Soak duration",
+            "automation_enabled": "Automatic release",
+            "watering_mode": "Watering mode",
+            "area_m2": "Area in square meters",
+            "application_efficiency": "Application efficiency",
+            "crop_factor": "Crop and location factor",
+            "rain_factor": "Effective rain factor",
+            "maximum_deficit_mm": "Maximum water deficit",
+            "minimum_interval_days": "Minimum interval in days",
+            "maximum_interval_days": "Maximum interval in days",
+            "minimum_trigger_liters": "Minimum demand trigger",
+            "mandatory_amount_liters": "Mandatory minimum amount",
+            "minimum_effective_liters": "Effective irrigation threshold",
+            "maximum_target_liters": "Maximum automatic target",
+            "automatic_max_duration": "Maximum automatic duration",
+            "zone_priority": "Zone priority",
+            "watering_windows": "Daily watering windows"
           },
           "data_description": {
-            "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, volume targets are unavailable."
+            "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
+            "watering_windows": "One or more fixed daily windows in HH:MM-HH:MM form. An end before the start crosses midnight."
           }
         },
         "reconfigure": {
@@ -156,15 +214,37 @@
             "meter_failure_strategy": "Meter failure strategy",
             "max_dose_amount": "Maximum dose amount",
             "max_dose_duration": "Maximum dose duration",
-            "soak_duration": "Soak duration"
+            "soak_duration": "Soak duration",
+            "automation_enabled": "Automatic release",
+            "watering_mode": "Watering mode",
+            "area_m2": "Area in square meters",
+            "application_efficiency": "Application efficiency",
+            "crop_factor": "Crop and location factor",
+            "rain_factor": "Effective rain factor",
+            "maximum_deficit_mm": "Maximum water deficit",
+            "minimum_interval_days": "Minimum interval in days",
+            "maximum_interval_days": "Maximum interval in days",
+            "minimum_trigger_liters": "Minimum demand trigger",
+            "mandatory_amount_liters": "Mandatory minimum amount",
+            "minimum_effective_liters": "Effective irrigation threshold",
+            "maximum_target_liters": "Maximum automatic target",
+            "automatic_max_duration": "Maximum automatic duration",
+            "zone_priority": "Zone priority",
+            "watering_windows": "Daily watering windows"
           },
           "data_description": {
-            "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, volume targets are unavailable."
+            "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
+            "watering_windows": "One or more fixed daily windows in HH:MM-HH:MM form. An end before the start crosses midnight."
           }
         }
       },
       "abort": {
         "already_configured": "This zone valve is already configured."
+      },
+      "error": {
+        "invalid_intervals": "The maximum interval must not be shorter than the minimum interval.",
+        "invalid_watering_windows": "Enter at least one valid HH:MM-HH:MM watering window.",
+        "automation_requires_flow_profile": "Automatic release requires minimum and maximum flow values."
       }
     }
   }

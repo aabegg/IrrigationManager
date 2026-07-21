@@ -24,6 +24,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.irrigation_manager.const import DOMAIN
 from custom_components.irrigation_manager.models import (
     ActiveExecutionState,
+    IrrigationExecutionState,
+    ManualIrrigationRequest,
     StoredInstallationState,
 )
 from custom_components.irrigation_manager.services import START_MANUAL_SCHEMA
@@ -89,6 +91,11 @@ async def test_storage_migrates_legacy_state(hass: HomeAssistant) -> None:
     assert state.manual_requests == ()
     assert state.irrigation_executions == ()
     assert state.next_request_sequence == 1
+    assert state.zone_deficit_mm == {}
+    assert state.zone_last_effective_irrigation == {}
+    assert state.finalized_weather_periods == {}
+    assert state.suppressed_automatic_opportunities == ()
+    assert state.uncredited_balance_deliveries == ()
 
 
 async def test_storage_migrates_active_execution_without_resetting_minor_six_state(
@@ -137,6 +144,137 @@ async def test_storage_migrates_active_execution_without_resetting_minor_six_sta
     assert state.active_execution.requested_amount_liters is None
     assert state.active_execution.meter_failure_strategy == "abort"
     assert state.active_execution.fallback_checkpoint_at is None
+
+
+async def test_storage_migrates_balance_snapshots_and_skip_suppressions_from_minor_ten(
+    hass: HomeAssistant,
+) -> None:
+    """Make legacy request accounting explicitly conservative after migration."""
+    now = datetime(2026, 7, 21, 10, 0, tzinfo=UTC).isoformat()
+    request = ManualIrrigationRequest(
+        request_id="legacy-request",
+        sequence=1,
+        zone_id="zone-1",
+        zone_subentry_id="subentry-1",
+        zone_name="Lawn",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=60,
+        remaining_value=60,
+        created_at=now,
+        expires_at=(datetime.fromisoformat(now) + timedelta(hours=1)).isoformat(),
+    )
+    execution = IrrigationExecutionState(
+        execution_id="legacy-execution",
+        request_id=request.request_id,
+        zone_id=request.zone_id,
+        target_type=request.target_type,
+        target_value=request.target_value,
+        remaining_value=request.remaining_value,
+        status="waiting",
+        created_at=now,
+    )
+    data = StoredInstallationState(
+        manual_requests=(request,),
+        irrigation_executions=(execution,),
+    ).as_dict()
+    data.pop("suppressed_automatic_opportunities")
+    for key in ("manual_requests", "irrigation_executions"):
+        records = data[key]
+        assert isinstance(records, list)
+        for record in records:
+            assert isinstance(record, dict)
+            for field in (
+                "balance_area_m2",
+                "balance_application_efficiency",
+                "balance_maximum_deficit_mm",
+                "balance_minimum_effective_liters",
+            ):
+                record.pop(field)
+    await Store[dict[str, object]](
+        hass,
+        1,
+        "irrigation_manager.minor-ten",
+        atomic_writes=True,
+        minor_version=10,
+    ).async_save(data)
+
+    state = await IrrigationStore(hass, "minor-ten").async_load()
+
+    assert state.suppressed_automatic_opportunities == ()
+    assert state.manual_requests[0].balance_area_m2 is None
+    assert state.irrigation_executions[0].balance_area_m2 is None
+
+
+async def test_storage_migrates_active_snapshot_from_linked_minor_eleven_request(
+    hass: HomeAssistant,
+) -> None:
+    """Backfill a legacy active checkpoint from its immutable linked request."""
+    now = datetime(2026, 7, 21, 10, 0, tzinfo=UTC).isoformat()
+    request = ManualIrrigationRequest(
+        request_id="linked-request",
+        sequence=1,
+        zone_id="zone-1",
+        zone_subentry_id="subentry-1",
+        zone_name="Lawn",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=60,
+        remaining_value=60,
+        created_at=now,
+        expires_at=(datetime.fromisoformat(now) + timedelta(hours=1)).isoformat(),
+        status="executing",
+        execution_id="linked-execution",
+        balance_area_m2=10,
+        balance_application_efficiency=0.5,
+        balance_maximum_deficit_mm=50,
+        balance_minimum_effective_liters=2,
+    )
+    execution = IrrigationExecutionState(
+        execution_id="linked-execution",
+        request_id=request.request_id,
+        zone_id=request.zone_id,
+        target_type=request.target_type,
+        target_value=request.target_value,
+        remaining_value=request.remaining_value,
+        status="watering",
+        created_at=now,
+    )
+    state = StoredInstallationState(
+        manual_requests=(request,),
+        irrigation_executions=(execution,),
+        active_execution=ActiveExecutionState(
+            zone_id=request.zone_id,
+            zone_valve=request.zone_valve,
+            main_valve=None,
+            meter_raw_baseline_liters=None,
+            prepared_at=now,
+            watering_started_at=now,
+            requested_duration_seconds=60,
+            estimated_flow_l_min=10,
+            request_id=request.request_id,
+            execution_id=execution.execution_id,
+        ),
+    )
+    data = state.as_dict()
+    data.pop("uncredited_balance_deliveries")
+    await Store[dict[str, object]](
+        hass,
+        1,
+        "irrigation_manager.minor-eleven-linked",
+        atomic_writes=True,
+        minor_version=11,
+    ).async_save(data)
+
+    migrated = await IrrigationStore(hass, "minor-eleven-linked").async_load()
+
+    assert migrated.active_execution is not None
+    assert migrated.active_execution.balance_area_m2 == 10
+    assert migrated.active_execution.balance_application_efficiency == 0.5
+    assert migrated.irrigation_executions[0].balance_maximum_deficit_mm == 50
+    assert migrated.uncredited_balance_deliveries == ()
 
 
 async def test_setup_closes_an_open_main_valve(hass: HomeAssistant) -> None:
