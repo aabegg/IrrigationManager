@@ -42,6 +42,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             installation_total_liters=stored_state.installation_total_liters,
             zone_totals_liters=stored_state.zone_totals_liters,
             zone_measurement_quality=stored_state.zone_measurement_quality,
+            zone_last_delivered_liters=stored_state.zone_last_delivered_liters,
+            zone_last_duration_seconds=stored_state.zone_last_duration_seconds,
             unassigned_total_liters=stored_state.unassigned_total_liters,
             status="emergency_stop" if stored_state.emergency_stop else "idle",
             emergency_stop=stored_state.emergency_stop,

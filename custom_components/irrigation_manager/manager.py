@@ -91,7 +91,16 @@ class IrrigationManager:
             return
 
         delivered_liters = 0.0
+        delivered_duration_seconds = 0.0
         quality = "unknown"
+        if active.watering_started_at is not None:
+            started_at = datetime.fromisoformat(active.watering_started_at)
+            delivered_duration_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+            if not could_have_flowed:
+                delivered_duration_seconds = min(
+                    delivered_duration_seconds,
+                    active.requested_duration_seconds,
+                )
         if (
             active.watering_started_at is not None
             and active.meter_raw_baseline_liters is not None
@@ -113,17 +122,18 @@ class IrrigationManager:
             and active.watering_started_at is not None
             and active.estimated_flow_l_min is not None
         ):
-            started_at = datetime.fromisoformat(active.watering_started_at)
-            elapsed_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
-            if not could_have_flowed:
-                elapsed_seconds = min(elapsed_seconds, active.requested_duration_seconds)
-            delivered_liters = elapsed_seconds * active.estimated_flow_l_min / 60
+            delivered_liters = delivered_duration_seconds * active.estimated_flow_l_min / 60
             quality = "estimated"
 
         zone_totals = dict(self._stored_state.zone_totals_liters)
         zone_totals[active.zone_id] = zone_totals.get(active.zone_id, 0.0) + delivered_liters
         measurement_quality = dict(self._stored_state.zone_measurement_quality)
-        measurement_quality[active.zone_id] = quality
+        last_delivered = dict(self._stored_state.zone_last_delivered_liters)
+        last_duration = dict(self._stored_state.zone_last_duration_seconds)
+        if active.watering_started_at is not None:
+            measurement_quality[active.zone_id] = quality
+            last_delivered[active.zone_id] = delivered_liters
+            last_duration[active.zone_id] = delivered_duration_seconds
         self._stored_state = replace(
             self._stored_state,
             installation_total_liters=(
@@ -131,6 +141,8 @@ class IrrigationManager:
             ),
             zone_totals_liters=zone_totals,
             zone_measurement_quality=measurement_quality,
+            zone_last_delivered_liters=last_delivered,
+            zone_last_duration_seconds=last_duration,
             active_execution=None,
         )
         await self._store.async_save(self._stored_state)
@@ -179,12 +191,10 @@ class IrrigationManager:
             await self._async_close_entities(unexpectedly_open)
         except Exception as err:  # noqa: BLE001
             close_error = err
-        self._stored_state = StoredInstallationState(
-            installation_total_liters=self._stored_state.installation_total_liters,
-            zone_totals_liters=dict(self._stored_state.zone_totals_liters),
-            zone_measurement_quality=dict(self._stored_state.zone_measurement_quality),
-            unassigned_total_liters=self._stored_state.unassigned_total_liters,
+        self._stored_state = replace(
+            self._stored_state,
             emergency_stop=True,
+            active_execution=None,
         )
         await self._store.async_save(self._stored_state)
         self._publish(status="emergency_stop", active_zone_id=None)
@@ -358,14 +368,10 @@ class IrrigationManager:
         zone_id = subentry.unique_id or subentry.subentry_id
         zone_totals = dict(self._stored_state.zone_totals_liters)
         zone_totals[zone_id] = zone_totals.get(zone_id, 0.0) + amount_liters
-        measurement_quality = dict(self._stored_state.zone_measurement_quality)
-        measurement_quality[zone_id] = "measured"
-        self._stored_state = StoredInstallationState(
-            installation_total_liters=self._stored_state.installation_total_liters,
+        self._stored_state = replace(
+            self._stored_state,
             zone_totals_liters=zone_totals,
-            zone_measurement_quality=measurement_quality,
             unassigned_total_liters=(self._stored_state.unassigned_total_liters - amount_liters),
-            emergency_stop=self._stored_state.emergency_stop,
         )
         await self._store.async_save(self._stored_state)
         self._publish(status="idle", active_zone_id=None)
@@ -394,16 +400,23 @@ class IrrigationManager:
                 if estimated_flow_l_min is not None
                 else "unknown"
             )
-            self._stored_state = StoredInstallationState(
+            last_delivered = dict(self._stored_state.zone_last_delivered_liters)
+            last_delivered[request.zone_id] = delivered_liters
+            last_duration = dict(self._stored_state.zone_last_duration_seconds)
+            last_duration[request.zone_id] = result.duration_seconds
+            self._stored_state = replace(
+                self._stored_state,
                 installation_total_liters=(
                     self._stored_state.installation_total_liters + delivered_liters
                 ),
                 zone_totals_liters=zone_totals,
                 zone_measurement_quality=measurement_quality,
-                unassigned_total_liters=self._stored_state.unassigned_total_liters,
+                zone_last_delivered_liters=last_delivered,
+                zone_last_duration_seconds=last_duration,
                 emergency_stop=(
                     self._stored_state.emergency_stop or result.safety_violation is not None
                 ),
+                active_execution=None,
             )
             await self._store.async_save(self._stored_state)
             if result.safety_violation is not None:
@@ -417,13 +430,15 @@ class IrrigationManager:
 
     def _publish(self, *, status: str, active_zone_id: str | None) -> None:
         """Publish one consistent snapshot from persisted runtime state."""
-        if self._stored_state.emergency_stop and status == "idle":
+        if self._stored_state.emergency_stop:
             status = "emergency_stop"
         self._coordinator.set_snapshot(
             InstallationSnapshot(
                 installation_total_liters=(self._stored_state.installation_total_liters),
                 zone_totals_liters=dict(self._stored_state.zone_totals_liters),
                 zone_measurement_quality=dict(self._stored_state.zone_measurement_quality),
+                zone_last_delivered_liters=dict(self._stored_state.zone_last_delivered_liters),
+                zone_last_duration_seconds=dict(self._stored_state.zone_last_duration_seconds),
                 unassigned_total_liters=self._stored_state.unassigned_total_liters,
                 status=status,
                 active_zone_id=active_zone_id,

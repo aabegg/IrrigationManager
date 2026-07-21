@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfVolume
+from homeassistant.const import UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -71,6 +71,20 @@ async def async_setup_entry(
                 installation_id=installation_id,
                 description=UNASSIGNED_WATER_TOTAL_DESCRIPTION,
             ),
+            InstallationStatusSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+            ),
+            ActiveZoneSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                zone_names={
+                    (subentry.unique_id or subentry.subentry_id): subentry.title
+                    for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+                },
+            ),
         ]
     )
 
@@ -84,7 +98,28 @@ async def async_setup_entry(
                     installation_id=installation_id,
                     zone_id=zone_id,
                     zone_name=subentry.title,
-                )
+                ),
+                ZoneLastDeliveredSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                ),
+                ZoneLastDurationSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                ),
+                ZoneMeasurementQualitySensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                ),
             ],
             config_subentry_id=subentry.subentry_id,
         )
@@ -120,6 +155,71 @@ class InstallationWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEn
     def native_value(self) -> Decimal:
         """Return the normalized cumulative total."""
         return Decimal(str(self._value_fn(self.coordinator.data)))
+
+
+class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Current operating state of one irrigation installation."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "status"
+    _attr_device_class = SensorDeviceClass.ENUM
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+    ) -> None:
+        """Initialize the installation status entity."""
+        super().__init__(coordinator)
+        self._attr_options = ["idle", "watering", "error", "emergency_stop"]
+        self._attr_unique_id = f"{installation_id}_status"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> str:
+        """Return the current installation status."""
+        return self.coordinator.data.status
+
+
+class ActiveZoneSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Human-readable active irrigation zone."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "active_zone"
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_names: dict[str, str],
+    ) -> None:
+        """Initialize the active-zone entity."""
+        super().__init__(coordinator)
+        self._zone_names = zone_names
+        self._attr_unique_id = f"{installation_id}_active_zone"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> str | None:
+        """Return the active zone name or no value while idle."""
+        active_zone_id = self.coordinator.data.active_zone_id
+        return self._zone_names.get(active_zone_id) if active_zone_id else None
 
 
 class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
@@ -168,3 +268,83 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
                 self._zone_id, "unknown"
             )
         }
+
+
+class _ZoneObservationSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Base entity for a zone's latest delivery observations."""
+
+    _attr_has_entity_name = True
+    _observation_key: str
+    _enum_options: tuple[str, ...] | None = None
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_id: str,
+        zone_name: str,
+    ) -> None:
+        """Initialize one zone observation entity."""
+        super().__init__(coordinator)
+        if self._enum_options is not None:
+            self._attr_options = list(self._enum_options)
+        self._zone_id = zone_id
+        self._attr_unique_id = f"{zone_id}_{self._observation_key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, zone_id)},
+            name=zone_name,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation zone",
+            via_device=(DOMAIN, installation_id),
+        )
+
+
+class ZoneLastDeliveredSensor(_ZoneObservationSensor):
+    """Water delivered by the latest irrigation dose."""
+
+    _attr_translation_key = "last_delivered"
+    _attr_device_class = SensorDeviceClass.WATER
+    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_suggested_display_precision = 1
+    _observation_key = "last_delivered"
+
+    @property
+    @override
+    def native_value(self) -> Decimal | None:
+        """Return the latest delivered amount."""
+        value = self.coordinator.data.zone_last_delivered_liters.get(self._zone_id)
+        return Decimal(str(value)) if value is not None else None
+
+
+class ZoneLastDurationSensor(_ZoneObservationSensor):
+    """Watering duration of the latest irrigation dose."""
+
+    _attr_translation_key = "last_duration"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_suggested_display_precision = 1
+    _observation_key = "last_duration"
+
+    @property
+    @override
+    def native_value(self) -> Decimal | None:
+        """Return the latest delivered duration."""
+        value = self.coordinator.data.zone_last_duration_seconds.get(self._zone_id)
+        return Decimal(str(value)) if value is not None else None
+
+
+class ZoneMeasurementQualitySensor(_ZoneObservationSensor):
+    """Measurement quality of the latest irrigation dose."""
+
+    _attr_translation_key = "measurement_quality"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _observation_key = "measurement_quality"
+    _enum_options = ("measured", "estimated", "unknown")
+
+    @property
+    @override
+    def native_value(self) -> str:
+        """Return the latest contribution's measurement quality."""
+        return self.coordinator.data.zone_measurement_quality.get(self._zone_id, "unknown")

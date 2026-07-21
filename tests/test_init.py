@@ -207,11 +207,30 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
     installation_entity_id = registry.async_get_entity_id(
         "sensor", DOMAIN, "installation-1_water_total"
     )
+    status_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "installation-1_status")
+    active_zone_entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, "installation-1_active_zone"
+    )
+    last_delivered_entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, "zone-1_last_delivered"
+    )
+    last_duration_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_last_duration")
+    quality_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_measurement_quality")
     assert zone_entity_id is not None
     assert installation_entity_id is not None
+    assert status_entity_id is not None
+    assert active_zone_entity_id is not None
+    assert last_delivered_entity_id is not None
+    assert last_duration_entity_id is not None
+    assert quality_entity_id is not None
     assert hass.states.get(zone_entity_id).state == "25.0"
     assert hass.states.get(zone_entity_id).attributes["measurement_quality"] == "measured"
     assert hass.states.get(installation_entity_id).state == "25.0"
+    assert hass.states.get(status_entity_id).state == "idle"
+    assert hass.states.get(active_zone_entity_id).state == "unknown"
+    assert hass.states.get(last_delivered_entity_id).state == "25.0"
+    assert hass.states.get(last_duration_entity_id).state == "0.001"
+    assert hass.states.get(quality_entity_id).state == "measured"
     assert operations == [
         ("turn_on", "switch.main"),
         ("turn_on", "switch.zone_lawn"),
@@ -299,6 +318,15 @@ async def test_stop_actions_close_active_valves_and_account_partial_water(
         blocking=False,
     )
     await zone_opened.wait()
+    registry = er.async_get(hass)
+    status_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "installation-1_status")
+    active_zone_entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, "installation-1_active_zone"
+    )
+    assert status_entity_id is not None
+    assert active_zone_entity_id is not None
+    assert hass.states.get(status_entity_id).state == "watering"
+    assert hass.states.get(active_zone_entity_id).state == "Rasen"
     await hass.services.async_call(
         DOMAIN,
         stop_service,
@@ -389,7 +417,7 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
     assert installation_entity_id is not None
     assert unassigned_entity_id is not None
     assert hass.states.get(zone_entity_id).state == "4.0"
-    assert hass.states.get(zone_entity_id).attributes["measurement_quality"] == "measured"
+    assert hass.states.get(zone_entity_id).attributes["measurement_quality"] == "unknown"
     assert hass.states.get(installation_entity_id).state == "10.0"
     assert hass.states.get(unassigned_entity_id).state == "6.0"
 

@@ -12,6 +12,32 @@
       },
       "unassigned_water_total": {
         "name": "Unzugeordneter Wasserverbrauch"
+      },
+      "status": {
+        "name": "Status",
+        "state": {
+          "idle": "Leerlauf",
+          "watering": "Bewässerung",
+          "error": "Fehler",
+          "emergency_stop": "Not-Aus"
+        }
+      },
+      "active_zone": {
+        "name": "Aktive Zone"
+      },
+      "last_delivered": {
+        "name": "Letzte gelieferte Menge"
+      },
+      "last_duration": {
+        "name": "Letzte Bewässerungsdauer"
+      },
+      "measurement_quality": {
+        "name": "Messqualität",
+        "state": {
+          "measured": "Gemessen",
+          "estimated": "Geschätzt",
+          "unknown": "Unbekannt"
+        }
       }
     }
   },
