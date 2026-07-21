@@ -46,6 +46,7 @@ SERVICE_ASSIGN_WATER = "assign_water"
 SERVICE_PLAN_AUTOMATIC = "plan_automatic"
 SERVICE_FINALIZE_DAILY_WEATHER = "finalize_daily_weather"
 SERVICE_SKIP_AUTOMATIC = "skip_automatic"
+SERVICE_CLEAR_FORECAST_DEFERRAL = "clear_forecast_deferral"
 SERVICE_EXPORT_CONFIG = "export_config"
 SERVICE_EXPORT_HISTORY = "export_history"
 SERVICE_RESOLVE_BALANCE_RECONCILIATION = "resolve_balance_reconciliation"
@@ -263,6 +264,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             now=cast(Any, call.data.get(ATTR_AT)),
         )
 
+    async def clear_forecast_deferral(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_clear_forecast_deferral(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID])
+        )
+
     async def export_config(call: ServiceCall) -> dict[str, Any]:
         return manager_for(call).export_portable_config()
 
@@ -399,6 +405,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
                 vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
                 vol.Optional(ATTR_AT): cv.datetime,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAR_FORECAST_DEFERRAL,
+        clear_forecast_deferral,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+                vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
             }
         ),
         supports_response=SupportsResponse.OPTIONAL,

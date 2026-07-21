@@ -261,6 +261,17 @@ skip_automatic:
       required: false
       selector:
         datetime:
+clear_forecast_deferral:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id:
+      required: true
+      selector:
+        text:
 export_config:
   fields:
     config_entry_id:

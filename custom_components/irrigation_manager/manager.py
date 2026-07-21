@@ -8,9 +8,9 @@ import math
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from homeassistant.config_entries import ConfigEntry
@@ -23,7 +23,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
@@ -41,9 +41,13 @@ from .const import (
     CONF_AUTOMATION_ENABLED,
     CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_CROP_FACTOR,
+    CONF_ET0_SENSORS,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
+    CONF_FORECAST_DEFERRAL_HOURS,
+    CONF_FORECAST_RAIN_PROBABILITY,
+    CONF_FORECAST_RAIN_THRESHOLD_MM,
     CONF_FROST_ENTITY,
     CONF_FROST_THRESHOLD,
     CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
@@ -58,6 +62,7 @@ from .const import (
     CONF_MAX_DELIVERY_RUNTIME,
     CONF_MAX_DOSE_AMOUNT,
     CONF_MAX_DOSE_DURATION,
+    CONF_MAX_EFFECTIVE_RAIN_MM,
     CONF_MAX_FLOW,
     CONF_MAX_OPERATION_LIFETIME,
     CONF_MAXIMUM_DEFICIT_MM,
@@ -69,16 +74,24 @@ from .const import (
     CONF_MINIMUM_EFFECTIVE_LITERS,
     CONF_MINIMUM_INTERVAL_DAYS,
     CONF_MINIMUM_TRIGGER_LITERS,
+    CONF_OPEN_METEO_ENABLED,
     CONF_RAIN_FACTOR,
+    CONF_RAIN_SENSORS,
     CONF_RAIN_STOP_ENTITY,
     CONF_RAIN_STOP_THRESHOLD,
+    CONF_SEASONAL_CROP_FACTORS,
     CONF_SOAK_DURATION,
+    CONF_TEMPERATURE_SENSORS,
     CONF_WATER_METER,
     CONF_WATERING_MODE,
     CONF_WATERING_WINDOWS,
+    CONF_WEATHER_BACKFILL_DAYS,
     CONF_WEATHER_ENTITY,
     CONF_WEATHER_FAILURE_POLICY,
+    CONF_WEATHER_FALLBACK_DAYS,
+    CONF_WEATHER_FINALIZATION_TIME,
     CONF_WEATHER_MAX_AGE_SECONDS,
+    CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
     EXPORT_SCHEMA_VERSION,
@@ -115,7 +128,15 @@ from .water_balance import (
     ZoneWaterBalance,
     apply_water_balance,
     calculate_effective_irrigation_mm,
+    calculate_effective_rain,
     calculate_irrigation_target_liters,
+)
+from .weather import (
+    Et0Result,
+    RainForecast,
+    WeatherOrchestrator,
+    calculate_seasonal_value,
+    seasonal_et0,
 )
 
 
@@ -193,6 +214,23 @@ class IrrigationManager:
             installation_name=entry.title,
             config=self._installation_data,
         )
+        self._weather = WeatherOrchestrator(hass, self._installation_data)
+        self._weather_schedule_unsubscribers: list[Callable[[], None]] = []
+        self._weather_model_quality = "unavailable"
+        self._weather_model_method = "unavailable"
+        self._weather_automation_available = not self._weather_model_configured
+        self._reference_evapotranspiration_mm: float | None = None
+        self._measured_rain_mm: float | None = None
+        self._weather_period_id: str | None = None
+        self._weather_last_finalized_at: str | None = None
+        self._rain_forecast: RainForecast | None = None
+        self._zone_provisional_deficit_mm: dict[str, float] = {}
+        self._zone_crop_evapotranspiration_mm: dict[str, float] = {}
+        self._zone_effective_rain_mm: dict[str, float] = {}
+        self._zone_calculation_explanations: dict[str, dict[str, object]] = {}
+        self._provisional_period_id: str | None = None
+        self._last_weather_preview_at: datetime | None = None
+        self._restore_latest_weather_snapshot()
         self._has_meter = bool(self._installation_data.get(CONF_WATER_METER))
         self._actuators = HomeAssistantActuators(
             hass,
@@ -270,6 +308,71 @@ class IrrigationManager:
         self._maintenance_flow_samples: list[float] = []
         self._refresh_complete_idle_event()
 
+    @property
+    def _weather_model_configured(self) -> bool:
+        """Return whether automatic water modeling has an explicit source."""
+        has_rain_source = bool(
+            self._installation_data.get(CONF_RAIN_SENSORS)
+            or self._installation_data.get(CONF_OPEN_METEO_ENABLED)
+        )
+        has_et_source = bool(
+            self._installation_data.get(CONF_WEATHER_ENTITY)
+            or self._installation_data.get(CONF_TEMPERATURE_SENSORS)
+            or self._installation_data.get(CONF_ET0_SENSORS)
+            or self._installation_data.get(CONF_OPEN_METEO_ENABLED)
+        )
+        return has_rain_source and has_et_source
+
+    def _restore_latest_weather_snapshot(self) -> None:
+        """Restore published model metadata without recomputing historical periods."""
+        snapshots = self._stored_state.weather_calculation_snapshots
+        if not snapshots:
+            return
+        period_id = max(snapshots)
+        snapshot = snapshots[period_id]
+        et0 = snapshot.get("et0")
+        if not isinstance(et0, dict):
+            return
+        value = et0.get("value_mm")
+        self._reference_evapotranspiration_mm = (
+            float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+        )
+        rain = snapshot.get("rain_mm")
+        self._measured_rain_mm = (
+            float(rain) if isinstance(rain, int | float) and not isinstance(rain, bool) else None
+        )
+        self._weather_model_quality = str(et0.get("quality", "unavailable"))
+        self._weather_model_method = str(et0.get("method", "unavailable"))
+        self._weather_period_id = period_id
+        finalized_at = snapshot.get("finalized_at")
+        self._weather_last_finalized_at = finalized_at if isinstance(finalized_at, str) else None
+        self._weather_automation_available = self._reference_evapotranspiration_mm is not None
+        zones = snapshot.get("zones")
+        if isinstance(zones, dict):
+            self._zone_calculation_explanations = {
+                str(key): dict(value) for key, value in zones.items() if isinstance(value, dict)
+            }
+            self._zone_crop_evapotranspiration_mm = self._numeric_zone_snapshot_values(
+                cast(dict[str, dict[str, object]], zones), "crop_evapotranspiration_mm"
+            )
+            self._zone_effective_rain_mm = self._numeric_zone_snapshot_values(
+                cast(dict[str, dict[str, object]], zones), "effective_rain_mm"
+            )
+
+    @staticmethod
+    def _numeric_zone_snapshot_values(
+        zones: Mapping[str, dict[str, object]], key: str
+    ) -> dict[str, float]:
+        """Extract finite per-zone numbers from a persisted explanation snapshot."""
+        result: dict[str, float] = {}
+        for zone_id, raw in zones.items():
+            value = raw.get(key)
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                numeric = float(value)
+                if math.isfinite(numeric):
+                    result[str(zone_id)] = numeric
+        return result
+
     async def async_request_config_reload(self) -> None:
         """Coalesce a persisted config update and apply it only at complete idle."""
         if self._shutting_down or self._pending_reload_task is not None:
@@ -315,6 +418,103 @@ class IrrigationManager:
             self._complete_idle_event.set()
         else:
             self._complete_idle_event.clear()
+
+    def _setup_weather_schedule(self) -> None:
+        """Check local-day work on an elapsed interval that cannot be skipped by DST."""
+        self._weather_schedule_unsubscribers.append(
+            async_track_time_interval(
+                self._hass,
+                self._async_scheduled_weather_tick,
+                timedelta(minutes=15),
+                name="Irrigation Manager weather due check",
+            )
+        )
+
+    async def _async_weather_startup(self) -> None:
+        """Backfill every retained missing day and publish today's provisional balance."""
+        now = dt_util.now()
+        await self._async_backfill_weather_days(now, through_yesterday=True)
+        await self.async_update_weather_preview(now=now)
+        await self.async_plan_automatic(now=now)
+
+    async def _async_scheduled_weather_tick(self, now: datetime) -> None:
+        """Run idempotent due work without depending on one local wall-clock minute."""
+        if not self._weather_model_configured:
+            return
+        finalized = await self._async_backfill_weather_days(now)
+        preview_interval = timedelta(
+            hours=max(
+                1,
+                min(
+                    12,
+                    int(
+                        self._number(
+                            self._installation_data,
+                            CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
+                            1,
+                        )
+                    ),
+                ),
+            )
+        )
+        preview_due = (
+            self._last_weather_preview_at is None
+            or now.astimezone(UTC) - self._last_weather_preview_at >= preview_interval
+        )
+        if preview_due:
+            await self.async_update_weather_preview(now=now)
+        if finalized or preview_due:
+            await self.async_plan_automatic(now=now)
+
+    async def _async_backfill_weather_days(
+        self, now: datetime, *, through_yesterday: bool = False
+    ) -> list[str]:
+        """Finalize every missing retained local day in chronological order."""
+        local_now = dt_util.as_local(now)
+        raw_finalization = str(
+            self._installation_data.get(CONF_WEATHER_FINALIZATION_TIME, "00:10:00")
+        )
+        try:
+            finalization = time.fromisoformat(raw_finalization)
+        except ValueError:
+            finalization = time(0, 10)
+        due_day = local_now.date() - timedelta(
+            days=(
+                1
+                if through_yesterday or local_now.time().replace(tzinfo=None) >= finalization
+                else 2
+            )
+        )
+        finalized_dates = [
+            date.fromisoformat(period_id)
+            for period_id in self._stored_state.finalized_weather_periods
+            if self._is_iso_date(period_id)
+        ]
+        retention_days = int(self._number(self._installation_data, CONF_WEATHER_BACKFILL_DAYS, 14))
+        retention_start = due_day - timedelta(days=max(1, retention_days) - 1)
+        start = (
+            max(max(finalized_dates) + timedelta(days=1), retention_start)
+            if finalized_dates
+            else retention_start
+        )
+        finalized: list[str] = []
+        current = start
+        while current <= due_day:
+            period_id = current.isoformat()
+            if period_id not in self._stored_state.finalized_weather_periods:
+                await self.async_finalize_weather_day(current)
+                finalized.append(period_id)
+            current += timedelta(days=1)
+        return finalized
+
+    @staticmethod
+    def _is_iso_date(value: str) -> bool:
+        """Return whether a persisted period identifier is a calendar date."""
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            return False
+        return True
 
     async def async_initialize(self) -> None:
         """Close configured valves left open across a restart."""
@@ -382,6 +582,13 @@ class IrrigationManager:
             self._async_weather_freshness_watchdog(),
             "Irrigation Manager weather freshness watchdog",
         )
+        self._setup_weather_schedule()
+        if self._weather_model_configured:
+            self._entry.async_create_background_task(
+                self._hass,
+                self._async_weather_startup(),
+                "Irrigation Manager weather startup reconciliation",
+            )
         if self._leak_monitoring and self._flow is not None:
             flow_entity_id = self._installation_data[CONF_FLOW_SENSOR]
             self._unsubscribe_flow = async_track_state_change_event(
@@ -513,6 +720,9 @@ class IrrigationManager:
         for unsubscribe in self._state_unsubscribers:
             unsubscribe()
         self._state_unsubscribers.clear()
+        for unsubscribe in self._weather_schedule_unsubscribers:
+            unsubscribe()
+        self._weather_schedule_unsubscribers.clear()
         for task in self._feedback_watchdog_tasks.values():
             task.cancel()
         if self._feedback_watchdog_tasks:
@@ -1588,13 +1798,23 @@ class IrrigationManager:
         """Build reproducible per-zone decisions from config and durable balance."""
         decisions: list[tuple[_ZoneConfigSnapshot, ZonePlanningInput, ZoneScheduleDecision]] = []
         weather = self._weather_safety()
+        provisional_current = (
+            self._provisional_period_id
+            == now.astimezone(dt_util.DEFAULT_TIME_ZONE).date().isoformat()
+        )
         for subentry in self._zone_configs:
             zone_id = subentry.unique_id or subentry.subentry_id
             data = subentry.data
             maximum_deficit = self._number(data, CONF_MAXIMUM_DEFICIT_MM, 50.0)
+            final_deficit = self._stored_state.zone_deficit_mm.get(zone_id, 0.0)
+            planning_deficit = (
+                self._zone_provisional_deficit_mm.get(zone_id, final_deficit)
+                if provisional_current
+                else final_deficit
+            )
             deficit = min(
                 maximum_deficit,
-                max(0.0, self._stored_state.zone_deficit_mm.get(zone_id, 0.0)),
+                max(0.0, planning_deficit),
             )
             area = self._number(data, CONF_AREA_M2, 1.0)
             efficiency = self._number(data, CONF_APPLICATION_EFFICIENCY, 0.8)
@@ -1630,6 +1850,7 @@ class IrrigationManager:
                     or zone_id in self._stored_state.zone_safety_locks
                     or weather.frost_blocked
                     or weather.rain_stop_active
+                    or (self._weather_model_configured and not self._weather_automation_available)
                 ),
             )
             last_value = self._stored_state.zone_last_effective_irrigation.get(zone_id)
@@ -1653,6 +1874,10 @@ class IrrigationManager:
                 ),
                 minimum_trigger_liters=self._number(data, CONF_MINIMUM_TRIGGER_LITERS, 1.0),
             )
+            if decision.order is not None and self._forecast_defers_zone(
+                zone_id=zone_id, data=data, now=now
+            ):
+                decision = replace(decision, order=None, reason="forecast_rain_deferred")
             if (
                 decision.active_window is not None
                 and self._automatic_request_id(zone_id, decision.active_window.opportunity_id)
@@ -1666,14 +1891,127 @@ class IrrigationManager:
             decisions.append((subentry, planning_input, decision))
         return decisions
 
+    def _forecast_defers_zone(
+        self, *, zone_id: str, data: Mapping[str, Any], now: datetime
+    ) -> bool:
+        """Apply bounded forecast deferral without changing deficit or target."""
+        if zone_id in self._stored_state.cancelled_forecast_deferrals:
+            return False
+        deadline_value = self._stored_state.forecast_deferral_deadlines.get(zone_id)
+        if deadline_value is not None:
+            return now < datetime.fromisoformat(deadline_value)
+        if not self._forecast_qualifies(data, now=now, zone_id=zone_id):
+            return False
+        maximum_hours = self._number(data, CONF_FORECAST_DEFERRAL_HOURS, 24)
+        return now < now + timedelta(hours=maximum_hours)
+
+    def _forecast_qualifies(self, data: Mapping[str, Any], *, now: datetime, zone_id: str) -> bool:
+        """Return whether the current forecast meets one zone's explicit thresholds."""
+        forecast = self._rain_forecast
+        probability = forecast.probability_percent if forecast is not None else None
+        provisional_current = (
+            self._provisional_period_id
+            == now.astimezone(dt_util.DEFAULT_TIME_ZONE).date().isoformat()
+        )
+        available_storage = (
+            self._zone_provisional_deficit_mm.get(
+                zone_id, self._stored_state.zone_deficit_mm.get(zone_id, 0)
+            )
+            if provisional_current
+            else self._stored_state.zone_deficit_mm.get(zone_id, 0)
+        )
+        expected_effective_rain = (
+            calculate_effective_rain(
+                measured_rain_mm=forecast.amount_mm,
+                rain_factor=self._number(data, CONF_RAIN_FACTOR, 1),
+                maximum_infiltration_mm=self._number(data, CONF_MAX_EFFECTIVE_RAIN_MM, 25),
+                available_storage_mm=available_storage,
+            ).effective_mm
+            if forecast is not None
+            else 0.0
+        )
+        return bool(
+            forecast is not None
+            and self._number(data, CONF_FORECAST_DEFERRAL_HOURS, 24) > 0
+            and forecast.valid_at
+            <= now + timedelta(hours=self._number(data, CONF_FORECAST_DEFERRAL_HOURS, 24))
+            and expected_effective_rain >= self._number(data, CONF_FORECAST_RAIN_THRESHOLD_MM, 5)
+            and probability is not None
+            and probability >= self._number(data, CONF_FORECAST_RAIN_PROBABILITY, 70)
+        )
+
     async def async_plan_automatic(
         self, *, dry_run: bool = False, now: datetime | None = None
     ) -> dict[str, object]:
         """Plan current automatic opportunities and optionally persist their requests."""
         planning_now = now or dt_util.now()
+        if self._weather_model_configured:
+            self._rain_forecast = await self._weather.async_rain_forecast(planning_now)
         async with self._command_lock:
             if not dry_run:
                 await self._async_expire_requests(now=planning_now)
+                deferrals = dict(self._stored_state.forecast_deferral_started)
+                deadlines = dict(self._stored_state.forecast_deferral_deadlines)
+                cancelled_deferrals = set(self._stored_state.cancelled_forecast_deferrals)
+                changed_deferrals = False
+                for subentry in self._zone_configs:
+                    zone_id = subentry.unique_id or subentry.subentry_id
+                    qualifies = self._forecast_qualifies(
+                        subentry.data, now=planning_now, zone_id=zone_id
+                    )
+                    deadline_value = deadlines.get(zone_id)
+                    if zone_id in deferrals and deadline_value is None:
+                        deadline_value = (
+                            datetime.fromisoformat(deferrals[zone_id])
+                            + timedelta(
+                                hours=self._number(subentry.data, CONF_FORECAST_DEFERRAL_HOURS, 24)
+                            )
+                        ).isoformat()
+                        deadlines[zone_id] = deadline_value
+                        changed_deferrals = True
+                    expired = deadline_value is not None and planning_now >= datetime.fromisoformat(
+                        deadline_value
+                    )
+                    if expired:
+                        deferrals.pop(zone_id, None)
+                        deadlines.pop(zone_id, None)
+                        cancelled_deferrals.add(zone_id)
+                        changed_deferrals = True
+                    if (
+                        qualifies
+                        and zone_id not in deferrals
+                        and zone_id not in cancelled_deferrals
+                    ):
+                        deferrals[zone_id] = planning_now.isoformat()
+                        deadlines[zone_id] = (
+                            planning_now
+                            + timedelta(
+                                hours=self._number(subentry.data, CONF_FORECAST_DEFERRAL_HOURS, 24)
+                            )
+                        ).isoformat()
+                        changed_deferrals = True
+                        self._events.fire(
+                            "automatic_irrigation_deferred",
+                            reason="forecast_rain",
+                            target=self._events.zone_target(zone_id),
+                            measurements={
+                                "forecast_rain_mm": (
+                                    self._rain_forecast.amount_mm if self._rain_forecast else 0.0
+                                )
+                            },
+                            quality=self._rain_forecast.quality if self._rain_forecast else None,
+                        )
+                    elif not qualifies and zone_id in cancelled_deferrals:
+                        cancelled_deferrals.discard(zone_id)
+                        changed_deferrals = True
+                if changed_deferrals:
+                    self._stored_state = replace(
+                        self._stored_state,
+                        forecast_deferral_started=deferrals,
+                        forecast_deferral_deadlines=deadlines,
+                        cancelled_forecast_deferrals=tuple(sorted(cancelled_deferrals)),
+                    )
+                    await self._store.async_save(self._stored_state)
             decisions = self._zone_schedule_decisions(now=planning_now)
             ordered = sorted(
                 decisions,
@@ -1907,6 +2245,9 @@ class IrrigationManager:
                 "cancelled_request_ids": [] if dry_run else cancelled,
                 "recreated_request_ids": [] if dry_run else recreated,
                 "weather_entity": self._weather_snapshot(),
+                "rain_forecast": (
+                    self._rain_forecast.as_dict() if self._rain_forecast is not None else None
+                ),
                 "zones": [
                     {
                         "zone_id": planning_input.zone_id,
@@ -1972,12 +2313,50 @@ class IrrigationManager:
         self._planning_event.set()
         return {"opportunity_id": request_id, "suppressed": True}
 
+    async def async_clear_forecast_deferral(self, *, zone_subentry_id: str) -> dict[str, object]:
+        """Explicitly cancel one zone's persisted forecast delay."""
+        async with self._command_lock:
+            subentry = self._zone_configs_by_subentry_id.get(zone_subentry_id)
+            if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
+                raise HomeAssistantError("The irrigation zone does not exist")
+            zone_id = subentry.unique_id or subentry.subentry_id
+            existed = zone_id in self._stored_state.forecast_deferral_started
+            if existed:
+                self._stored_state = replace(
+                    self._stored_state,
+                    forecast_deferral_started={
+                        key: value
+                        for key, value in self._stored_state.forecast_deferral_started.items()
+                        if key != zone_id
+                    },
+                    forecast_deferral_deadlines={
+                        key: value
+                        for key, value in self._stored_state.forecast_deferral_deadlines.items()
+                        if key != zone_id
+                    },
+                    cancelled_forecast_deferrals=tuple(
+                        sorted({*self._stored_state.cancelled_forecast_deferrals, zone_id})
+                    ),
+                )
+                await self._store.async_save(self._stored_state)
+                self._planning_event.set()
+                self._publish(status=self._coordinator.data.status, active_zone_id=None)
+                self._events.fire(
+                    "automatic_irrigation_deferral_cancelled",
+                    reason="user_cancelled",
+                    target=self._events.zone_target(zone_id),
+                )
+            return {"zone_id": zone_id, "cancelled": existed}
+
     async def async_finalize_daily_weather(
         self,
         *,
         period_id: str,
         reference_evapotranspiration_mm: float,
         rain_mm: float,
+        calculation: Et0Result | None = None,
+        weather_inputs: Mapping[str, object] | None = None,
+        finalized_at: datetime | None = None,
     ) -> dict[str, object]:
         """Apply one finalized daily weather contribution exactly once."""
         if not all(
@@ -1995,28 +2374,111 @@ class IrrigationManager:
                     )
                 return {"applied": False, "period_id": period_id}
             deficits = dict(self._stored_state.zone_deficit_mm)
+            zone_snapshots: dict[str, dict[str, object]] = {}
+            period_day = date.fromisoformat(period_id)
             for subentry in self._zone_configs:
                 zone_id = subentry.unique_id or subentry.subentry_id
                 data = subentry.data
                 maximum = self._number(data, CONF_MAXIMUM_DEFICIT_MM, 50.0)
+                previous_deficit = deficits.get(zone_id, 0.0)
+                crop_factor = self._seasonal_crop_factor(data, period_day)
+                crop_et = reference_evapotranspiration_mm * crop_factor
+                effective_rain = calculate_effective_rain(
+                    measured_rain_mm=rain_mm,
+                    rain_factor=self._number(data, CONF_RAIN_FACTOR, 1.0),
+                    maximum_infiltration_mm=self._number(data, CONF_MAX_EFFECTIVE_RAIN_MM, 25.0),
+                    available_storage_mm=previous_deficit + crop_et,
+                )
                 updated = apply_water_balance(
-                    ZoneWaterBalance(deficits.get(zone_id, 0.0), maximum),
+                    ZoneWaterBalance(previous_deficit, maximum),
                     WaterBalancePeriod(
-                        crop_evapotranspiration_mm=(
-                            reference_evapotranspiration_mm
-                            * self._number(data, CONF_CROP_FACTOR, 1.0)
-                        ),
-                        effective_rain_mm=rain_mm * self._number(data, CONF_RAIN_FACTOR, 1.0),
+                        crop_evapotranspiration_mm=crop_et,
+                        effective_rain_mm=effective_rain.effective_mm,
                         effective_irrigation_mm=0.0,
                     ),
                 )
                 deficits[zone_id] = updated.deficit_mm
+                area = self._number(data, CONF_AREA_M2, 1.0)
+                efficiency = self._number(data, CONF_APPLICATION_EFFICIENCY, 0.8)
+                gross_target = calculate_irrigation_target_liters(
+                    deficit_mm=updated.deficit_mm,
+                    area_m2=area,
+                    application_efficiency=efficiency,
+                )
+                zone_snapshots[zone_id] = {
+                    "previous_deficit_mm": previous_deficit,
+                    "reference_evapotranspiration_mm": reference_evapotranspiration_mm,
+                    "seasonal_crop_and_location_factor": crop_factor,
+                    "crop_evapotranspiration_mm": crop_et,
+                    "measured_rain_mm": rain_mm,
+                    "rain_factor": self._number(data, CONF_RAIN_FACTOR, 1.0),
+                    "maximum_effective_rain_mm": self._number(
+                        data, CONF_MAX_EFFECTIVE_RAIN_MM, 25.0
+                    ),
+                    "effective_rain_mm": effective_rain.effective_mm,
+                    "runoff_mm": effective_rain.runoff_mm,
+                    "drainage_mm": effective_rain.drainage_mm,
+                    "final_deficit_mm": updated.deficit_mm,
+                    "maximum_deficit_mm": maximum,
+                    "target": {
+                        "net_depth_mm": updated.deficit_mm,
+                        "area_m2": area,
+                        "application_efficiency": efficiency,
+                        "gross_liters_before_limits": gross_target,
+                        "maximum_target_liters": self._number(
+                            data, CONF_MAXIMUM_TARGET_LITERS, 1_000.0
+                        ),
+                        "minimum_trigger_liters": self._number(
+                            data, CONF_MINIMUM_TRIGGER_LITERS, 1.0
+                        ),
+                        "watering_mode": str(data.get(CONF_WATERING_MODE, WateringMode.DEMAND)),
+                    },
+                }
             periods = dict(self._stored_state.finalized_weather_periods)
             periods[period_id] = signature
+            at = finalized_at or dt_util.now()
+            et0_snapshot = calculation or Et0Result(
+                reference_evapotranspiration_mm,
+                "manual",
+                "provided",
+                dict(weather_inputs or {}),
+                {},
+            )
+            snapshots = dict(self._stored_state.weather_calculation_snapshots)
+            snapshots[period_id] = {
+                "period_id": period_id,
+                "period_start": period_id,
+                "finalized_at": at.isoformat(),
+                "et0": et0_snapshot.as_dict(),
+                "rain_mm": rain_mm,
+                "weather_inputs": dict(weather_inputs or {}),
+                "zones": zone_snapshots,
+            }
+            snapshots = dict(sorted(snapshots.items())[-90:])
             self._stored_state = replace(
                 self._stored_state,
                 zone_deficit_mm=deficits,
                 finalized_weather_periods=periods,
+                weather_calculation_snapshots=snapshots,
+                weather_failure_since=(
+                    self._stored_state.weather_failure_since or at.isoformat()
+                    if et0_snapshot.method.endswith("_fallback")
+                    else None
+                ),
+            )
+            self._reference_evapotranspiration_mm = reference_evapotranspiration_mm
+            self._measured_rain_mm = rain_mm
+            self._weather_model_quality = et0_snapshot.quality
+            self._weather_model_method = et0_snapshot.method
+            self._weather_period_id = period_id
+            self._weather_last_finalized_at = at.isoformat()
+            self._weather_automation_available = True
+            self._zone_calculation_explanations = zone_snapshots
+            self._zone_crop_evapotranspiration_mm = self._numeric_zone_snapshot_values(
+                zone_snapshots, "crop_evapotranspiration_mm"
+            )
+            self._zone_effective_rain_mm = self._numeric_zone_snapshot_values(
+                zone_snapshots, "effective_rain_mm"
             )
             await self._store.async_save(self._stored_state)
             self._planning_event.set()
@@ -2030,9 +2492,239 @@ class IrrigationManager:
                     "rain_mm": rain_mm,
                 },
                 quality="final",
-                context={"period_id": period_id, "zone_deficit_mm": deficits},
+                context={
+                    "period_id": period_id,
+                    "zone_deficit_mm": deficits,
+                    "model": et0_snapshot.method,
+                },
             )
-            return {"applied": True, "period_id": period_id, "zone_deficit_mm": deficits}
+            return {
+                "applied": True,
+                "period_id": period_id,
+                "zone_deficit_mm": deficits,
+                "calculation": et0_snapshot.as_dict(),
+            }
+
+    async def async_finalize_weather_day(self, day: date) -> dict[str, object]:
+        """Acquire, calculate, and durably finalize one completed local day."""
+        if day.isoformat() in self._stored_state.finalized_weather_periods:
+            return {"applied": False, "period_id": day.isoformat()}
+        weather = await self._weather.async_daily_weather(day)
+        calculation = self._weather.calculate_et0(weather)
+        now = dt_util.now()
+        failure_since = self._stored_state.weather_failure_since
+        if calculation.value_mm is None or weather.rain_mm is None:
+            failure_start = datetime.fromisoformat(failure_since) if failure_since else now
+            fallback_days = self._number(self._installation_data, CONF_WEATHER_FALLBACK_DAYS, 3)
+            within_fallback = now <= failure_start + timedelta(days=fallback_days)
+            fallback_value: float | None = None
+            fallback_method = "unavailable"
+            if within_fallback:
+                latest = self._latest_final_weather_snapshot()
+                latest_period = (
+                    max(self._stored_state.weather_calculation_snapshots)
+                    if self._stored_state.weather_calculation_snapshots
+                    else None
+                )
+                if (
+                    latest is not None
+                    and latest_period is not None
+                    and abs((day - date.fromisoformat(latest_period)).days) <= fallback_days
+                ):
+                    et0 = latest.get("et0")
+                    candidate = et0.get("value_mm") if isinstance(et0, dict) else None
+                    if isinstance(candidate, int | float) and not isinstance(candidate, bool):
+                        fallback_value = float(candidate)
+                        fallback_method = "historical_fallback"
+                if fallback_value is None:
+                    fallback_value = seasonal_et0(self._installation_data, day)
+                    fallback_method = "seasonal_fallback"
+            if fallback_value is not None and weather.rain_mm is not None:
+                calculation = Et0Result(
+                    fallback_value,
+                    fallback_method,
+                    "degraded",
+                    weather.inputs(),
+                    calculation.comparisons,
+                    (*calculation.warnings, "weather_fallback_active"),
+                )
+            else:
+                self._weather_automation_available = False
+                self._weather_model_quality = "unknown"
+                self._weather_model_method = "unavailable"
+                reason = (
+                    "fallback_duration_exhausted"
+                    if not within_fallback
+                    else "required_observation_missing"
+                )
+                return await self._async_record_unknown_weather_day(
+                    day=day,
+                    calculation=calculation,
+                    weather_inputs=weather.inputs(),
+                    failure_start=failure_start,
+                    reason=reason,
+                )
+        assert calculation.value_mm is not None
+        assert weather.rain_mm is not None
+        return await self.async_finalize_daily_weather(
+            period_id=day.isoformat(),
+            reference_evapotranspiration_mm=calculation.value_mm,
+            rain_mm=weather.rain_mm.value,
+            calculation=calculation,
+            weather_inputs=weather.inputs(),
+            finalized_at=now,
+        )
+
+    async def _async_record_unknown_weather_day(
+        self,
+        *,
+        day: date,
+        calculation: Et0Result,
+        weather_inputs: Mapping[str, object],
+        failure_start: datetime,
+        reason: str,
+    ) -> dict[str, object]:
+        """Account for one unavailable day without inventing balance contributions."""
+        period_id = day.isoformat()
+        finalized_at = dt_util.now()
+        async with self._command_lock:
+            if period_id in self._stored_state.finalized_weather_periods:
+                return {"applied": False, "period_id": period_id}
+            periods = dict(self._stored_state.finalized_weather_periods)
+            periods[period_id] = json.dumps([None, None, reason], separators=(",", ":"))
+            snapshots = dict(self._stored_state.weather_calculation_snapshots)
+            zones = {
+                (subentry.unique_id or subentry.subentry_id): {
+                    "accounting_applied": False,
+                    "quality": "unknown",
+                    "reason": reason,
+                    "final_deficit_mm": self._stored_state.zone_deficit_mm.get(
+                        subentry.unique_id or subentry.subentry_id, 0.0
+                    ),
+                }
+                for subentry in self._zone_configs
+            }
+            snapshots[period_id] = {
+                "period_id": period_id,
+                "period_start": period_id,
+                "finalized_at": finalized_at.isoformat(),
+                "et0": {
+                    **calculation.as_dict(),
+                    "method": "unavailable",
+                    "quality": "unknown",
+                    "value_mm": None,
+                },
+                "rain_mm": None,
+                "weather_inputs": dict(weather_inputs),
+                "zones": zones,
+                "accounting_applied": False,
+                "reason": reason,
+            }
+            snapshots = dict(sorted(snapshots.items())[-90:])
+            self._stored_state = replace(
+                self._stored_state,
+                finalized_weather_periods=periods,
+                weather_calculation_snapshots=snapshots,
+                weather_failure_since=(
+                    self._stored_state.weather_failure_since or failure_start.isoformat()
+                ),
+            )
+            self._weather_model_quality = "unknown"
+            self._weather_model_method = "unavailable"
+            self._weather_period_id = period_id
+            self._weather_last_finalized_at = finalized_at.isoformat()
+            self._weather_automation_available = False
+            self._zone_calculation_explanations = zones
+            await self._store.async_save(self._stored_state)
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+        self._events.fire(
+            "weather_model_unavailable",
+            reason=reason,
+            target=self._events.installation_target(),
+            quality="unknown",
+            context={"period_id": period_id, "accounting_applied": False},
+        )
+        return {
+            "applied": True,
+            "accounting_applied": False,
+            "period_id": period_id,
+            "quality": "unknown",
+            "reason": reason,
+        }
+
+    async def async_update_weather_preview(
+        self, *, now: datetime | None = None
+    ) -> dict[str, object]:
+        """Publish a current-day estimate without mutating the durable balance."""
+        current = now or dt_util.now()
+        local_day = current.astimezone(dt_util.DEFAULT_TIME_ZONE).date()
+        weather = await self._weather.async_daily_weather(local_day, end=current)
+        calculation = self._weather.calculate_et0(weather)
+        provisional: dict[str, float] = {}
+        crop_values: dict[str, float] = {}
+        rain_values: dict[str, float] = {}
+        explanations: dict[str, dict[str, object]] = {}
+        if calculation.value_mm is not None and weather.rain_mm is not None:
+            for subentry in self._zone_configs:
+                zone_id = subentry.unique_id or subentry.subentry_id
+                data = subentry.data
+                previous = self._stored_state.zone_deficit_mm.get(zone_id, 0.0)
+                maximum = self._number(data, CONF_MAXIMUM_DEFICIT_MM, 50)
+                factor = self._seasonal_crop_factor(data, local_day)
+                crop_et = calculation.value_mm * factor
+                rain = calculate_effective_rain(
+                    measured_rain_mm=weather.rain_mm.value,
+                    rain_factor=self._number(data, CONF_RAIN_FACTOR, 1),
+                    maximum_infiltration_mm=self._number(data, CONF_MAX_EFFECTIVE_RAIN_MM, 25),
+                    available_storage_mm=previous + crop_et,
+                )
+                updated = apply_water_balance(
+                    ZoneWaterBalance(previous, maximum),
+                    WaterBalancePeriod(crop_et, rain.effective_mm, 0),
+                )
+                provisional[zone_id] = updated.deficit_mm
+                crop_values[zone_id] = crop_et
+                rain_values[zone_id] = rain.effective_mm
+                explanations[zone_id] = {
+                    "provisional": True,
+                    "period_id": local_day.isoformat(),
+                    "previous_final_deficit_mm": previous,
+                    "crop_evapotranspiration_mm": crop_et,
+                    "effective_rain_mm": rain.effective_mm,
+                    "provisional_deficit_mm": updated.deficit_mm,
+                    "model": calculation.as_dict(),
+                }
+        self._zone_provisional_deficit_mm = provisional
+        self._provisional_period_id = (
+            current.astimezone(dt_util.DEFAULT_TIME_ZONE).date().isoformat()
+        )
+        self._last_weather_preview_at = current.astimezone(UTC)
+        self._zone_crop_evapotranspiration_mm = crop_values
+        self._zone_effective_rain_mm = rain_values
+        if explanations:
+            self._zone_calculation_explanations = explanations
+        self._publish(status=self._coordinator.data.status, active_zone_id=None)
+        return {
+            "period_id": local_day.isoformat(),
+            "calculation": calculation.as_dict(),
+            "zone_provisional_deficit_mm": provisional,
+        }
+
+    def _seasonal_crop_factor(self, data: Mapping[str, Any], day: date) -> float:
+        """Return the configured base factor adjusted by its annual monthly curve."""
+        base = self._number(data, CONF_CROP_FACTOR, 1.0)
+        raw = data.get(CONF_SEASONAL_CROP_FACTORS)
+        if raw is None:
+            return base
+        try:
+            return base * calculate_seasonal_value(cast(str, raw), day)
+        except TypeError, ValueError:
+            return base
+
+    def _latest_final_weather_snapshot(self) -> dict[str, object] | None:
+        """Return the newest immutable weather snapshot, if any."""
+        snapshots = self._stored_state.weather_calculation_snapshots
+        return snapshots[max(snapshots)] if snapshots else None
 
     async def _async_automatic_planner(self) -> None:
         """Replan at window boundaries and after water-balance changes."""
@@ -2869,6 +3561,27 @@ class IrrigationManager:
                 "frost_blocked": weather.frost_blocked,
                 "rain_stop_active": weather.rain_stop_active,
                 "failure_policy": "fail_safe",
+            },
+            "weather_model": {
+                "configured": self._weather_model_configured,
+                "automation_available": self._weather_automation_available,
+                "quality": self._weather_model_quality,
+                "method": self._weather_model_method,
+                "period_id": self._weather_period_id,
+                "last_finalized_at": self._weather_last_finalized_at,
+                "fallback_since": self._stored_state.weather_failure_since,
+                "forecast": (
+                    self._rain_forecast.as_dict() if self._rain_forecast is not None else None
+                ),
+                "forecast_deferrals": {
+                    zone_id: {
+                        "started_at": started_at,
+                        "deadline": self._stored_state.forecast_deferral_deadlines.get(zone_id),
+                        "cancelled": zone_id in self._stored_state.cancelled_forecast_deferrals,
+                    }
+                    for zone_id, started_at in self._stored_state.forecast_deferral_started.items()
+                },
+                "latest_calculation": self._latest_final_weather_snapshot(),
             },
             "pending_config_reload": self._pending_reload_task is not None,
             "zone_safety_lock_ids": sorted(self._stored_state.zone_safety_locks),
@@ -4292,6 +5005,22 @@ class IrrigationManager:
                 frost_blocked=weather.frost_blocked,
                 rain_stop_active=weather.rain_stop_active,
                 weather_safety_status=weather.status,
+                weather_model_quality=self._weather_model_quality,
+                weather_model_method=self._weather_model_method,
+                reference_evapotranspiration_mm=(self._reference_evapotranspiration_mm),
+                measured_rain_mm=self._measured_rain_mm,
+                weather_period_id=self._weather_period_id,
+                weather_last_finalized_at=self._weather_last_finalized_at,
+                weather_automation_available=self._weather_automation_available,
+                rain_forecast=(
+                    self._rain_forecast.as_dict() if self._rain_forecast is not None else None
+                ),
+                zone_provisional_deficit_mm=dict(self._zone_provisional_deficit_mm),
+                zone_crop_evapotranspiration_mm=dict(self._zone_crop_evapotranspiration_mm),
+                zone_effective_rain_mm=dict(self._zone_effective_rain_mm),
+                zone_calculation_explanations={
+                    key: dict(value) for key, value in self._zone_calculation_explanations.items()
+                },
             )
         )
         self._refresh_complete_idle_event()
@@ -4342,12 +5071,10 @@ class IrrigationManager:
         """Return durable balance maps after one physically delivered contribution."""
         deficits = dict(self._stored_state.zone_deficit_mm)
         last_effective = dict(self._stored_state.zone_last_effective_irrigation)
-        if (
-            delivered_liters <= 0
-            or area_m2 is None
-            or application_efficiency is None
-            or maximum_deficit_mm is None
-        ):
+        if delivered_liters <= 0:
+            return deficits, last_effective
+        self._clear_forecast_deferral_state(zone_id)
+        if area_m2 is None or application_efficiency is None or maximum_deficit_mm is None:
             return deficits, last_effective
         effective_mm = calculate_effective_irrigation_mm(
             delivered_liters=delivered_liters,
@@ -4358,9 +5085,30 @@ class IrrigationManager:
             ZoneWaterBalance(deficits.get(zone_id, 0.0), maximum_deficit_mm),
             WaterBalancePeriod(0.0, 0.0, effective_mm),
         ).deficit_mm
+        if zone_id in self._zone_provisional_deficit_mm:
+            self._zone_provisional_deficit_mm[zone_id] = max(
+                0.0, self._zone_provisional_deficit_mm[zone_id] - effective_mm
+            )
         if effective_delivery:
             last_effective[zone_id] = delivered_at.isoformat()
         return deficits, last_effective
+
+    def _clear_forecast_deferral_state(self, zone_id: str) -> None:
+        """Remove one persisted forecast deadline without affecting the water balance."""
+        starts = dict(self._stored_state.forecast_deferral_started)
+        deadlines = dict(self._stored_state.forecast_deferral_deadlines)
+        starts.pop(zone_id, None)
+        deadlines.pop(zone_id, None)
+        self._stored_state = replace(
+            self._stored_state,
+            forecast_deferral_started=starts,
+            forecast_deferral_deadlines=deadlines,
+            cancelled_forecast_deferrals=tuple(
+                value
+                for value in self._stored_state.cancelled_forecast_deferrals
+                if value != zone_id
+            ),
+        )
 
     def _crosses_effective_threshold(
         self,

@@ -57,6 +57,14 @@
         "at": {"name": "Zeitpunkt der Gelegenheit"}
       }
     },
+    "clear_forecast_deferral": {
+      "name": "Prognoseaufschub abbrechen",
+      "description": "Bricht den persistierten Regenprognoseaufschub einer Bewässerungszone ab.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "zone_subentry_id": {"name": "Bewässerungszone"}
+      }
+    },
     "export_config": {
       "name": "Portable Konfiguration exportieren",
       "description": "Gibt die versionierte Anlagen- und Zonenkonfiguration ohne Geheimnisse zurück."
@@ -120,6 +128,12 @@
     },
     "weather_failure_policy": {
       "options": {"fail_safe": "Ausfallsicher (betroffene Bewässerung sperren)"}
+    },
+    "et0_priority": {
+      "options": {
+        "direct": "Direkte ET0 bevorzugen",
+        "calculated": "Berechnete ET0 bevorzugen"
+      }
     }
   },
   "entity": {
@@ -192,7 +206,26 @@
       "water_deficit": {"name": "Wasserdefizit"},
       "automatic_target": {"name": "Automatisches Ziel"},
       "next_watering_window": {"name": "Nächstes Bewässerungsfenster"},
-      "planning_reason": {"name": "Planungsgrund"}
+      "planning_reason": {"name": "Planungsgrund"},
+      "weather_model_quality": {
+        "name": "Qualität des Wettermodells",
+        "state": {
+          "observed": "Beobachtet",
+          "external_service": "Externer Dienst",
+          "calculated_high": "Berechnet, vollständige Eingaben",
+          "calculated_reduced": "Berechnet, reduzierte Eingaben",
+          "calculated_partial": "Berechnet, unvollständige Tagesabdeckung",
+          "degraded": "Zeitlich begrenzter Ersatz",
+          "provided": "Manuell vorgegeben",
+          "unknown": "Unbekannte Tageseingaben",
+          "unavailable": "Nicht verfügbar"
+        }
+      },
+      "reference_evapotranspiration": {"name": "Referenzverdunstung"},
+      "measured_rain": {"name": "Gemessener Regen"},
+      "provisional_water_deficit": {"name": "Vorläufiges Wasserdefizit"},
+      "crop_evapotranspiration": {"name": "Pflanzenverdunstung"},
+      "effective_rain": {"name": "Wirksamer Regen"}
     }
   },
   "config": {
@@ -211,6 +244,24 @@
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
           "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity",
+          "temperature_sensors": "Temperatursensoren nach Priorität",
+          "humidity_sensors": "Feuchtesensoren nach Priorität",
+          "wind_speed_sensors": "Windsensoren nach Priorität",
+          "local_wind_height_m": "Messhöhe lokaler Windsensoren",
+          "weather_wind_height_m": "Messhöhe des Winds der Wetter-Entity",
+          "solar_radiation_sensors": "Strahlungssensoren nach Priorität",
+          "sunshine_duration_sensors": "Sonnenscheindauersensoren nach Priorität",
+          "pressure_sensors": "Luftdrucksensoren nach Priorität",
+          "rain_sensors": "Regensensoren nach Priorität",
+          "et0_sensors": "Direkte ET0-Sensoren nach Priorität",
+          "et0_priority": "Priorität der ET0-Methode",
+          "open_meteo_enabled": "Open-Meteo als letzte Quelle verwenden",
+          "weather_observation_max_age_hours": "Maximales Alter der Beobachtungen",
+          "weather_fallback_days": "Maximale Ersatzdauer",
+          "weather_backfill_days": "Maximale Aufbewahrung für Wetternachholung",
+          "seasonal_et0_mm": "Monatlicher saisonaler ET0-Ersatz",
+          "weather_finalization_time": "Zeitpunkt der täglichen Wetterfinalisierung",
+          "weather_preview_interval_hours": "Intervall vorläufiger Aktualisierungen",
           "frost_entity": "Temperatur-Entity für Frost",
           "frost_threshold": "Schwellwert der Frostsperre",
           "rain_stop_entity": "Entity für aktuellen Regen",
@@ -233,12 +284,18 @@
           "leak_monitoring": "Bei konfiguriertem Durchflusssensor standardmäßig aktiv.",
           "leak_flow_threshold": "Ein dauerhaft höherer Durchfluss im Leerlauf gilt als Gefahr.",
           "leak_duration_seconds": "Kürzere Messartefakte und Nachlauf nach einer Bewässerung werden toleriert.",
-          "weather_entity": "Optionale Quelle für Wettermessungen und Prognosen."
+          "weather_entity": "Optionale Quelle für Wettermessungen und Prognosen.",
+          "local_wind_height_m": "Standard sind 2 m. Gib die physische Messhöhe der lokalen Windsensoren an; nur abweichende Höhen werden auf 2 m normalisiert.",
+          "weather_wind_height_m": "Standard sind 10 m, da Wetterdienste Wind üblicherweise in 10 m Höhe melden. Passe den Wert bei abweichender Dokumentation an.",
+          "weather_backfill_days": "Sicherheits- und Aufbewahrungsgrenze für nach einem Ausfall nachzuholende Tageszeiträume."
         }
       }
     },
     "abort": {
       "already_configured": "Diese Bewässerungsanlage ist bereits konfiguriert."
+    },
+    "error": {
+      "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein."
     }
   },
   "options": {
@@ -264,6 +321,24 @@
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
           "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity",
+          "temperature_sensors": "Temperatursensoren nach Priorität",
+          "humidity_sensors": "Feuchtesensoren nach Priorität",
+          "wind_speed_sensors": "Windsensoren nach Priorität",
+          "local_wind_height_m": "Messhöhe lokaler Windsensoren",
+          "weather_wind_height_m": "Messhöhe des Winds der Wetter-Entity",
+          "solar_radiation_sensors": "Strahlungssensoren nach Priorität",
+          "sunshine_duration_sensors": "Sonnenscheindauersensoren nach Priorität",
+          "pressure_sensors": "Luftdrucksensoren nach Priorität",
+          "rain_sensors": "Regensensoren nach Priorität",
+          "et0_sensors": "Direkte ET0-Sensoren nach Priorität",
+          "et0_priority": "Priorität der ET0-Methode",
+          "open_meteo_enabled": "Open-Meteo als letzte Quelle verwenden",
+          "weather_observation_max_age_hours": "Maximales Alter der Beobachtungen",
+          "weather_fallback_days": "Maximale Ersatzdauer",
+          "weather_backfill_days": "Maximale Aufbewahrung für Wetternachholung",
+          "seasonal_et0_mm": "Monatlicher saisonaler ET0-Ersatz",
+          "weather_finalization_time": "Zeitpunkt der täglichen Wetterfinalisierung",
+          "weather_preview_interval_hours": "Intervall vorläufiger Aktualisierungen",
           "frost_entity": "Temperatur-Entity für Frost",
           "frost_threshold": "Schwellwert der Frostsperre",
           "rain_stop_entity": "Entity für aktuellen Regen",
@@ -277,6 +352,11 @@
           ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
           ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
           ,"calibration_settle_seconds": "Beobachtungszeit für Kalibrierungsnachlauf"
+        },
+        "data_description": {
+          "local_wind_height_m": "Standard sind 2 m für lokale Gartensensoren; gib ihre tatsächliche physische Höhe an.",
+          "weather_wind_height_m": "Standard ist die übliche Wetterdiensthöhe von 10 m; bei anderer Dokumentation anpassen.",
+          "weather_backfill_days": "Maximale Anzahl lokaler historischer Tage für die automatische Nachholung nach einem Neustart."
         }
       },
       "zone": {
@@ -303,6 +383,11 @@
           "application_efficiency": "Anwendungseffizienz",
           "crop_factor": "Pflanzen- und Standortfaktor",
           "rain_factor": "Wirksamer Regenfaktor",
+          "max_effective_rain_mm": "Maximal wirksamer Tagesregen",
+          "seasonal_crop_factors": "Monatliche saisonale Pflanzenfaktoren",
+          "forecast_rain_threshold_mm": "Regenmengenschwelle der Prognose",
+          "forecast_rain_probability": "Wahrscheinlichkeitsschwelle der Prognose",
+          "forecast_deferral_hours": "Maximaler Prognoseaufschub",
           "maximum_deficit_mm": "Maximales Wasserdefizit",
           "minimum_interval_days": "Minimaler Abstand in Tagen",
           "maximum_interval_days": "Maximaler Abstand in Tagen",
@@ -322,6 +407,9 @@
       "no_zones": "Füge zuerst eine Bewässerungszone hinzu.",
       "zone_not_found": "Die ausgewählte Bewässerungszone existiert nicht mehr.",
       "already_configured": "Dieses Zonenventil ist bereits konfiguriert."
+    },
+    "error": {
+      "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein."
     }
   },
   "config_subentries": {
@@ -348,6 +436,11 @@
             "application_efficiency": "Anwendungseffizienz",
             "crop_factor": "Pflanzen- und Standortfaktor",
             "rain_factor": "Wirksamer Regenfaktor",
+            "max_effective_rain_mm": "Maximal wirksamer Tagesregen",
+            "seasonal_crop_factors": "Monatliche saisonale Pflanzenfaktoren",
+            "forecast_rain_threshold_mm": "Regenmengenschwelle der Prognose",
+            "forecast_rain_probability": "Wahrscheinlichkeitsschwelle der Prognose",
+            "forecast_deferral_hours": "Maximaler Prognoseaufschub",
             "maximum_deficit_mm": "Maximales Wasserdefizit",
             "minimum_interval_days": "Minimaler Abstand in Tagen",
             "maximum_interval_days": "Maximaler Abstand in Tagen",
@@ -385,6 +478,11 @@
             "application_efficiency": "Anwendungseffizienz",
             "crop_factor": "Pflanzen- und Standortfaktor",
             "rain_factor": "Wirksamer Regenfaktor",
+            "max_effective_rain_mm": "Maximal wirksamer Tagesregen",
+            "seasonal_crop_factors": "Monatliche saisonale Pflanzenfaktoren",
+            "forecast_rain_threshold_mm": "Regenmengenschwelle der Prognose",
+            "forecast_rain_probability": "Wahrscheinlichkeitsschwelle der Prognose",
+            "forecast_deferral_hours": "Maximaler Prognoseaufschub",
             "maximum_deficit_mm": "Maximales Wasserdefizit",
             "minimum_interval_days": "Minimaler Abstand in Tagen",
             "maximum_interval_days": "Maximaler Abstand in Tagen",

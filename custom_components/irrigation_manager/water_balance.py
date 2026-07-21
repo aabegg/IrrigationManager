@@ -43,6 +43,15 @@ class WaterBalancePeriod:
     effective_irrigation_mm: float
 
 
+@dataclass(frozen=True, slots=True)
+class EffectiveRainResult:
+    """Partition measured rain into effective storage, runoff, and drainage."""
+
+    effective_mm: float
+    runoff_mm: float
+    drainage_mm: float
+
+
 def calculate_fao56_daily(inputs: Fao56DailyInputs) -> float:
     """Return daily reference evapotranspiration in millimeters per day."""
     radiation_term = (
@@ -86,6 +95,24 @@ def apply_water_balance(balance: ZoneWaterBalance, period: WaterBalancePeriod) -
     return ZoneWaterBalance(
         deficit_mm=min(balance.maximum_deficit_mm, max(0.0, updated_deficit_mm)),
         maximum_deficit_mm=balance.maximum_deficit_mm,
+    )
+
+
+def calculate_effective_rain(
+    *,
+    measured_rain_mm: float,
+    rain_factor: float,
+    maximum_infiltration_mm: float,
+    available_storage_mm: float,
+) -> EffectiveRainResult:
+    """Apply exposure, daily infiltration, and available soil storage limits."""
+    exposed = max(0.0, measured_rain_mm) * min(1.0, max(0.0, rain_factor))
+    infiltrated = min(exposed, max(0.0, maximum_infiltration_mm))
+    effective = min(infiltrated, max(0.0, available_storage_mm))
+    return EffectiveRainResult(
+        effective_mm=effective,
+        runoff_mm=max(0.0, exposed - infiltrated),
+        drainage_mm=max(0.0, infiltrated - effective),
     )
 
 

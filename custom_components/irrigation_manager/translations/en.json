@@ -57,6 +57,14 @@
         "at": {"name": "Opportunity time"}
       }
     },
+    "clear_forecast_deferral": {
+      "name": "Cancel forecast deferral",
+      "description": "Cancel the persisted rain-forecast delay for one irrigation zone.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "zone_subentry_id": {"name": "Irrigation zone"}
+      }
+    },
     "export_config": {
       "name": "Export portable configuration",
       "description": "Return the versioned installation and zone configuration without secrets."
@@ -120,6 +128,12 @@
     },
     "weather_failure_policy": {
       "options": {"fail_safe": "Fail safe (block affected watering)"}
+    },
+    "et0_priority": {
+      "options": {
+        "direct": "Prefer direct ET0",
+        "calculated": "Prefer calculated ET0"
+      }
     }
   },
   "entity": {
@@ -192,7 +206,26 @@
       "water_deficit": {"name": "Water deficit"},
       "automatic_target": {"name": "Automatic target"},
       "next_watering_window": {"name": "Next watering window"},
-      "planning_reason": {"name": "Planning reason"}
+      "planning_reason": {"name": "Planning reason"},
+      "weather_model_quality": {
+        "name": "Weather model quality",
+        "state": {
+          "observed": "Observed",
+          "external_service": "External service",
+          "calculated_high": "Calculated, complete inputs",
+          "calculated_reduced": "Calculated, reduced inputs",
+          "calculated_partial": "Calculated, partial daily coverage",
+          "degraded": "Temporary fallback",
+          "provided": "Manually provided",
+          "unknown": "Unknown daily inputs",
+          "unavailable": "Unavailable"
+        }
+      },
+      "reference_evapotranspiration": {"name": "Reference evapotranspiration"},
+      "measured_rain": {"name": "Measured rain"},
+      "provisional_water_deficit": {"name": "Provisional water deficit"},
+      "crop_evapotranspiration": {"name": "Crop evapotranspiration"},
+      "effective_rain": {"name": "Effective rain"}
     }
   },
   "config": {
@@ -211,6 +244,24 @@
           "leak_duration_seconds": "Leak confirmation duration",
           "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity",
+          "temperature_sensors": "Temperature sensors in priority order",
+          "humidity_sensors": "Humidity sensors in priority order",
+          "wind_speed_sensors": "Wind sensors in priority order",
+          "local_wind_height_m": "Local wind sensor measurement height",
+          "weather_wind_height_m": "Weather entity wind measurement height",
+          "solar_radiation_sensors": "Solar radiation sensors in priority order",
+          "sunshine_duration_sensors": "Sunshine duration sensors in priority order",
+          "pressure_sensors": "Pressure sensors in priority order",
+          "rain_sensors": "Rain sensors in priority order",
+          "et0_sensors": "Direct ET0 sensors in priority order",
+          "et0_priority": "ET0 method priority",
+          "open_meteo_enabled": "Use Open-Meteo as last source",
+          "weather_observation_max_age_hours": "Maximum observation age",
+          "weather_fallback_days": "Maximum fallback duration",
+          "weather_backfill_days": "Maximum weather backfill retention",
+          "seasonal_et0_mm": "Monthly seasonal ET0 fallback",
+          "weather_finalization_time": "Daily weather finalization time",
+          "weather_preview_interval_hours": "Provisional update interval",
           "frost_entity": "Frost temperature entity",
           "frost_threshold": "Frost blocking threshold",
           "rain_stop_entity": "Current rain entity",
@@ -233,12 +284,18 @@
           "leak_monitoring": "Enabled by default when a flow sensor is configured.",
           "leak_flow_threshold": "Continuous idle flow above this rate is hazardous.",
           "leak_duration_seconds": "Shorter flow artifacts and post-watering runoff are ignored.",
-          "weather_entity": "Optional source for weather measurements and forecasts."
+          "weather_entity": "Optional source for weather measurements and forecasts.",
+          "local_wind_height_m": "Defaults to 2 m. Set the physical measurement height of the configured local wind sensors; only other heights are normalized to 2 m.",
+          "weather_wind_height_m": "Defaults to 10 m because weather providers commonly report standardized 10 m wind. Change it when the provider documents another height.",
+          "weather_backfill_days": "Safety and retention cap for missing daily periods processed after downtime. Older periods are outside retained automatic backfill."
         }
       }
     },
     "abort": {
       "already_configured": "This irrigation installation is already configured."
+    },
+    "error": {
+      "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time."
     }
   },
   "options": {
@@ -264,6 +321,24 @@
           "leak_duration_seconds": "Leak confirmation duration",
           "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity",
+          "temperature_sensors": "Temperature sensors in priority order",
+          "humidity_sensors": "Humidity sensors in priority order",
+          "wind_speed_sensors": "Wind sensors in priority order",
+          "local_wind_height_m": "Local wind sensor measurement height",
+          "weather_wind_height_m": "Weather entity wind measurement height",
+          "solar_radiation_sensors": "Solar radiation sensors in priority order",
+          "sunshine_duration_sensors": "Sunshine duration sensors in priority order",
+          "pressure_sensors": "Pressure sensors in priority order",
+          "rain_sensors": "Rain sensors in priority order",
+          "et0_sensors": "Direct ET0 sensors in priority order",
+          "et0_priority": "ET0 method priority",
+          "open_meteo_enabled": "Use Open-Meteo as last source",
+          "weather_observation_max_age_hours": "Maximum observation age",
+          "weather_fallback_days": "Maximum fallback duration",
+          "weather_backfill_days": "Maximum weather backfill retention",
+          "seasonal_et0_mm": "Monthly seasonal ET0 fallback",
+          "weather_finalization_time": "Daily weather finalization time",
+          "weather_preview_interval_hours": "Provisional update interval",
           "frost_entity": "Frost temperature entity",
           "frost_threshold": "Frost blocking threshold",
           "rain_stop_entity": "Current rain entity",
@@ -277,6 +352,11 @@
           ,"maintenance_max_duration": "Maximum maintenance test duration"
           ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
           ,"calibration_settle_seconds": "Calibration post-run observation time"
+        },
+        "data_description": {
+          "local_wind_height_m": "Defaults to 2 m for local garden sensors; set their actual physical height.",
+          "weather_wind_height_m": "Defaults to the standard weather-provider height of 10 m; override when documented otherwise.",
+          "weather_backfill_days": "Maximum number of historical local days retained for automatic restart backfill."
         }
       },
       "zone": {
@@ -303,6 +383,11 @@
           "application_efficiency": "Application efficiency",
           "crop_factor": "Crop and location factor",
           "rain_factor": "Effective rain factor",
+          "max_effective_rain_mm": "Maximum daily effective rain",
+          "seasonal_crop_factors": "Monthly seasonal crop factors",
+          "forecast_rain_threshold_mm": "Forecast rain threshold",
+          "forecast_rain_probability": "Forecast probability threshold",
+          "forecast_deferral_hours": "Maximum forecast deferral",
           "maximum_deficit_mm": "Maximum water deficit",
           "minimum_interval_days": "Minimum interval in days",
           "maximum_interval_days": "Maximum interval in days",
@@ -322,6 +407,9 @@
       "no_zones": "Add an irrigation zone before editing zone settings.",
       "zone_not_found": "The selected irrigation zone no longer exists.",
       "already_configured": "This zone valve is already configured."
+    },
+    "error": {
+      "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time."
     }
   },
   "config_subentries": {
@@ -348,6 +436,11 @@
             "application_efficiency": "Application efficiency",
             "crop_factor": "Crop and location factor",
             "rain_factor": "Effective rain factor",
+            "max_effective_rain_mm": "Maximum daily effective rain",
+            "seasonal_crop_factors": "Monthly seasonal crop factors",
+            "forecast_rain_threshold_mm": "Forecast rain threshold",
+            "forecast_rain_probability": "Forecast probability threshold",
+            "forecast_deferral_hours": "Maximum forecast deferral",
             "maximum_deficit_mm": "Maximum water deficit",
             "minimum_interval_days": "Minimum interval in days",
             "maximum_interval_days": "Maximum interval in days",
@@ -385,6 +478,11 @@
             "application_efficiency": "Application efficiency",
             "crop_factor": "Crop and location factor",
             "rain_factor": "Effective rain factor",
+            "max_effective_rain_mm": "Maximum daily effective rain",
+            "seasonal_crop_factors": "Monthly seasonal crop factors",
+            "forecast_rain_threshold_mm": "Forecast rain threshold",
+            "forecast_rain_probability": "Forecast probability threshold",
+            "forecast_deferral_hours": "Maximum forecast deferral",
             "maximum_deficit_mm": "Maximum water deficit",
             "minimum_interval_days": "Minimum interval in days",
             "maximum_interval_days": "Maximum interval in days",

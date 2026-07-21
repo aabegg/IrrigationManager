@@ -6,6 +6,6 @@
   "dependencies": ["frontend"],
   "after_dependencies": ["recorder", "weather"],
   "integration_type": "hub",
-  "iot_class": "calculated",
+  "iot_class": "cloud_polling",
   "requirements": []
 }

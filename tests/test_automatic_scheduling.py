@@ -2,13 +2,16 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
+from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import STATE_OFF
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager.const import DOMAIN
@@ -19,6 +22,7 @@ from custom_components.irrigation_manager.models import (
     ManualIrrigationRequest,
 )
 from custom_components.irrigation_manager.storage import IrrigationStore
+from custom_components.irrigation_manager.weather import DailyWeather, RainForecast, WeatherValue
 
 
 async def _setup_automatic_zone(
@@ -321,6 +325,289 @@ async def test_finalized_weather_is_persistent_and_idempotent(hass: HomeAssistan
     assert "2026-07-20" in stored.finalized_weather_periods
 
 
+async def test_finalized_weather_persists_complete_zone_explanation(
+    hass: HomeAssistant,
+) -> None:
+    """Retain the exact model contributions and target conversion used for a final day."""
+    entry, _ = await _setup_automatic_zone(hass)
+    manager = entry.runtime_data.manager
+
+    result = await manager.async_finalize_daily_weather(
+        period_id="2026-07-20",
+        reference_evapotranspiration_mm=6,
+        rain_mm=30,
+    )
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    snapshot = stored.weather_calculation_snapshots["2026-07-20"]
+    zones = snapshot["zones"]
+    assert isinstance(zones, dict)
+    explanation = zones["zone-lawn"]
+
+    assert result["applied"] is True
+    assert explanation["crop_evapotranspiration_mm"] == 6
+    assert explanation["effective_rain_mm"] == 6
+    assert explanation["drainage_mm"] == 19
+    assert explanation["runoff_mm"] == 5
+    assert explanation["final_deficit_mm"] == 0
+    assert explanation["target"]["gross_liters_before_limits"] == 0
+
+
+async def test_forecast_rain_defers_without_reducing_balance_or_target(
+    hass: HomeAssistant,
+) -> None:
+    """Keep forecast data in planning only and bound the delay from its first use."""
+    entry, _ = await _setup_automatic_zone(hass)
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    _make_zone_due(entry, now, deficit_mm=10)
+    manager = entry.runtime_data.manager
+    manager._rain_forecast = RainForecast(
+        amount_mm=8,
+        probability_percent=90,
+        valid_at=now + timedelta(hours=4),
+        issued_at=now,
+        source="weather_entity",
+        quality="forecast",
+    )
+
+    report = await manager.async_plan_automatic(now=now)
+
+    assert report["created_request_ids"] == []
+    assert report["zones"][0]["reason"] == "forecast_rain_deferred"
+    assert manager._stored_state.zone_deficit_mm["zone-lawn"] == 10
+    assert report["zones"][0]["target_liters"] == 100
+    assert manager._stored_state.forecast_deferral_started["zone-lawn"] == now.isoformat()
+    deadline = manager._stored_state.forecast_deferral_deadlines["zone-lawn"]
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _stop_background_planning(entry)
+    manager = entry.runtime_data.manager
+    assert manager._rain_forecast is None
+    transient = await manager.async_plan_automatic(now=now + timedelta(minutes=5))
+    assert transient["zones"][0]["reason"] == "forecast_rain_deferred"
+    assert manager._stored_state.forecast_deferral_deadlines["zone-lawn"] == deadline
+
+    manager._rain_forecast = RainForecast(
+        amount_mm=1,
+        probability_percent=10,
+        valid_at=now + timedelta(hours=4),
+        issued_at=now + timedelta(minutes=10),
+        source="weather_entity",
+        quality="forecast",
+    )
+    sub_threshold = await manager.async_plan_automatic(now=now + timedelta(minutes=10))
+    assert sub_threshold["zones"][0]["reason"] == "forecast_rain_deferred"
+    assert manager._stored_state.forecast_deferral_deadlines["zone-lawn"] == deadline
+
+    after_limit = now + timedelta(hours=24, minutes=30)
+    manager._rain_forecast = RainForecast(
+        amount_mm=8,
+        probability_percent=90,
+        valid_at=after_limit + timedelta(hours=1),
+        issued_at=after_limit,
+        source="weather_entity",
+        quality="forecast",
+    )
+    resumed = await manager.async_plan_automatic(now=after_limit)
+    assert resumed["created_request_ids"]
+    assert "zone-lawn" not in manager._stored_state.forecast_deferral_deadlines
+    assert "zone-lawn" in manager._stored_state.cancelled_forecast_deferrals
+
+
+async def test_forecast_deferral_explicit_cancellation_blocks_same_forecast(
+    hass: HomeAssistant,
+) -> None:
+    """Expose an explicit cancellation path instead of inferring intent from forecast loss."""
+    entry, zone = await _setup_automatic_zone(hass)
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    _make_zone_due(entry, now, deficit_mm=10)
+    manager = entry.runtime_data.manager
+    manager._rain_forecast = RainForecast(
+        amount_mm=8,
+        probability_percent=90,
+        valid_at=now + timedelta(hours=4),
+        issued_at=now,
+        source="weather_entity",
+        quality="forecast",
+    )
+    await manager.async_plan_automatic(now=now)
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        "clear_forecast_deferral",
+        {"config_entry_id": entry.entry_id, "zone_subentry_id": zone.subentry_id},
+        blocking=True,
+        return_response=True,
+    )
+    planned = await manager.async_plan_automatic(now=now + timedelta(minutes=1))
+
+    assert response["cancelled"] is True
+    assert "zone-lawn" in manager._stored_state.cancelled_forecast_deferrals
+    assert "zone-lawn" not in manager._stored_state.forecast_deferral_started
+    assert planned["created_request_ids"]
+
+
+async def test_current_day_planning_uses_provisional_not_finalized_deficit(
+    hass: HomeAssistant,
+) -> None:
+    """Plan from today's estimate while retaining the durable final balance unchanged."""
+    entry, _ = await _setup_automatic_zone(hass)
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    manager = entry.runtime_data.manager
+    manager._stored_state = replace(
+        manager._stored_state,
+        zone_deficit_mm={"zone-lawn": 2},
+        zone_last_effective_irrigation={"zone-lawn": (now - timedelta(days=2)).isoformat()},
+    )
+    manager._zone_provisional_deficit_mm = {"zone-lawn": 8}
+    manager._provisional_period_id = now.astimezone(dt_util.DEFAULT_TIME_ZONE).date().isoformat()
+
+    report = await manager.async_plan_automatic(now=now)
+
+    assert report["zones"][0]["target_liters"] == 100
+    assert manager._stored_state.zone_deficit_mm["zone-lawn"] == 2
+
+
+async def test_restart_backfills_all_retained_missing_days_once(
+    hass: HomeAssistant,
+) -> None:
+    """Process a multi-day outage chronologically and never duplicate it after restart."""
+    entry, _ = await _setup_automatic_zone(hass)
+    manager = entry.runtime_data.manager
+    now = dt_util.now()
+    due_day = now.date() - timedelta(days=1)
+    last_day = due_day - timedelta(days=3)
+    manager._installation_data.update(
+        {
+            "et0_sensors": ["sensor.et0"],
+            "rain_sensors": ["sensor.rain"],
+            "weather_backfill_days": 14,
+        }
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        finalized_weather_periods={last_day.isoformat(): "[0,0]"},
+    )
+    await manager._store.async_save(manager._stored_state)
+
+    async def daily_weather(day: date, *, end: datetime | None = None) -> DailyWeather:
+        period_end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+        return DailyWeather(
+            period_id=day.isoformat(),
+            start_utc=period_end - timedelta(days=1),
+            end_utc=period_end,
+            minimum_temperature_c=None,
+            maximum_temperature_c=None,
+            mean_temperature_c=None,
+            mean_humidity_percent=None,
+            wind_speed_2m_m_s=None,
+            solar_radiation_mj_m2_day=None,
+            sunshine_duration_hours=None,
+            pressure_kpa=None,
+            rain_mm=WeatherValue(0, "sensor.rain", 2, period_end.isoformat(), "observed"),
+            direct_et0_mm=WeatherValue(2, "sensor.et0", 1, period_end.isoformat(), "observed"),
+        )
+
+    manager._weather.async_daily_weather = AsyncMock(side_effect=daily_weather)
+    finalized = await manager._async_backfill_weather_days(now, through_yesterday=True)
+    assert finalized == [(last_day + timedelta(days=offset)).isoformat() for offset in (1, 2, 3)]
+    assert manager._stored_state.zone_deficit_mm["zone-lawn"] == 6
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _stop_background_planning(entry)
+    restarted = entry.runtime_data.manager
+    restarted._weather.async_daily_weather = AsyncMock(side_effect=daily_weather)
+
+    assert await restarted._async_backfill_weather_days(now, through_yesterday=True) == []
+    assert restarted._weather.async_daily_weather.await_count == 0
+    assert restarted._stored_state.zone_deficit_mm["zone-lawn"] == 6
+
+
+async def test_due_check_finalizes_after_nonexistent_dst_wall_time(
+    hass: HomeAssistant,
+) -> None:
+    """A skipped 02:30 wall time remains due when the interval callback runs at 03:05."""
+    entry, _ = await _setup_automatic_zone(hass)
+    manager = entry.runtime_data.manager
+    berlin = ZoneInfo("Europe/Berlin")
+    now = datetime(2026, 3, 29, 3, 5, tzinfo=berlin)
+    due_day = date(2026, 3, 28)
+    manager._installation_data.update(
+        {
+            "weather_finalization_time": "02:30:00",
+            "weather_backfill_days": 2,
+        }
+    )
+    manager.async_finalize_weather_day = AsyncMock(
+        side_effect=lambda day: (
+            manager._stored_state.finalized_weather_periods.update({day.isoformat(): "accounted"})
+            or {"applied": True, "period_id": day.isoformat()}
+        )
+    )
+
+    with patch.object(dt_util, "DEFAULT_TIME_ZONE", berlin):
+        first = await manager._async_backfill_weather_days(now)
+        second = await manager._async_backfill_weather_days(now + timedelta(minutes=15))
+
+    assert first == [date(2026, 3, 27).isoformat(), due_day.isoformat()]
+    assert second == []
+
+
+async def test_seasonal_weather_fallback_is_degraded_then_expires(
+    hass: HomeAssistant,
+) -> None:
+    """Expose bounded fallback quality and stop demand automation after its duration."""
+    entry, _ = await _setup_automatic_zone(hass)
+    manager = entry.runtime_data.manager
+    manager._installation_data.update(
+        {
+            "et0_sensors": ["sensor.et0"],
+            "rain_sensors": ["sensor.rain"],
+            "weather_fallback_days": 3,
+            "seasonal_et0_mm": "4,4,4,4,4,4,4,4,4,4,4,4",
+        }
+    )
+    end = datetime(2026, 7, 21, 7, tzinfo=UTC)
+    weather = DailyWeather(
+        period_id="2026-07-20",
+        start_utc=end - timedelta(days=1),
+        end_utc=end,
+        minimum_temperature_c=None,
+        maximum_temperature_c=None,
+        mean_temperature_c=None,
+        mean_humidity_percent=None,
+        wind_speed_2m_m_s=None,
+        solar_radiation_mj_m2_day=None,
+        sunshine_duration_hours=None,
+        pressure_kpa=None,
+        rain_mm=WeatherValue(0, "sensor.rain", 2, end.isoformat(), "observed"),
+        direct_et0_mm=None,
+    )
+    manager._weather.async_daily_weather = AsyncMock(return_value=weather)
+
+    fallback = await manager.async_finalize_weather_day(date(2026, 7, 20))
+    snapshot = manager._stored_state.weather_calculation_snapshots["2026-07-20"]
+    assert fallback["applied"] is True
+    assert snapshot["et0"]["method"] == "seasonal_fallback"
+    assert snapshot["et0"]["quality"] == "degraded"
+
+    manager._stored_state = replace(
+        manager._stored_state,
+        weather_failure_since=(datetime.now(UTC) - timedelta(days=4)).isoformat(),
+    )
+    expired = await manager.async_finalize_weather_day(date(2026, 7, 19))
+    assert expired["applied"] is True
+    assert expired["accounting_applied"] is False
+    assert expired["quality"] == "unknown"
+    assert "2026-07-19" in manager._stored_state.finalized_weather_periods
+    assert (
+        manager._stored_state.weather_calculation_snapshots["2026-07-19"]["reason"]
+        == "fallback_duration_exhausted"
+    )
+    assert manager._weather_automation_available is False
+
+
 async def test_delivered_automatic_water_reduces_deficit_and_resets_effective_interval(
     hass: HomeAssistant,
 ) -> None:
@@ -366,6 +653,9 @@ async def test_delivered_automatic_water_reduces_deficit_and_resets_effective_in
     manager._stored_state = replace(
         manager._stored_state,
         zone_deficit_mm={"zone-lawn": 10},
+        forecast_deferral_started={"zone-lawn": now.isoformat()},
+        forecast_deferral_deadlines={"zone-lawn": (now + timedelta(hours=24)).isoformat()},
+        cancelled_forecast_deferrals=("zone-lawn",),
         manual_requests=(request,),
         irrigation_executions=(execution,),
     )
@@ -382,6 +672,9 @@ async def test_delivered_automatic_water_reduces_deficit_and_resets_effective_in
 
     stored = await IrrigationStore(hass, entry.entry_id).async_load()
     assert stored.zone_deficit_mm["zone-lawn"] == pytest.approx(9)
+    assert "zone-lawn" not in stored.forecast_deferral_started
+    assert "zone-lawn" not in stored.forecast_deferral_deadlines
+    assert "zone-lawn" not in stored.cancelled_forecast_deferrals
     assert "zone-lawn" in stored.zone_last_effective_irrigation
     assert stored.manual_requests[0].status == "completed"
 

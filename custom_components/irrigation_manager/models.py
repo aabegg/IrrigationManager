@@ -314,6 +314,18 @@ class InstallationSnapshot:
     frost_blocked: bool = False
     rain_stop_active: bool = False
     weather_safety_status: str = "not_configured"
+    weather_model_quality: str = "unavailable"
+    weather_model_method: str = "unavailable"
+    reference_evapotranspiration_mm: float | None = None
+    measured_rain_mm: float | None = None
+    weather_period_id: str | None = None
+    weather_last_finalized_at: str | None = None
+    weather_automation_available: bool = False
+    rain_forecast: dict[str, object] | None = None
+    zone_provisional_deficit_mm: dict[str, float] = field(default_factory=dict)
+    zone_crop_evapotranspiration_mm: dict[str, float] = field(default_factory=dict)
+    zone_effective_rain_mm: dict[str, float] = field(default_factory=dict)
+    zone_calculation_explanations: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,6 +593,11 @@ class StoredInstallationState:
     finalized_weather_periods: dict[str, str] = field(default_factory=dict)
     suppressed_automatic_opportunities: tuple[str, ...] = ()
     uncredited_balance_deliveries: tuple[UncreditedBalanceDelivery, ...] = ()
+    weather_calculation_snapshots: dict[str, dict[str, object]] = field(default_factory=dict)
+    weather_failure_since: str | None = None
+    forecast_deferral_started: dict[str, str] = field(default_factory=dict)
+    forecast_deferral_deadlines: dict[str, str] = field(default_factory=dict)
+    cancelled_forecast_deferrals: tuple[str, ...] = ()
 
     @staticmethod
     def _float(value: object) -> float:
@@ -655,6 +672,11 @@ class StoredInstallationState:
         raw_weather_periods = data.get("finalized_weather_periods", {})
         raw_suppressions = data.get("suppressed_automatic_opportunities", [])
         raw_uncredited_deliveries = data.get("uncredited_balance_deliveries", [])
+        raw_weather_snapshots = data.get("weather_calculation_snapshots", {})
+        weather_failure_since = data.get("weather_failure_since")
+        raw_forecast_deferrals = data.get("forecast_deferral_started", {})
+        raw_forecast_deadlines = data.get("forecast_deferral_deadlines", {})
+        raw_cancelled_deferrals = data.get("cancelled_forecast_deferrals", [])
         if not isinstance(raw_deficits, dict):
             raise ValueError("Stored zone water deficits are malformed")
         if not isinstance(raw_last_effective, dict) or not all(
@@ -675,6 +697,27 @@ class StoredInstallationState:
             isinstance(value, dict) for value in raw_uncredited_deliveries
         ):
             raise ValueError("Stored uncredited balance deliveries are malformed")
+        if not isinstance(raw_weather_snapshots, dict) or not all(
+            isinstance(key, str) and isinstance(value, dict)
+            for key, value in raw_weather_snapshots.items()
+        ):
+            raise ValueError("Stored weather calculation snapshots are malformed")
+        if weather_failure_since is not None and not isinstance(weather_failure_since, str):
+            raise ValueError("Stored weather failure timestamp is malformed")
+        if not isinstance(raw_forecast_deferrals, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_forecast_deferrals.items()
+        ):
+            raise ValueError("Stored forecast deferral progress is malformed")
+        if not isinstance(raw_forecast_deadlines, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_forecast_deadlines.items()
+        ):
+            raise ValueError("Stored forecast deferral deadlines are malformed")
+        if not isinstance(raw_cancelled_deferrals, list) or not all(
+            isinstance(value, str) for value in raw_cancelled_deferrals
+        ):
+            raise ValueError("Stored cancelled forecast deferrals are malformed")
         return cls(
             installation_total_liters=cls._float(data.get("installation_total_liters", 0.0)),
             zone_totals_liters=zone_totals,
@@ -718,6 +761,13 @@ class StoredInstallationState:
             uncredited_balance_deliveries=tuple(
                 UncreditedBalanceDelivery.from_dict(value) for value in raw_uncredited_deliveries
             ),
+            weather_calculation_snapshots={
+                str(key): dict(value) for key, value in raw_weather_snapshots.items()
+            },
+            weather_failure_since=weather_failure_since,
+            forecast_deferral_started=dict(raw_forecast_deferrals),
+            forecast_deferral_deadlines=dict(raw_forecast_deadlines),
+            cancelled_forecast_deferrals=tuple(raw_cancelled_deferrals),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -759,4 +809,9 @@ class StoredInstallationState:
             "uncredited_balance_deliveries": [
                 delivery.as_dict() for delivery in self.uncredited_balance_deliveries
             ],
+            "weather_calculation_snapshots": self.weather_calculation_snapshots,
+            "weather_failure_since": self.weather_failure_since,
+            "forecast_deferral_started": self.forecast_deferral_started,
+            "forecast_deferral_deadlines": self.forecast_deferral_deadlines,
+            "cancelled_forecast_deferrals": list(self.cancelled_forecast_deferrals),
         }

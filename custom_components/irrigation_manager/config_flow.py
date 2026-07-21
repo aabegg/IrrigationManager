@@ -1,5 +1,6 @@
 """Config and subentry flows for Irrigation Manager."""
 
+from datetime import time
 from typing import Any, override
 from uuid import uuid4
 
@@ -31,7 +32,9 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     TextSelector,
+    TimeSelector,
 )
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
@@ -42,16 +45,23 @@ from .const import (
     CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_CROP_FACTOR,
     CONF_DEFAULT_DURATION,
+    CONF_ET0_PRIORITY,
+    CONF_ET0_SENSORS,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
+    CONF_FORECAST_DEFERRAL_HOURS,
+    CONF_FORECAST_RAIN_PROBABILITY,
+    CONF_FORECAST_RAIN_THRESHOLD_MM,
     CONF_FROST_ENTITY,
     CONF_FROST_THRESHOLD,
+    CONF_HUMIDITY_SENSORS,
     CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
     CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
+    CONF_LOCAL_WIND_HEIGHT_M,
     CONF_MAIN_VALVE,
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
@@ -59,6 +69,7 @@ from .const import (
     CONF_MAX_DELIVERY_RUNTIME,
     CONF_MAX_DOSE_AMOUNT,
     CONF_MAX_DOSE_DURATION,
+    CONF_MAX_EFFECTIVE_RAIN_MM,
     CONF_MAX_FLOW,
     CONF_MAX_OPERATION_LIFETIME,
     CONF_MAXIMUM_DEFICIT_MM,
@@ -71,19 +82,36 @@ from .const import (
     CONF_MINIMUM_INTERVAL_DAYS,
     CONF_MINIMUM_TRIGGER_LITERS,
     CONF_NOTIFY_ENTITIES,
+    CONF_OPEN_METEO_ENABLED,
+    CONF_PRESSURE_SENSORS,
     CONF_RAIN_FACTOR,
+    CONF_RAIN_SENSORS,
     CONF_RAIN_STOP_ENTITY,
     CONF_RAIN_STOP_THRESHOLD,
+    CONF_SEASONAL_CROP_FACTORS,
+    CONF_SEASONAL_ET0_MM,
     CONF_SOAK_DURATION,
+    CONF_SOLAR_RADIATION_SENSORS,
+    CONF_SUNSHINE_DURATION_SENSORS,
+    CONF_TEMPERATURE_SENSORS,
     CONF_WATER_METER,
     CONF_WATERING_MODE,
     CONF_WATERING_WINDOWS,
+    CONF_WEATHER_BACKFILL_DAYS,
     CONF_WEATHER_ENTITY,
     CONF_WEATHER_FAILURE_POLICY,
+    CONF_WEATHER_FALLBACK_DAYS,
+    CONF_WEATHER_FINALIZATION_TIME,
     CONF_WEATHER_MAX_AGE_SECONDS,
+    CONF_WEATHER_OBSERVATION_MAX_AGE_HOURS,
+    CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
+    CONF_WEATHER_WIND_HEIGHT_M,
+    CONF_WIND_SPEED_SENSORS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
     DOMAIN,
+    ET0_PRIORITY_CALCULATED,
+    ET0_PRIORITY_DIRECT,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
     SUBENTRY_TYPE_ZONE,
@@ -92,6 +120,7 @@ from .const import (
     WEATHER_FAILURE_FAIL_SAFE,
 )
 from .scheduler import parse_daily_window
+from .weather import calculate_seasonal_value
 
 ATTR_ZONE_SUBENTRY_ID = "zone_subentry_id"
 
@@ -146,6 +175,59 @@ INSTALLATION_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_WEATHER_ENTITY): EntitySelector(
             EntitySelectorConfig(domain=Platform.WEATHER)
+        ),
+        vol.Optional(CONF_TEMPERATURE_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(CONF_HUMIDITY_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(CONF_WIND_SPEED_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(CONF_LOCAL_WIND_HEIGHT_M, default=2): NumberSelector(
+            NumberSelectorConfig(min=0.5, max=30, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_WEATHER_WIND_HEIGHT_M, default=10): NumberSelector(
+            NumberSelectorConfig(min=0.5, max=30, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_SOLAR_RADIATION_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(CONF_SUNSHINE_DURATION_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(CONF_PRESSURE_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(CONF_RAIN_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(CONF_ET0_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(CONF_ET0_PRIORITY, default=ET0_PRIORITY_DIRECT): SelectSelector(
+            SelectSelectorConfig(
+                options=[ET0_PRIORITY_DIRECT, ET0_PRIORITY_CALCULATED],
+                translation_key=CONF_ET0_PRIORITY,
+            )
+        ),
+        vol.Optional(CONF_OPEN_METEO_ENABLED, default=False): BooleanSelector(),
+        vol.Optional(CONF_WEATHER_OBSERVATION_MAX_AGE_HOURS, default=6): NumberSelector(
+            NumberSelectorConfig(min=1, max=72, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_WEATHER_FALLBACK_DAYS, default=3): NumberSelector(
+            NumberSelectorConfig(min=0, max=30, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_WEATHER_BACKFILL_DAYS, default=14): NumberSelector(
+            NumberSelectorConfig(min=1, max=365, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(
+            CONF_SEASONAL_ET0_MM, default="1.0,1.5,2.5,3.5,4.5,5.0,5.5,5.0,3.5,2.5,1.5,1.0"
+        ): TextSelector(),
+        vol.Optional(CONF_WEATHER_FINALIZATION_TIME, default="00:10:00"): TimeSelector(),
+        vol.Optional(CONF_WEATHER_PREVIEW_INTERVAL_HOURS, default=1): NumberSelector(
+            NumberSelectorConfig(min=1, max=12, step=1, mode=NumberSelectorMode.BOX)
         ),
         vol.Optional(CONF_FROST_ENTITY): EntitySelector(
             EntitySelectorConfig(domain=Platform.SENSOR)
@@ -336,6 +418,22 @@ ZONE_SCHEMA = vol.Schema(
         vol.Optional(CONF_RAIN_FACTOR, default=1): NumberSelector(
             NumberSelectorConfig(min=0, max=1, step=0.05, mode=NumberSelectorMode.BOX)
         ),
+        vol.Optional(CONF_MAX_EFFECTIVE_RAIN_MM, default=25): NumberSelector(
+            NumberSelectorConfig(min=0, max=1_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(
+            CONF_SEASONAL_CROP_FACTORS,
+            default="1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
+        ): TextSelector(),
+        vol.Optional(CONF_FORECAST_RAIN_THRESHOLD_MM, default=5): NumberSelector(
+            NumberSelectorConfig(min=0, max=1_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_FORECAST_RAIN_PROBABILITY, default=70): NumberSelector(
+            NumberSelectorConfig(min=0, max=100, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_FORECAST_DEFERRAL_HOURS, default=24): NumberSelector(
+            NumberSelectorConfig(min=0, max=168, step=1, mode=NumberSelectorMode.BOX)
+        ),
         vol.Optional(CONF_MAXIMUM_DEFICIT_MM, default=50): NumberSelector(
             NumberSelectorConfig(min=0.1, max=1_000, step=0.1, mode=NumberSelectorMode.BOX)
         ),
@@ -406,6 +504,7 @@ def _validate_zone_input(user_input: dict[str, Any]) -> str | None:
             user_input[CONF_MINIMUM_INTERVAL_DAYS]
         ):
             return "invalid_intervals"
+        calculate_seasonal_value(str(user_input[CONF_SEASONAL_CROP_FACTORS]), dt_util.now().date())
         if user_input.get(CONF_AUTOMATION_ENABLED) and not all(
             isinstance(user_input.get(key), int | float) and float(user_input[key]) > 0
             for key in (CONF_MIN_FLOW, CONF_MAX_FLOW)
@@ -413,6 +512,16 @@ def _validate_zone_input(user_input: dict[str, Any]) -> str | None:
             return "automation_requires_flow_profile"
     except KeyError, TypeError, ValueError:
         return "invalid_watering_windows"
+    return None
+
+
+def _validate_installation_input(user_input: dict[str, Any]) -> str | None:
+    """Validate weather fallback and scheduling settings before persisting them."""
+    try:
+        calculate_seasonal_value(str(user_input[CONF_SEASONAL_ET0_MM]), dt_util.now().date())
+        time.fromisoformat(str(user_input[CONF_WEATHER_FINALIZATION_TIME]))
+    except TypeError, ValueError:
+        return "invalid_weather_curve"
     return None
 
 
@@ -433,6 +542,10 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Create one physical irrigation installation."""
         if user_input is not None:
+            if error := _validate_installation_input(user_input):
+                return self.async_show_form(
+                    step_id="user", data_schema=INSTALLATION_SCHEMA, errors={"base": error}
+                )
             await self.async_set_unique_id(uuid4().hex)
             return self.async_create_entry(
                 title=user_input[CONF_NAME],
@@ -534,6 +647,14 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Update installation sources, safety thresholds, and notifications."""
         if user_input is not None:
+            if error := _validate_installation_input(user_input):
+                return self.async_show_form(
+                    step_id="installation",
+                    data_schema=self.add_suggested_values_to_schema(
+                        INSTALLATION_SCHEMA, user_input
+                    ),
+                    errors={"base": error},
+                )
             self.hass.config_entries.async_update_entry(
                 self.config_entry,
                 title=str(user_input[CONF_NAME]),

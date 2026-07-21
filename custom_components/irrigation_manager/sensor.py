@@ -105,6 +105,24 @@ async def async_setup_entry(
                 installation_id=installation_id,
                 key="remaining_target",
             ),
+            WeatherModelSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                key="weather_model_quality",
+            ),
+            WeatherModelSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                key="reference_evapotranspiration",
+            ),
+            WeatherModelSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                key="measured_rain",
+            ),
         ]
     )
 
@@ -173,6 +191,30 @@ async def async_setup_entry(
                     zone_id=zone_id,
                     zone_name=subentry.title,
                     key="planning_reason",
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="provisional_water_deficit",
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="crop_evapotranspiration",
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="effective_rain",
                 ),
             ],
             config_subentry_id=subentry.subentry_id,
@@ -269,6 +311,76 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
     def extra_state_attributes(self) -> dict[str, str]:
         """Expose the native-action installation identifier."""
         return {"config_entry_id": self._config_entry_id}
+
+
+class WeatherModelSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Expose the latest finalized installation weather result."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        key: str,
+    ) -> None:
+        """Initialize one weather model sensor."""
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{installation_id}_{key}"
+        if key == "weather_model_quality":
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = [
+                "observed",
+                "external_service",
+                "calculated_high",
+                "calculated_reduced",
+                "calculated_partial",
+                "degraded",
+                "provided",
+                "unknown",
+                "unavailable",
+            ]
+        else:
+            self._attr_native_unit_of_measurement = UnitOfLength.MILLIMETERS
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._attr_suggested_display_precision = 2
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> Decimal | str | None:
+        """Return quality, ET0, or measured rain."""
+        snapshot = self.coordinator.data
+        if self._key == "weather_model_quality":
+            return snapshot.weather_model_quality
+        value = (
+            snapshot.reference_evapotranspiration_mm
+            if self._key == "reference_evapotranspiration"
+            else snapshot.measured_rain_mm
+        )
+        return Decimal(str(value)) if value is not None else None
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose model provenance, period, availability, and forecast separately."""
+        snapshot = self.coordinator.data
+        return {
+            "method": snapshot.weather_model_method,
+            "period_id": snapshot.weather_period_id,
+            "last_finalized_at": snapshot.weather_last_finalized_at,
+            "automation_available": snapshot.weather_automation_available,
+            "rain_forecast": snapshot.rain_forecast,
+        }
 
 
 class ActiveZoneSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
@@ -535,7 +647,12 @@ class ZonePlanningValueSensor(_ZoneObservationSensor):
             zone_name=zone_name,
         )
         self._attr_translation_key = key
-        if key == "water_deficit":
+        if key in {
+            "water_deficit",
+            "provisional_water_deficit",
+            "crop_evapotranspiration",
+            "effective_rain",
+        }:
             self._attr_native_unit_of_measurement = UnitOfLength.MILLIMETERS
             self._attr_state_class = SensorStateClass.MEASUREMENT
             self._attr_suggested_display_precision = 1
@@ -555,7 +672,31 @@ class ZonePlanningValueSensor(_ZoneObservationSensor):
             return Decimal(str(snapshot.zone_deficit_mm.get(self._zone_id, 0.0)))
         if self._observation_key == "automatic_target":
             return Decimal(str(snapshot.zone_target_liters.get(self._zone_id, 0.0)))
+        if self._observation_key == "provisional_water_deficit":
+            value = snapshot.zone_provisional_deficit_mm.get(self._zone_id)
+            return Decimal(str(value)) if value is not None else None
+        if self._observation_key == "crop_evapotranspiration":
+            value = snapshot.zone_crop_evapotranspiration_mm.get(self._zone_id)
+            return Decimal(str(value)) if value is not None else None
+        if self._observation_key == "effective_rain":
+            value = snapshot.zone_effective_rain_mm.get(self._zone_id)
+            return Decimal(str(value)) if value is not None else None
         if self._observation_key == "next_watering_window":
-            value = snapshot.zone_next_window.get(self._zone_id)
-            return datetime.fromisoformat(value) if value is not None else None
+            timestamp = snapshot.zone_next_window.get(self._zone_id)
+            return datetime.fromisoformat(timestamp) if timestamp is not None else None
         return snapshot.zone_planning_reason.get(self._zone_id, "automation_disabled")
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Expose the complete latest calculation explanation on model sensors."""
+        if self._observation_key not in {
+            "water_deficit",
+            "provisional_water_deficit",
+            "crop_evapotranspiration",
+            "effective_rain",
+            "automatic_target",
+        }:
+            return None
+        explanation = self.coordinator.data.zone_calculation_explanations.get(self._zone_id)
+        return {"calculation": explanation} if explanation is not None else None
