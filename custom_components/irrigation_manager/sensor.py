@@ -247,6 +247,8 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
             "error",
             "safety_lock",
             "emergency_stop",
+            "winter_lock",
+            "maintenance",
         ]
         self._attr_unique_id = f"{installation_id}_status"
         self._attr_device_info = DeviceInfo(

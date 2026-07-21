@@ -91,6 +91,14 @@ class IrrigationEventPublisher:
             except HomeAssistantError:
                 LOGGER.warning("Could not send critical irrigation notification to %s", entity_id)
 
+    def dismiss(self, notification_key: str) -> None:
+        """Dismiss one installation-scoped persistent notification."""
+        persistent_notification.async_dismiss(
+            self._hass,
+            f"{DOMAIN}_{self._installation_id}_{notification_key}",
+        )
+        self._notification_signatures.pop(notification_key, None)
+
     def installation_target(self) -> dict[str, str]:
         """Return a stable installation event target."""
         return {"type": "installation", "id": self._installation_id}

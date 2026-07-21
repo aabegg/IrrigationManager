@@ -52,12 +52,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             status=(
                 "emergency_stop"
                 if stored_state.emergency_stop
+                else "winter_lock"
+                if stored_state.winter_lock
                 else "safety_lock"
                 if stored_state.installation_safety_lock is not None
                 else "idle"
             ),
             emergency_stop=stored_state.emergency_stop,
             installation_safety_lock=stored_state.installation_safety_lock,
+            winter_lock=stored_state.winter_lock,
+            maintenance_active=stored_state.maintenance_test is not None,
         )
     )
     manager = IrrigationManager(

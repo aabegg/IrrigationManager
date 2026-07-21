@@ -254,6 +254,12 @@ class InstallationSnapshot:
     active_zone_id: str | None = None
     emergency_stop: bool = False
     installation_safety_lock: str | None = None
+    winter_lock: bool = False
+    maintenance_active: bool = False
+    maintenance_test_id: str | None = None
+    maintenance_kind: str | None = None
+    maintenance_expires_at: str | None = None
+    maintenance_confirmation_deadline: str | None = None
     active_target_type: str | None = None
     active_target_value: float | None = None
     active_remaining_value: float | None = None
@@ -384,6 +390,124 @@ class ActiveExecutionState:
 
 
 @dataclass(frozen=True, slots=True)
+class MaintenanceTestState:
+    """Durable supervised test state used to fail closed after restart."""
+
+    test_id: str
+    kind: str
+    zone_id: str
+    zone_subentry_id: str
+    started_at: str
+    expires_at: str
+    confirmation_deadline: str
+    bypass_checks: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> MaintenanceTestState:
+        """Deserialize one active supervised test."""
+        required = (
+            "test_id",
+            "kind",
+            "zone_id",
+            "zone_subentry_id",
+            "started_at",
+            "expires_at",
+            "confirmation_deadline",
+        )
+        if not all(isinstance(data.get(key), str) for key in required):
+            raise ValueError("Stored maintenance test is malformed")
+        raw_bypass = data.get("bypass_checks", [])
+        if not isinstance(raw_bypass, list) or not all(
+            isinstance(value, str) for value in raw_bypass
+        ):
+            raise ValueError("Stored maintenance bypass checks are malformed")
+        return cls(
+            test_id=str(data["test_id"]),
+            kind=str(data["kind"]),
+            zone_id=str(data["zone_id"]),
+            zone_subentry_id=str(data["zone_subentry_id"]),
+            started_at=str(data["started_at"]),
+            expires_at=str(data["expires_at"]),
+            confirmation_deadline=str(data["confirmation_deadline"]),
+            bypass_checks=tuple(raw_bypass),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize one active supervised test."""
+        return {
+            "test_id": self.test_id,
+            "kind": self.kind,
+            "zone_id": self.zone_id,
+            "zone_subentry_id": self.zone_subentry_id,
+            "started_at": self.started_at,
+            "expires_at": self.expires_at,
+            "confirmation_deadline": self.confirmation_deadline,
+            "bypass_checks": list(self.bypass_checks),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationProposal:
+    """Measured calibration values awaiting an explicit user decision."""
+
+    proposal_id: str
+    zone_id: str
+    zone_subentry_id: str
+    zone_valve: str
+    zone_config_hash: str
+    created_at: str
+    delivered_liters: float
+    duration_seconds: float
+    average_flow_l_min: float
+    opening_latency_seconds: float
+    post_run_liters: float
+    proposed_min_flow_l_min: float
+    proposed_max_flow_l_min: float
+    status: str = "pending"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> CalibrationProposal:
+        """Deserialize one calibration proposal."""
+        required = (
+            "proposal_id",
+            "zone_id",
+            "zone_subentry_id",
+            "zone_valve",
+            "zone_config_hash",
+            "created_at",
+            "status",
+        )
+        if not all(isinstance(data.get(key), str) for key in required):
+            raise ValueError("Stored calibration proposal is malformed")
+        return cls(
+            proposal_id=str(data["proposal_id"]),
+            zone_id=str(data["zone_id"]),
+            zone_subentry_id=str(data["zone_subentry_id"]),
+            zone_valve=str(data["zone_valve"]),
+            zone_config_hash=str(data["zone_config_hash"]),
+            created_at=str(data["created_at"]),
+            delivered_liters=StoredInstallationState._float(data.get("delivered_liters")),
+            duration_seconds=StoredInstallationState._float(data.get("duration_seconds")),
+            average_flow_l_min=StoredInstallationState._float(data.get("average_flow_l_min")),
+            opening_latency_seconds=StoredInstallationState._float(
+                data.get("opening_latency_seconds")
+            ),
+            post_run_liters=StoredInstallationState._float(data.get("post_run_liters")),
+            proposed_min_flow_l_min=StoredInstallationState._float(
+                data.get("proposed_min_flow_l_min")
+            ),
+            proposed_max_flow_l_min=StoredInstallationState._float(
+                data.get("proposed_max_flow_l_min")
+            ),
+            status=str(data["status"]),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize one calibration proposal."""
+        return {field: getattr(self, field) for field in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True, slots=True)
 class StoredInstallationState:
     """Versioned critical state persisted independently of entities."""
 
@@ -399,6 +523,9 @@ class StoredInstallationState:
     idle_meter_raw_baseline_liters: float | None = None
     emergency_stop: bool = False
     installation_safety_lock: str | None = None
+    winter_lock: bool = False
+    maintenance_test: MaintenanceTestState | None = None
+    calibration_proposal: CalibrationProposal | None = None
     active_execution: ActiveExecutionState | None = None
     manual_requests: tuple[ManualIrrigationRequest, ...] = ()
     irrigation_executions: tuple[IrrigationExecutionState, ...] = ()
@@ -449,6 +576,15 @@ class StoredInstallationState:
         installation_lock = data.get("installation_safety_lock")
         if installation_lock is not None and not isinstance(installation_lock, str):
             raise ValueError("Stored installation safety lock is malformed")
+        winter_lock = data.get("winter_lock", False)
+        if not isinstance(winter_lock, bool):
+            raise ValueError("Stored winter lock is not boolean")
+        raw_maintenance = data.get("maintenance_test")
+        if raw_maintenance is not None and not isinstance(raw_maintenance, dict):
+            raise ValueError("Stored maintenance test is malformed")
+        raw_calibration = data.get("calibration_proposal")
+        if raw_calibration is not None and not isinstance(raw_calibration, dict):
+            raise ValueError("Stored calibration proposal is malformed")
         raw_active_execution = data.get("active_execution")
         if raw_active_execution is not None and not isinstance(raw_active_execution, dict):
             raise ValueError("Stored active execution is malformed")
@@ -506,6 +642,17 @@ class StoredInstallationState:
             idle_meter_raw_baseline_liters=idle_baseline,
             emergency_stop=emergency_stop,
             installation_safety_lock=installation_lock,
+            winter_lock=winter_lock,
+            maintenance_test=(
+                MaintenanceTestState.from_dict(raw_maintenance)
+                if raw_maintenance is not None
+                else None
+            ),
+            calibration_proposal=(
+                CalibrationProposal.from_dict(raw_calibration)
+                if raw_calibration is not None
+                else None
+            ),
             active_execution=(
                 ActiveExecutionState.from_dict(raw_active_execution)
                 if raw_active_execution is not None
@@ -542,6 +689,15 @@ class StoredInstallationState:
             "idle_meter_raw_baseline_liters": self.idle_meter_raw_baseline_liters,
             "emergency_stop": self.emergency_stop,
             "installation_safety_lock": self.installation_safety_lock,
+            "winter_lock": self.winter_lock,
+            "maintenance_test": (
+                self.maintenance_test.as_dict() if self.maintenance_test is not None else None
+            ),
+            "calibration_proposal": (
+                self.calibration_proposal.as_dict()
+                if self.calibration_proposal is not None
+                else None
+            ),
             "active_execution": (
                 self.active_execution.as_dict() if self.active_execution is not None else None
             ),

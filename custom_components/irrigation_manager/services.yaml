@@ -310,3 +310,108 @@ resolve_balance_reconciliation:
           options:
             - apply
             - discard
+set_winter_lock:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+clear_winter_lock:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+start_maintenance_test:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id:
+      required: true
+      selector:
+        text:
+    duration:
+      required: true
+      selector:
+        number:
+          min: 0.001
+          max: 3600
+          step: 1
+          unit_of_measurement: s
+          mode: box
+    bypass_checks:
+      required: false
+      default: []
+      selector:
+        select:
+          multiple: true
+          options:
+            - flow
+confirm_maintenance_test:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    test_id:
+      required: true
+      selector:
+        text:
+stop_maintenance_test:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+start_calibration:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id:
+      required: true
+      selector:
+        text:
+    duration:
+      required: true
+      selector:
+        number:
+          min: 0.001
+          max: 3600
+          step: 1
+          unit_of_measurement: s
+          mode: box
+get_calibration_proposal:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+resolve_calibration:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    proposal_id:
+      required: true
+      selector:
+        text:
+    resolution:
+      required: true
+      selector:
+        select:
+          options:
+            - accept
+            - discard

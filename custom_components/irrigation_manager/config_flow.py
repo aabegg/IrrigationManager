@@ -37,6 +37,7 @@ from .const import (
     CONF_AREA_M2,
     CONF_AUTOMATIC_MAX_DURATION,
     CONF_AUTOMATION_ENABLED,
+    CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_CROP_FACTOR,
     CONF_DEFAULT_DURATION,
     CONF_FLOW_GRACE_SECONDS,
@@ -46,6 +47,8 @@ from .const import (
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
+    CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
+    CONF_MAINTENANCE_MAX_DURATION,
     CONF_MANDATORY_AMOUNT_LITERS,
     CONF_MAX_DOSE_AMOUNT,
     CONF_MAX_DOSE_DURATION,
@@ -133,6 +136,33 @@ INSTALLATION_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_NOTIFY_ENTITIES, default=[]): EntitySelector(
             EntitySelectorConfig(domain=Platform.NOTIFY, multiple=True)
+        ),
+        vol.Optional(CONF_MAINTENANCE_MAX_DURATION, default=300): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=3600,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_MAINTENANCE_CONFIRMATION_INTERVAL, default=30): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=300,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_CALIBRATION_SETTLE_SECONDS, default=2): NumberSelector(
+            NumberSelectorConfig(
+                min=0,
+                max=60,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
         ),
     }
 )

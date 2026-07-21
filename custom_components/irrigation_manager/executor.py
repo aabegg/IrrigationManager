@@ -72,6 +72,8 @@ class ExecutionRequest:
     on_zone_opening: Callable[[], Awaitable[None]] | None = None
     on_zone_opened: Callable[[], Awaitable[None]] | None = None
     on_progress: Callable[[float, str], Awaitable[None]] | None = None
+    observe_flow: bool = False
+    on_flow_sample: Callable[[float], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
         """Reject ambiguous targets and volume requests without a hard limit."""
@@ -93,6 +95,8 @@ class ExecutionResult:
     safety_scope: str | None = None
     measurement_quality: str = "measured"
     target_reached: bool = True
+    opening_latency_seconds: float = 0.0
+    post_run_liters: float = 0.0
 
 
 @dataclass(slots=True)
@@ -161,6 +165,10 @@ class IrrigationExecutor:
             operation_started_at = (
                 self._clock.monotonic() if request.amount_liters is not None else None
             )
+            zone_open_command_at: float | None = None
+            opening_latency_seconds = 0.0
+            meter_at_close_liters: float | None = None
+            meter_end_liters: float | None = None
             deadline = (
                 operation_started_at + time_limit if operation_started_at is not None else None
             )
@@ -176,7 +184,9 @@ class IrrigationExecutor:
                                 await request.on_zone_opening()
                             watering_started_at = self._clock.monotonic()
                             progress.accounted_at = watering_started_at
+                            zone_open_command_at = self._clock.monotonic()
                             await self._open_and_confirm(request.zone_valve)
+                            opening_latency_seconds = self._clock.monotonic() - zone_open_command_at
                             zone_open_confirmed = True
                             if request.on_zone_opened is not None:
                                 await request.on_zone_opened()
@@ -195,7 +205,9 @@ class IrrigationExecutor:
                         watering_started_at = self._clock.monotonic()
                         progress.accounted_at = watering_started_at
                         deadline = watering_started_at + time_limit
+                        zone_open_command_at = self._clock.monotonic()
                         await self._open_and_confirm(request.zone_valve)
+                        opening_latency_seconds = self._clock.monotonic() - zone_open_command_at
                         zone_open_confirmed = True
                         if request.on_zone_opened is not None:
                             await request.on_zone_opened()
@@ -221,6 +233,11 @@ class IrrigationExecutor:
                         if elapsed_started_at is None
                         else max(0.0, self._clock.monotonic() - elapsed_started_at),
                     )
+                if meter_start_liters is not None and request.observe_flow:
+                    try:
+                        meter_at_close_liters = await self._meter.read_liters()
+                    except Exception:  # noqa: BLE001
+                        meter_at_close_liters = None
                 try:
                     if request.amount_liters is not None and deadline is not None:
                         async with asyncio.timeout(max(0.0, deadline - self._clock.monotonic())):
@@ -312,6 +329,14 @@ class IrrigationExecutor:
                 safety_scope=safety_scope,
                 measurement_quality=progress.measurement_quality,
                 target_reached=progress.target_reached,
+                opening_latency_seconds=opening_latency_seconds,
+                post_run_liters=(
+                    max(0.0, meter_end_liters - meter_at_close_liters)
+                    if meter_start_liters is not None
+                    and meter_at_close_liters is not None
+                    and meter_end_liters is not None
+                    else 0.0
+                ),
             )
 
     async def _water_and_monitor(
@@ -368,7 +393,9 @@ class IrrigationExecutor:
                     self._record_hard_timeout(request, violations, progress)
                     return None
             if self._flow is not None and (
-                request.minimum_flow_l_min is not None or request.maximum_flow_l_min is not None
+                request.observe_flow
+                or request.minimum_flow_l_min is not None
+                or request.maximum_flow_l_min is not None
             ):
                 elapsed = self._clock.monotonic() - watering_started_at
                 if elapsed >= request.flow_grace_seconds:
@@ -378,6 +405,8 @@ class IrrigationExecutor:
                         violations.append(f"Flow safety unavailable: {err}")
                         progress.target_reached = False
                         return "installation"
+                    if request.on_flow_sample is not None:
+                        await request.on_flow_sample(flow_l_min)
                     if request.amount_liters is not None and self._clock.monotonic() >= deadline:
                         self._record_hard_timeout(request, violations, progress)
                         return None

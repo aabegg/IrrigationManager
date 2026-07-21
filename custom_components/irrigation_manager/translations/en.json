@@ -78,7 +78,32 @@
         "reconciliation_id": {"name": "Reconciliation ID"},
         "resolution": {"name": "Resolution"}
       }
-    }
+    },
+    "set_winter_lock": {"name": "Set winter lock", "description": "Confirm that the installation is drained, stop all irrigation, close all valves, and persist the winter lock."},
+    "clear_winter_lock": {"name": "Clear winter lock", "description": "Consciously release the winter lock after a closed-state preflight."},
+    "start_maintenance_test": {
+      "name": "Start supervised maintenance test",
+      "description": "Run exactly one time-bounded zone test with mandatory dead-man confirmation.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "zone_subentry_id": {"name": "Irrigation zone"},
+        "duration": {"name": "Hard test duration"},
+        "bypass_checks": {"name": "Bypassed checks", "description": "Only selected implemented sensor checks are bypassed. Valve feedback and exclusivity remain mandatory."}
+      }
+    },
+    "confirm_maintenance_test": {"name": "Confirm maintenance supervision", "description": "Refresh the dead-man deadline without extending the fixed test timeout."},
+    "stop_maintenance_test": {"name": "Stop maintenance test", "description": "Stop the active supervised test and close all valves."},
+    "start_calibration": {
+      "name": "Start flow calibration",
+      "description": "Run a supervised measured zone test and create a review-only flow proposal.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "zone_subentry_id": {"name": "Irrigation zone"},
+        "duration": {"name": "Hard test duration"}
+      }
+    },
+    "get_calibration_proposal": {"name": "Get calibration proposal", "description": "Return the latest measured proposal without applying it."},
+    "resolve_calibration": {"name": "Resolve calibration proposal", "description": "Explicitly accept or discard a pending calibration proposal."}
   },
   "selector": {
     "meter_failure_strategy": {
@@ -107,6 +132,12 @@
       },
       "automation_needed": {
         "name": "Automatic irrigation needed"
+      },
+      "winter_lock": {
+        "name": "Winter lock"
+      },
+      "maintenance_mode": {
+        "name": "Maintenance mode"
       }
     },
     "sensor": {
@@ -123,8 +154,10 @@
           "watering": "Watering",
           "error": "Error",
           "safety_lock": "Safety lock",
-          "emergency_stop": "Emergency stop",
-          "soaking": "Soaking"
+           "emergency_stop": "Emergency stop",
+           "soaking": "Soaking",
+           "winter_lock": "Winter lock",
+           "maintenance": "Maintenance"
         }
       },
       "active_zone": {
@@ -169,7 +202,10 @@
           "leak_duration_seconds": "Leak confirmation duration",
           "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity",
-          "notify_entities": "Critical notification targets"
+           "notify_entities": "Critical notification targets"
+          ,"maintenance_max_duration": "Maximum maintenance test duration"
+          ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
+          ,"calibration_settle_seconds": "Calibration post-run observation time"
         },
         "data_description": {
           "main_valve": "Optional switch or valve that isolates the complete installation.",
@@ -210,7 +246,10 @@
           "leak_duration_seconds": "Leak confirmation duration",
           "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity",
-          "notify_entities": "Critical notification targets"
+           "notify_entities": "Critical notification targets"
+          ,"maintenance_max_duration": "Maximum maintenance test duration"
+          ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
+          ,"calibration_settle_seconds": "Calibration post-run observation time"
         }
       },
       "zone": {

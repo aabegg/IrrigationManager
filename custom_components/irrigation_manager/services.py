@@ -27,6 +27,9 @@ ATTR_FORMAT = "format"
 ATTR_LIMIT = "limit"
 ATTR_RECONCILIATION_ID = "reconciliation_id"
 ATTR_RESOLUTION = "resolution"
+ATTR_TEST_ID = "test_id"
+ATTR_BYPASS_CHECKS = "bypass_checks"
+ATTR_PROPOSAL_ID = "proposal_id"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
@@ -46,6 +49,14 @@ SERVICE_SKIP_AUTOMATIC = "skip_automatic"
 SERVICE_EXPORT_CONFIG = "export_config"
 SERVICE_EXPORT_HISTORY = "export_history"
 SERVICE_RESOLVE_BALANCE_RECONCILIATION = "resolve_balance_reconciliation"
+SERVICE_SET_WINTER_LOCK = "set_winter_lock"
+SERVICE_CLEAR_WINTER_LOCK = "clear_winter_lock"
+SERVICE_START_MAINTENANCE_TEST = "start_maintenance_test"
+SERVICE_CONFIRM_MAINTENANCE_TEST = "confirm_maintenance_test"
+SERVICE_STOP_MAINTENANCE_TEST = "stop_maintenance_test"
+SERVICE_START_CALIBRATION = "start_calibration"
+SERVICE_GET_CALIBRATION_PROPOSAL = "get_calibration_proposal"
+SERVICE_RESOLVE_CALIBRATION = "resolve_calibration"
 
 
 def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
@@ -131,6 +142,34 @@ RECONCILIATION_SCHEMA = vol.Schema(
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_RECONCILIATION_ID): cv.string,
         vol.Required(ATTR_RESOLUTION): vol.In({"apply", "discard"}),
+    }
+)
+SUPERVISED_TEST_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+        vol.Required(ATTR_DURATION): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+        vol.Optional(ATTR_BYPASS_CHECKS, default=[]): vol.All(cv.ensure_list, [vol.In({"flow"})]),
+    }
+)
+CALIBRATION_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+        vol.Required(ATTR_DURATION): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+    }
+)
+TEST_ID_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_TEST_ID): cv.string,
+    }
+)
+CALIBRATION_RESOLUTION_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_PROPOSAL_ID): cv.string,
+        vol.Required(ATTR_RESOLUTION): vol.In({"accept", "discard"}),
     }
 )
 
@@ -239,12 +278,96 @@ async def async_register_services(hass: HomeAssistant) -> None:
             resolution=cast(str, call.data[ATTR_RESOLUTION]),
         )
 
+    async def set_winter_lock(call: ServiceCall) -> None:
+        await manager_for(call).async_set_winter_lock()
+
+    async def clear_winter_lock(call: ServiceCall) -> None:
+        await manager_for(call).async_clear_winter_lock()
+
+    async def start_maintenance_test(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_start_maintenance_test(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
+            duration_seconds=cast(float, call.data[ATTR_DURATION]),
+            bypass_checks=tuple(cast(list[str], call.data[ATTR_BYPASS_CHECKS])),
+        )
+
+    async def confirm_maintenance_test(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_confirm_maintenance_test(
+            test_id=cast(str, call.data[ATTR_TEST_ID])
+        )
+
+    async def stop_maintenance_test(call: ServiceCall) -> None:
+        await manager_for(call).async_stop_maintenance_test()
+
+    async def start_calibration(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_start_maintenance_test(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
+            duration_seconds=cast(float, call.data[ATTR_DURATION]),
+            kind="calibration",
+        )
+
+    async def get_calibration_proposal(call: ServiceCall) -> dict[str, Any]:
+        return {"proposal": manager_for(call).calibration_proposal()}
+
+    async def resolve_calibration(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_resolve_calibration(
+            proposal_id=cast(str, call.data[ATTR_PROPOSAL_ID]),
+            resolution=cast(str, call.data[ATTR_RESOLUTION]),
+        )
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_START_MANUAL,
         start_manual,
         schema=START_MANUAL_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_SET_WINTER_LOCK, set_winter_lock, schema=INSTALLATION_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_CLEAR_WINTER_LOCK, clear_winter_lock, schema=INSTALLATION_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_START_MAINTENANCE_TEST,
+        start_maintenance_test,
+        schema=SUPERVISED_TEST_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CONFIRM_MAINTENANCE_TEST,
+        confirm_maintenance_test,
+        schema=TEST_ID_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_STOP_MAINTENANCE_TEST,
+        stop_maintenance_test,
+        schema=INSTALLATION_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_START_CALIBRATION,
+        start_calibration,
+        schema=CALIBRATION_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_CALIBRATION_PROPOSAL,
+        get_calibration_proposal,
+        schema=INSTALLATION_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESOLVE_CALIBRATION,
+        resolve_calibration,
+        schema=CALIBRATION_RESOLUTION_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
         DOMAIN,

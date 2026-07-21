@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
@@ -30,6 +31,7 @@ from .const import (
     CONF_AREA_M2,
     CONF_AUTOMATIC_MAX_DURATION,
     CONF_AUTOMATION_ENABLED,
+    CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_CROP_FACTOR,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
@@ -38,6 +40,8 @@ from .const import (
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
+    CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
+    CONF_MAINTENANCE_MAX_DURATION,
     CONF_MANDATORY_AMOUNT_LITERS,
     CONF_MAX_DOSE_AMOUNT,
     CONF_MAX_DOSE_DURATION,
@@ -70,8 +74,10 @@ from .executor import ExecutionRequest, ExecutionResult, IrrigationExecutor
 from .leak_monitor import LeakObservation
 from .models import (
     ActiveExecutionState,
+    CalibrationProposal,
     InstallationSnapshot,
     IrrigationExecutionState,
+    MaintenanceTestState,
     ManualIrrigationRequest,
     StoredInstallationState,
     UncreditedBalanceDelivery,
@@ -216,6 +222,10 @@ class IrrigationManager:
         self._active_measurement_quality: str | None = None
         self._complete_idle_event = asyncio.Event()
         self._pending_reload_task: asyncio.Task[None] | None = None
+        self._maintenance_task: asyncio.Task[ExecutionResult] | None = None
+        self._maintenance_watchdog_task: asyncio.Task[None] | None = None
+        self._maintenance_stop_reason: str | None = None
+        self._maintenance_flow_samples: list[float] = []
         self._refresh_complete_idle_event()
 
     async def async_request_config_reload(self) -> None:
@@ -288,6 +298,24 @@ class IrrigationManager:
             entity_ids.append(main_valve)
         await self._async_close_entities(list(dict.fromkeys(entity_ids)))
         await self._async_recover_interrupted_execution(could_have_flowed=active_could_have_flowed)
+        if self._stored_state.maintenance_test is not None:
+            interrupted_test = self._stored_state.maintenance_test
+            self._stored_state = replace(self._stored_state, maintenance_test=None)
+            await self._store.async_save(self._stored_state)
+            self._events.fire(
+                "maintenance_ended",
+                reason="restart",
+                target=self._events.zone_target(interrupted_test.zone_id),
+                context={"test_id": interrupted_test.test_id, "kind": interrupted_test.kind},
+            )
+            await self._events.async_critical(
+                "maintenance_interrupted",
+                title="Irrigation maintenance test interrupted",
+                message=(
+                    f"{self._events.installation_name} closed all valves after a restart "
+                    "interrupted a supervised test. Inspect the installation before retrying."
+                ),
+            )
         await self._async_recover_inactive_open_executions()
         await self._async_expire_requests()
         await self._async_initialize_zone_balances()
@@ -346,6 +374,14 @@ class IrrigationManager:
         if active_task is not None and not active_task.done():
             active_task.cancel()
             await asyncio.gather(active_task, return_exceptions=True)
+        maintenance_task = self._maintenance_task
+        if maintenance_task is not None and not maintenance_task.done():
+            maintenance_task.cancel()
+            await asyncio.gather(maintenance_task, return_exceptions=True)
+        watchdog_task = self._maintenance_watchdog_task
+        if watchdog_task is not None and watchdog_task is not asyncio.current_task():
+            watchdog_task.cancel()
+            await asyncio.gather(watchdog_task, return_exceptions=True)
         if self._stored_state.active_execution is not None:
             await self._async_recover_interrupted_execution(could_have_flowed=False)
         tasks = tuple(self._flow_event_tasks)
@@ -936,7 +972,9 @@ class IrrigationManager:
                 },
             )
 
-    async def _async_close_entities(self, entity_ids: list[str]) -> None:
+    async def _async_close_entities(
+        self, entity_ids: list[str], *, report_failure: bool = True
+    ) -> None:
         """Attempt every requested closure before reporting any failures."""
         errors: list[Exception] = []
         for entity_id in dict.fromkeys(entity_ids):
@@ -944,7 +982,7 @@ class IrrigationManager:
                 await self._actuators.close(entity_id)
             except Exception as err:  # noqa: BLE001
                 errors.append(err)
-        if errors:
+        if errors and report_failure:
             self._events.fire(
                 "safety_lock_activated",
                 reason="valve_closure_failed",
@@ -959,6 +997,7 @@ class IrrigationManager:
                     "closed. Isolate the water supply and inspect the irrigation valves."
                 ),
             )
+        if errors:
             raise ExceptionGroup("Could not close all irrigation valves", errors)
 
     def _zone_valves(self) -> list[str]:
@@ -970,8 +1009,14 @@ class IrrigationManager:
         *,
         target_zone_id: str | None = None,
         ignore_installation_lock: bool = False,
+        ignore_winter_lock: bool = False,
+        ignore_emergency_stop: bool = False,
     ) -> None:
         """Prove all managed valves are available and hydraulically closed."""
+        if self._stored_state.emergency_stop and not ignore_emergency_stop:
+            raise HomeAssistantError("The emergency stop is active")
+        if self._stored_state.winter_lock and not ignore_winter_lock:
+            raise HomeAssistantError("The winter lock is active")
         if self._stored_state.installation_safety_lock is not None and not ignore_installation_lock:
             raise HomeAssistantError("The irrigation installation has a safety lock")
         if target_zone_id in self._stored_state.zone_safety_locks:
@@ -1071,6 +1116,8 @@ class IrrigationManager:
                 enabled=bool(data.get(CONF_AUTOMATION_ENABLED, False)),
                 blocked=(
                     self._stored_state.emergency_stop
+                    or self._stored_state.winter_lock
+                    or self._stored_state.maintenance_test is not None
                     or self._stored_state.installation_safety_lock is not None
                     or zone_id in self._stored_state.zone_safety_locks
                 ),
@@ -1526,6 +1573,10 @@ class IrrigationManager:
         async with self._command_lock:
             if self._stored_state.emergency_stop:
                 raise HomeAssistantError("The emergency stop is active")
+            if self._stored_state.winter_lock:
+                raise HomeAssistantError("The winter lock is active")
+            if self._stored_state.maintenance_test is not None:
+                raise HomeAssistantError("A supervised maintenance test is active")
             subentry = self._zone_configs_by_subentry_id.get(zone_subentry_id)
             if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
                 raise HomeAssistantError("The irrigation zone does not exist")
@@ -2155,6 +2206,9 @@ class IrrigationManager:
             CONF_LEAK_MONITORING,
             CONF_LEAK_FLOW_THRESHOLD,
             CONF_LEAK_DURATION_SECONDS,
+            CONF_MAINTENANCE_MAX_DURATION,
+            CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
+            CONF_CALIBRATION_SETTLE_SECONDS,
             CONF_WEATHER_ENTITY,
             "name",
             "notify_entities",
@@ -2231,6 +2285,13 @@ class IrrigationManager:
         return {
             "status": self._coordinator.data.status,
             "emergency_stop": self._stored_state.emergency_stop,
+            "winter_lock": self._stored_state.winter_lock,
+            "maintenance_active": self._stored_state.maintenance_test is not None,
+            "calibration_proposal_status": (
+                self._stored_state.calibration_proposal.status
+                if self._stored_state.calibration_proposal is not None
+                else None
+            ),
             "installation_safety_lock_active": (
                 self._stored_state.installation_safety_lock is not None
             ),
@@ -2534,6 +2595,10 @@ class IrrigationManager:
         manual_request = current_request
         if self._stored_state.emergency_stop:
             raise HomeAssistantError("The emergency stop is active")
+        if self._stored_state.winter_lock:
+            raise HomeAssistantError("The winter lock is active")
+        if self._stored_state.maintenance_test is not None:
+            raise HomeAssistantError("A supervised maintenance test is active")
         if self._stored_state.active_execution is not None:
             raise HomeAssistantError("An interrupted irrigation execution needs recovery")
         if self._active_task is not None and not self._active_task.done():
@@ -2804,6 +2869,7 @@ class IrrigationManager:
         if request_id is not None:
             await self.async_cancel_request(request_id)
             return
+        await self.async_stop_maintenance_test(reason="user_stop", require_active=False)
         request_ids = [
             request.request_id
             for request in self._stored_state.manual_requests
@@ -2814,6 +2880,521 @@ class IrrigationManager:
                 await self.async_cancel_request(open_request_id)
             except HomeAssistantError:
                 continue
+
+    async def async_set_winter_lock(self) -> None:
+        """Persist the winter lock before closing and cancelling every water path."""
+        async with self._command_lock:
+            self._stored_state = replace(self._stored_state, winter_lock=True)
+            await self._store.async_save(self._stored_state)
+            self._publish(status="winter_lock", active_zone_id=None)
+        closure_errors: list[Exception] = []
+        try:
+            await self._async_close_entities(
+                self._all_known_valves(),
+                report_failure=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            closure_errors.append(err)
+        try:
+            await self.async_stop()
+        except Exception as err:  # noqa: BLE001
+            closure_errors.append(err)
+        try:
+            await self._async_close_entities(
+                self._all_known_valves(),
+                report_failure=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            closure_errors.append(err)
+        self._events.fire(
+            "winter_lock_activated",
+            reason="winter_lock_enforced",
+            target=self._events.installation_target(),
+            context={"lock_active": True},
+        )
+        await self._events.async_critical(
+            "winter_lock",
+            title="Irrigation winter lock active",
+            message=(
+                f"{self._events.installation_name} is winter-locked. Automatic, manual, "
+                "maintenance, and calibration watering are blocked until spring release."
+            ),
+        )
+        if len(closure_errors) == 1:
+            raise closure_errors[0]
+        if closure_errors:
+            raise ExceptionGroup("Winter lock valve closure failed", closure_errors)
+
+    async def async_clear_winter_lock(self) -> None:
+        """Release winter protection only after proving a closed, idle installation."""
+        async with self._command_lock:
+            if not self._stored_state.winter_lock:
+                return
+            if not self._is_complete_idle() or self._stored_state.maintenance_test is not None:
+                raise HomeAssistantError("The irrigation installation is busy")
+            await self._async_preflight(ignore_winter_lock=True)
+            self._stored_state = replace(self._stored_state, winter_lock=False)
+            await self._store.async_save(self._stored_state)
+            self._publish(status="idle", active_zone_id=None)
+        self._events.fire(
+            "winter_lock_cleared",
+            reason="spring_release_confirmed",
+            target=self._events.installation_target(),
+            context={"lock_active": False},
+        )
+        self._events.dismiss("winter_lock")
+        self._planning_event.set()
+
+    async def async_start_maintenance_test(
+        self,
+        *,
+        zone_subentry_id: str,
+        duration_seconds: float,
+        bypass_checks: tuple[str, ...] = (),
+        kind: str = "maintenance",
+    ) -> dict[str, object]:
+        """Start exactly one bounded, supervised valve test and return immediately."""
+        allowed_bypasses = {"flow"}
+        unknown_bypasses = set(bypass_checks) - allowed_bypasses
+        if unknown_bypasses:
+            raise HomeAssistantError(
+                f"Unsupported maintenance bypass checks: {', '.join(sorted(unknown_bypasses))}"
+            )
+        if kind not in {"maintenance", "calibration"}:
+            raise HomeAssistantError("Unsupported supervised test kind")
+        if kind == "calibration" and bypass_checks:
+            raise HomeAssistantError("Calibration cannot bypass measurement checks")
+        async with self._command_lock:
+            if not self._is_complete_idle() or self._stored_state.maintenance_test is not None:
+                raise HomeAssistantError("The irrigation installation is busy")
+            if kind == "calibration" and (not self._has_meter or self._flow is None):
+                raise HomeAssistantError(
+                    "Calibration requires a cumulative water meter and a flow sensor"
+                )
+            subentry = self._zone_configs_by_subentry_id.get(zone_subentry_id)
+            if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
+                raise HomeAssistantError("The irrigation zone does not exist")
+            max_duration = self._number(
+                self._installation_data, CONF_MAINTENANCE_MAX_DURATION, 300.0
+            )
+            if duration_seconds <= 0 or duration_seconds > max_duration:
+                raise HomeAssistantError(
+                    f"The supervised test duration must not exceed {max_duration:g} seconds"
+                )
+            await self._async_preflight(target_zone_id=subentry.unique_id or subentry.subentry_id)
+            confirmation_interval = self._number(
+                self._installation_data, CONF_MAINTENANCE_CONFIRMATION_INTERVAL, 30.0
+            )
+            now = datetime.now(UTC)
+            test = MaintenanceTestState(
+                test_id=uuid4().hex,
+                kind=kind,
+                zone_id=subentry.unique_id or subentry.subentry_id,
+                zone_subentry_id=subentry.subentry_id,
+                started_at=now.isoformat(),
+                expires_at=(now + timedelta(seconds=max_duration)).isoformat(),
+                confirmation_deadline=(
+                    now + timedelta(seconds=min(max_duration, confirmation_interval))
+                ).isoformat(),
+                bypass_checks=tuple(sorted(set(bypass_checks))),
+            )
+            meter_baseline = await self._meter.read_raw_liters() if self._has_meter else None
+            self._stored_state = replace(
+                self._stored_state,
+                maintenance_test=test,
+                active_execution=ActiveExecutionState(
+                    zone_id=test.zone_id,
+                    zone_valve=str(subentry.data[CONF_ZONE_VALVE]),
+                    main_valve=self._installation_data.get(CONF_MAIN_VALVE),
+                    meter_raw_baseline_liters=meter_baseline,
+                    prepared_at=now.isoformat(),
+                    watering_started_at=None,
+                    requested_duration_seconds=duration_seconds,
+                    estimated_flow_l_min=self._estimated_flow(subentry.data),
+                    balance_area_m2=self._number(subentry.data, CONF_AREA_M2, 1.0),
+                    balance_application_efficiency=self._number(
+                        subentry.data, CONF_APPLICATION_EFFICIENCY, 0.8
+                    ),
+                    balance_maximum_deficit_mm=self._number(
+                        subentry.data, CONF_MAXIMUM_DEFICIT_MM, 50.0
+                    ),
+                    balance_minimum_effective_liters=self._number(
+                        subentry.data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1
+                    ),
+                ),
+            )
+            await self._store.async_save(self._stored_state)
+            self._cancel_leak_observation()
+            self._maintenance_stop_reason = None
+            self._maintenance_flow_samples = []
+            self._watering = True
+            self._maintenance_task = self._hass.async_create_task(
+                self._async_run_maintenance_test(test, subentry, duration_seconds),
+                f"Irrigation Manager supervised {kind} test",
+            )
+            self._maintenance_watchdog_task = self._hass.async_create_task(
+                self._async_maintenance_watchdog(test.test_id),
+                "Irrigation Manager maintenance dead-man watchdog",
+            )
+            self._publish(status="maintenance", active_zone_id=test.zone_id)
+        self._events.fire(
+            "maintenance_started",
+            reason=f"{kind}_confirmed",
+            target=self._events.zone_target(test.zone_id),
+            measurements={"duration_seconds": duration_seconds},
+            context={
+                "test_id": test.test_id,
+                "kind": kind,
+                "bypass_checks": list(test.bypass_checks),
+            },
+        )
+        await self._events.async_critical(
+            "maintenance_active",
+            title="Supervised irrigation test active",
+            message=(
+                f"{self._events.installation_name} is running one supervised {kind} test. "
+                "Keep sending dead-man confirmations; missing confirmation closes all valves."
+            ),
+        )
+        return {"test_id": test.test_id, "expires_at": test.expires_at}
+
+    async def async_confirm_maintenance_test(self, *, test_id: str) -> dict[str, object]:
+        """Extend only the dead-man deadline, never the fixed test timeout."""
+        async with self._command_lock:
+            test = self._stored_state.maintenance_test
+            if test is None or test.test_id != test_id:
+                raise HomeAssistantError("The supervised maintenance test is not active")
+            now = datetime.now(UTC)
+            expires_at = datetime.fromisoformat(test.expires_at)
+            if now >= expires_at:
+                raise HomeAssistantError("The supervised maintenance test has expired")
+            interval = self._number(
+                self._installation_data, CONF_MAINTENANCE_CONFIRMATION_INTERVAL, 30.0
+            )
+            deadline = min(expires_at, now + timedelta(seconds=interval))
+            test = replace(test, confirmation_deadline=deadline.isoformat())
+            self._stored_state = replace(self._stored_state, maintenance_test=test)
+            await self._store.async_save(self._stored_state)
+            self._publish(status="maintenance", active_zone_id=test.zone_id)
+            return {"test_id": test_id, "confirmation_deadline": test.confirmation_deadline}
+
+    async def async_stop_maintenance_test(
+        self, *, reason: str = "user_stop", require_active: bool = True
+    ) -> None:
+        """Stop a supervised test; executor cleanup and an explicit closure both fail closed."""
+        task: asyncio.Task[ExecutionResult] | None
+        async with self._command_lock:
+            test = self._stored_state.maintenance_test
+            if test is None:
+                if require_active:
+                    raise HomeAssistantError("No supervised maintenance test is active")
+                return
+            self._maintenance_stop_reason = reason
+            task = self._maintenance_task
+            if task is not None and not task.done():
+                task.cancel()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        await self._async_close_entities(self._all_known_valves())
+
+    async def _async_maintenance_watchdog(self, test_id: str) -> None:
+        """Cancel the test at the first missed confirmation or fixed expiry."""
+        try:
+            while True:
+                test = self._stored_state.maintenance_test
+                if test is None or test.test_id != test_id:
+                    return
+                deadline = min(
+                    datetime.fromisoformat(test.expires_at),
+                    datetime.fromisoformat(test.confirmation_deadline),
+                )
+                await asyncio.sleep(max(0.0, (deadline - datetime.now(UTC)).total_seconds()))
+                current = self._stored_state.maintenance_test
+                if current is None or current.test_id != test_id:
+                    return
+                now = datetime.now(UTC)
+                if now >= datetime.fromisoformat(current.expires_at):
+                    await self.async_stop_maintenance_test(reason="hard_timeout")
+                    return
+                if now >= datetime.fromisoformat(current.confirmation_deadline):
+                    await self.async_stop_maintenance_test(reason="deadman_timeout")
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def _async_run_maintenance_test(
+        self,
+        test: MaintenanceTestState,
+        subentry: _ZoneConfigSnapshot,
+        duration_seconds: float,
+    ) -> ExecutionResult:
+        """Execute and account one supervised test through the normal safe executor."""
+        try:
+            result = await self._executor.execute(
+                ExecutionRequest(
+                    zone_id=test.zone_id,
+                    zone_valve=str(subentry.data[CONF_ZONE_VALVE]),
+                    main_valve=self._installation_data.get(CONF_MAIN_VALVE),
+                    duration_seconds=duration_seconds,
+                    settle_seconds=(
+                        self._number(self._installation_data, CONF_CALIBRATION_SETTLE_SECONDS, 2.0)
+                        if test.kind == "calibration"
+                        else 0.0
+                    ),
+                    managed_zone_valves=tuple(self._zone_valves()),
+                    monitor_interval_seconds=min(1.0, duration_seconds),
+                    minimum_flow_l_min=(
+                        None
+                        if "flow" in test.bypass_checks
+                        else self._optional_float(subentry.data, CONF_MIN_FLOW)
+                    ),
+                    maximum_flow_l_min=(
+                        None
+                        if "flow" in test.bypass_checks
+                        else self._optional_float(subentry.data, CONF_MAX_FLOW)
+                    ),
+                    flow_grace_seconds=self._number(subentry.data, CONF_FLOW_GRACE_SECONDS, 5.0),
+                    observe_flow=test.kind == "calibration",
+                    on_flow_sample=self._async_record_maintenance_flow,
+                    on_zone_opening=self._async_mark_zone_opening,
+                    on_zone_opened=self._async_mark_zone_opened,
+                )
+            )
+        except asyncio.CancelledError:
+            result = ExecutionResult(
+                zone_id=test.zone_id,
+                delivered_liters=0.0,
+                duration_seconds=0.0,
+                stopped=True,
+                target_reached=False,
+                measurement_quality="unknown",
+            )
+        except Exception as err:  # noqa: BLE001
+            result = ExecutionResult(
+                zone_id=test.zone_id,
+                delivered_liters=0.0,
+                duration_seconds=0.0,
+                safety_violation=str(err),
+                safety_scope="zone",
+                target_reached=False,
+                measurement_quality="unknown",
+            )
+        async with self._command_lock:
+            await self._async_finish_maintenance_test(test, subentry, result)
+        return result
+
+    async def _async_record_maintenance_flow(self, flow_l_min: float) -> None:
+        """Collect bounded calibration samples in memory during the active test only."""
+        self._maintenance_flow_samples.append(flow_l_min)
+
+    async def _async_finish_maintenance_test(
+        self,
+        test: MaintenanceTestState,
+        subentry: _ZoneConfigSnapshot,
+        result: ExecutionResult,
+    ) -> None:
+        """Book real water, preserve safety violations, and create a review-only proposal."""
+        if self._stored_state.maintenance_test is None:
+            return
+        zone_totals = dict(self._stored_state.zone_totals_liters)
+        zone_totals[test.zone_id] = zone_totals.get(test.zone_id, 0.0) + result.delivered_liters
+        qualities = dict(self._stored_state.zone_measurement_quality)
+        qualities[test.zone_id] = result.measurement_quality
+        last_delivered = dict(self._stored_state.zone_last_delivered_liters)
+        last_delivered[test.zone_id] = result.delivered_liters
+        last_duration = dict(self._stored_state.zone_last_duration_seconds)
+        last_duration[test.zone_id] = result.duration_seconds
+        zone_locks = dict(self._stored_state.zone_safety_locks)
+        installation_lock = self._stored_state.installation_safety_lock
+        if result.safety_scope == "zone" and result.safety_violation:
+            zone_locks[test.zone_id] = result.safety_violation
+        if result.safety_scope == "installation" and result.safety_violation:
+            installation_lock = result.safety_violation
+        deficits, last_effective = self._balance_after_delivery(
+            zone_id=test.zone_id,
+            delivered_liters=result.delivered_liters,
+            effective_delivery=self._crosses_effective_threshold(
+                previous_liters=0.0,
+                delivered_liters=result.delivered_liters,
+                minimum_effective_liters=self._number(
+                    subentry.data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1
+                ),
+            ),
+            delivered_at=datetime.now(UTC),
+            area_m2=self._number(subentry.data, CONF_AREA_M2, 1.0),
+            application_efficiency=self._number(subentry.data, CONF_APPLICATION_EFFICIENCY, 0.8),
+            maximum_deficit_mm=self._number(subentry.data, CONF_MAXIMUM_DEFICIT_MM, 50.0),
+        )
+        proposal = self._stored_state.calibration_proposal
+        successful = (
+            self._maintenance_stop_reason is None
+            and not result.stopped
+            and result.safety_violation is None
+            and result.target_reached
+        )
+        if test.kind == "calibration" and successful and self._maintenance_flow_samples:
+            average_flow = sum(self._maintenance_flow_samples) / len(self._maintenance_flow_samples)
+            proposal = CalibrationProposal(
+                proposal_id=uuid4().hex,
+                zone_id=test.zone_id,
+                zone_subentry_id=test.zone_subentry_id,
+                zone_valve=str(subentry.data[CONF_ZONE_VALVE]),
+                zone_config_hash=self._calibration_zone_config_hash(subentry),
+                created_at=datetime.now(UTC).isoformat(),
+                delivered_liters=result.delivered_liters,
+                duration_seconds=result.duration_seconds,
+                average_flow_l_min=average_flow,
+                opening_latency_seconds=result.opening_latency_seconds,
+                post_run_liters=result.post_run_liters,
+                proposed_min_flow_l_min=average_flow * 0.8,
+                proposed_max_flow_l_min=average_flow * 1.2,
+            )
+        reason = self._maintenance_stop_reason or (
+            "stopped"
+            if result.stopped
+            else "safety_violation"
+            if result.safety_violation
+            else "completed"
+        )
+        self._stored_state = replace(
+            self._stored_state,
+            installation_total_liters=(
+                self._stored_state.installation_total_liters + result.delivered_liters
+            ),
+            zone_totals_liters=zone_totals,
+            zone_measurement_quality=qualities,
+            zone_last_delivered_liters=last_delivered,
+            zone_last_duration_seconds=last_duration,
+            zone_safety_locks=zone_locks,
+            installation_safety_lock=installation_lock,
+            zone_deficit_mm=deficits,
+            zone_last_effective_irrigation=last_effective,
+            maintenance_test=None,
+            active_execution=None,
+            calibration_proposal=proposal,
+        )
+        await self._store.async_save(self._stored_state)
+        self._watering = False
+        watchdog = self._maintenance_watchdog_task
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
+        self._maintenance_watchdog_task = None
+        self._maintenance_task = None
+        self._publish(status="idle", active_zone_id=None)
+        self._events.fire(
+            "calibration_result" if test.kind == "calibration" else "maintenance_ended",
+            reason=reason,
+            target=self._events.zone_target(test.zone_id),
+            measurements={
+                "delivered_liters": result.delivered_liters,
+                "duration_seconds": result.duration_seconds,
+            },
+            quality=result.measurement_quality,
+            context={
+                "test_id": test.test_id,
+                "proposal_id": proposal.proposal_id
+                if test.kind == "calibration" and successful and proposal is not None
+                else None,
+            },
+        )
+        self._events.dismiss("maintenance_active")
+        if reason == "deadman_timeout":
+            await self._events.async_critical(
+                "maintenance_deadman_timeout",
+                title="Irrigation maintenance confirmation lost",
+                message=(
+                    f"{self._events.installation_name} closed all valves because dead-man "
+                    "confirmation was not received in time."
+                ),
+            )
+        self._planning_event.set()
+
+    def calibration_proposal(self) -> dict[str, object] | None:
+        """Return the latest proposal without applying it."""
+        proposal = self._stored_state.calibration_proposal
+        return proposal.as_dict() if proposal is not None else None
+
+    @staticmethod
+    def _calibration_zone_config_hash(subentry: _ZoneConfigSnapshot) -> str:
+        """Hash only zone settings that affect calibration execution and accounting."""
+        fields = (
+            CONF_ZONE_VALVE,
+            CONF_MIN_FLOW,
+            CONF_MAX_FLOW,
+            CONF_FLOW_GRACE_SECONDS,
+            CONF_AREA_M2,
+            CONF_APPLICATION_EFFICIENCY,
+            CONF_MAXIMUM_DEFICIT_MM,
+            CONF_MINIMUM_EFFECTIVE_LITERS,
+        )
+        payload = {
+            "zone_id": subentry.unique_id or subentry.subentry_id,
+            "config": {key: subentry.data.get(key) for key in fields},
+        }
+        return sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    async def async_resolve_calibration(
+        self, *, proposal_id: str, resolution: str
+    ) -> dict[str, object]:
+        """Accept or discard measured flow limits in a separate explicit action."""
+        async with self._command_lock:
+            proposal = self._stored_state.calibration_proposal
+            if (
+                proposal is None
+                or proposal.proposal_id != proposal_id
+                or proposal.status != "pending"
+            ):
+                raise HomeAssistantError("The calibration proposal is not pending")
+            if resolution not in {"accept", "discard"}:
+                raise HomeAssistantError("Unsupported calibration resolution")
+            subentry = None
+            if resolution == "accept":
+                live_subentry = self._entry.subentries.get(proposal.zone_subentry_id)
+                if live_subentry is None or live_subentry.subentry_type != SUBENTRY_TYPE_ZONE:
+                    raise HomeAssistantError("The calibration zone no longer exists")
+                subentry = _ZoneConfigSnapshot(
+                    subentry_id=live_subentry.subentry_id,
+                    subentry_type=live_subentry.subentry_type,
+                    title=live_subentry.title,
+                    unique_id=live_subentry.unique_id,
+                    data=dict(live_subentry.data),
+                )
+                if (
+                    (subentry.unique_id or subentry.subentry_id) != proposal.zone_id
+                    or subentry.data.get(CONF_ZONE_VALVE) != proposal.zone_valve
+                    or self._calibration_zone_config_hash(subentry) != proposal.zone_config_hash
+                ):
+                    raise HomeAssistantError(
+                        "The irrigation zone changed after calibration; discard the stale "
+                        "proposal and calibrate again"
+                    )
+            proposal = replace(
+                proposal,
+                status="accepted" if resolution == "accept" else "discarded",
+            )
+            self._stored_state = replace(self._stored_state, calibration_proposal=proposal)
+            await self._store.async_save(self._stored_state)
+            if subentry is not None:
+                live_subentry = self._entry.subentries[subentry.subentry_id]
+                self._hass.config_entries.async_update_subentry(
+                    self._entry,
+                    live_subentry,
+                    data={
+                        **live_subentry.data,
+                        CONF_MIN_FLOW: proposal.proposed_min_flow_l_min,
+                        CONF_MAX_FLOW: proposal.proposed_max_flow_l_min,
+                    },
+                )
+            self._events.fire(
+                "calibration_result",
+                reason=f"proposal_{resolution}",
+                target=self._events.zone_target(proposal.zone_id),
+                measurements={"average_flow_l_min": proposal.average_flow_l_min},
+                context={"proposal_id": proposal.proposal_id, "status": proposal.status},
+            )
+            return proposal.as_dict()
 
     async def async_emergency_stop(self) -> None:
         """Stop all water delivery and persist the non-overridable safety lock."""
@@ -2840,7 +3421,7 @@ class IrrigationManager:
                 raise HomeAssistantError("The irrigation installation is busy")
             if self._stored_state.active_execution is not None:
                 raise HomeAssistantError("An interrupted irrigation execution needs recovery")
-            await self._async_preflight()
+            await self._async_preflight(ignore_emergency_stop=True)
             self._stored_state = replace(
                 self._stored_state,
                 emergency_stop=False,
@@ -2984,8 +3565,12 @@ class IrrigationManager:
         """Publish one consistent snapshot from persisted runtime state."""
         if self._stored_state.emergency_stop:
             status = "emergency_stop"
+        elif self._stored_state.winter_lock:
+            status = "winter_lock"
         elif self._stored_state.installation_safety_lock is not None:
             status = "safety_lock"
+        elif self._stored_state.maintenance_test is not None:
+            status = "maintenance"
         elif status == "idle" and any(
             request.status == "soaking" for request in self._stored_state.manual_requests
         ):
@@ -3023,6 +3608,28 @@ class IrrigationManager:
                 active_zone_id=active_zone_id,
                 emergency_stop=self._stored_state.emergency_stop,
                 installation_safety_lock=(self._stored_state.installation_safety_lock),
+                winter_lock=self._stored_state.winter_lock,
+                maintenance_active=self._stored_state.maintenance_test is not None,
+                maintenance_test_id=(
+                    self._stored_state.maintenance_test.test_id
+                    if self._stored_state.maintenance_test is not None
+                    else None
+                ),
+                maintenance_kind=(
+                    self._stored_state.maintenance_test.kind
+                    if self._stored_state.maintenance_test is not None
+                    else None
+                ),
+                maintenance_expires_at=(
+                    self._stored_state.maintenance_test.expires_at
+                    if self._stored_state.maintenance_test is not None
+                    else None
+                ),
+                maintenance_confirmation_deadline=(
+                    self._stored_state.maintenance_test.confirmation_deadline
+                    if self._stored_state.maintenance_test is not None
+                    else None
+                ),
                 active_target_type=(
                     self._active_target_type
                     or (selected_request.target_type if selected_request is not None else None)

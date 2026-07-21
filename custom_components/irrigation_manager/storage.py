@@ -8,7 +8,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 12
+STORAGE_MINOR_VERSION = 14
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -34,6 +34,8 @@ class _StateStore(Store[dict[str, object]]):
             9,
             10,
             11,
+            12,
+            13,
         }:
             migrated = dict(old_data)
             if old_minor_version == 1:
@@ -131,6 +133,18 @@ class _StateStore(Store[dict[str, object]]):
                         _backfill_balance_snapshot(raw_active, linked_execution)
                     if isinstance(linked_request, dict):
                         _backfill_balance_snapshot(raw_active, linked_request)
+            if old_minor_version < 13:
+                migrated["winter_lock"] = False
+                migrated["maintenance_test"] = None
+                migrated["calibration_proposal"] = None
+            if old_minor_version < 14:
+                raw_proposal = migrated.get("calibration_proposal")
+                if isinstance(raw_proposal, dict):
+                    migrated["calibration_proposal"] = {
+                        **raw_proposal,
+                        "zone_valve": "",
+                        "zone_config_hash": "",
+                    }
             return migrated
         raise NotImplementedError
 

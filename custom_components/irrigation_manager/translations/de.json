@@ -78,7 +78,32 @@
         "reconciliation_id": {"name": "Abgleich-ID"},
         "resolution": {"name": "Auflösung"}
       }
-    }
+    },
+    "set_winter_lock": {"name": "Wintersperre setzen", "description": "Bestätigt die Entleerung, stoppt jede Bewässerung, schließt alle Ventile und persistiert die Wintersperre."},
+    "clear_winter_lock": {"name": "Wintersperre freigeben", "description": "Gibt die Wintersperre nach einer Prüfung des geschlossenen Zustands bewusst frei."},
+    "start_maintenance_test": {
+      "name": "Beaufsichtigten Wartungstest starten",
+      "description": "Führt genau einen zeitlich begrenzten Zonentest mit verpflichtender Dead-Man-Bestätigung aus.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "zone_subentry_id": {"name": "Bewässerungszone"},
+        "duration": {"name": "Harte Testdauer"},
+        "bypass_checks": {"name": "Übersteuerte Prüfungen", "description": "Nur ausgewählte implementierte Sensorprüfungen werden übersteuert. Ventilrückmeldung und Exklusivität bleiben zwingend."}
+      }
+    },
+    "confirm_maintenance_test": {"name": "Wartungsaufsicht bestätigen", "description": "Erneuert die Dead-Man-Frist, ohne das feste Testende zu verlängern."},
+    "stop_maintenance_test": {"name": "Wartungstest stoppen", "description": "Stoppt den beaufsichtigten Test und schließt alle Ventile."},
+    "start_calibration": {
+      "name": "Durchflusskalibrierung starten",
+      "description": "Führt einen beaufsichtigten, gemessenen Zonentest aus und erzeugt einen reinen Prüfvorschlag.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "zone_subentry_id": {"name": "Bewässerungszone"},
+        "duration": {"name": "Harte Testdauer"}
+      }
+    },
+    "get_calibration_proposal": {"name": "Kalibrierungsvorschlag abrufen", "description": "Gibt den letzten Messvorschlag zurück, ohne ihn anzuwenden."},
+    "resolve_calibration": {"name": "Kalibrierungsvorschlag entscheiden", "description": "Übernimmt oder verwirft einen offenen Kalibrierungsvorschlag ausdrücklich."}
   },
   "selector": {
     "meter_failure_strategy": {
@@ -107,6 +132,12 @@
       },
       "automation_needed": {
         "name": "Automatische Bewässerung benötigt"
+      },
+      "winter_lock": {
+        "name": "Wintersperre"
+      },
+      "maintenance_mode": {
+        "name": "Wartungsmodus"
       }
     },
     "sensor": {
@@ -123,8 +154,10 @@
           "watering": "Bewässerung",
           "error": "Fehler",
           "safety_lock": "Sicherheitssperre",
-          "emergency_stop": "Not-Aus",
-          "soaking": "Sickerpause"
+           "emergency_stop": "Not-Aus",
+           "soaking": "Sickerpause",
+           "winter_lock": "Wintersperre",
+           "maintenance": "Wartung"
         }
       },
       "active_zone": {
@@ -169,7 +202,10 @@
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
           "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity",
-          "notify_entities": "Ziele für kritische Benachrichtigungen"
+           "notify_entities": "Ziele für kritische Benachrichtigungen"
+          ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
+          ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
+          ,"calibration_settle_seconds": "Beobachtungszeit für Kalibrierungsnachlauf"
         },
         "data_description": {
           "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
@@ -210,7 +246,10 @@
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
           "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity",
-          "notify_entities": "Ziele für kritische Benachrichtigungen"
+           "notify_entities": "Ziele für kritische Benachrichtigungen"
+          ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
+          ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
+          ,"calibration_settle_seconds": "Beobachtungszeit für Kalibrierungsnachlauf"
         }
       },
       "zone": {

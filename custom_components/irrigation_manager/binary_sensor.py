@@ -35,6 +35,16 @@ async def async_setup_entry(
                 entry=entry,
                 installation_id=installation_id,
             ),
+            WinterLockBinarySensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+            ),
+            MaintenanceModeBinarySensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+            ),
         ]
     )
     for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
@@ -129,6 +139,83 @@ class InstallationSafetyLockBinarySensor(
         """Expose the lock reason when present."""
         reason = self.coordinator.data.installation_safety_lock
         return {"reason": reason} if reason is not None else {}
+
+
+class WinterLockBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):
+    """Expose the persistent non-overridable winter lock."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "winter_lock"
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+    ) -> None:
+        """Initialize the winter-lock entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{installation_id}_winter_lock"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        """Return true while all irrigation is winter-locked."""
+        return self.coordinator.data.winter_lock
+
+
+class MaintenanceModeBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):
+    """Expose the single active supervised maintenance slot."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "maintenance_mode"
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+    ) -> None:
+        """Initialize the maintenance-mode entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{installation_id}_maintenance_mode"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        """Return true only while one supervised test is active."""
+        return self.coordinator.data.maintenance_active
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Expose deadlines and stable test identifiers for supervision UIs."""
+        snapshot = self.coordinator.data
+        return {
+            key: value
+            for key, value in {
+                "test_id": snapshot.maintenance_test_id,
+                "kind": snapshot.maintenance_kind,
+                "expires_at": snapshot.maintenance_expires_at,
+                "confirmation_deadline": snapshot.maintenance_confirmation_deadline,
+            }.items()
+            if value is not None
+        }
 
 
 class ZoneSafetyLockBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):
