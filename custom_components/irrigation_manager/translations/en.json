@@ -117,6 +117,9 @@
         "demand": "Demand watering",
         "minimum": "Minimum watering"
       }
+    },
+    "weather_failure_policy": {
+      "options": {"fail_safe": "Fail safe (block affected watering)"}
     }
   },
   "entity": {
@@ -138,6 +141,12 @@
       },
       "maintenance_mode": {
         "name": "Maintenance mode"
+      },
+      "frost_safety": {
+        "name": "Frost safety block"
+      },
+      "rain_stop": {
+        "name": "Automatic rain stop"
       }
     },
     "sensor": {
@@ -202,6 +211,15 @@
           "leak_duration_seconds": "Leak confirmation duration",
           "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity",
+          "frost_entity": "Frost temperature entity",
+          "frost_threshold": "Frost blocking threshold",
+          "rain_stop_entity": "Current rain entity",
+          "rain_stop_threshold": "Automatic rain-stop threshold",
+          "weather_max_age_seconds": "Maximum weather safety data age",
+          "weather_failure_policy": "Weather failure policy",
+          "installation_max_delivery_runtime": "Maximum installation delivery runtime",
+          "installation_max_operation_lifetime": "Maximum operation lifetime",
+          "actuator_transition_grace_seconds": "Actuator feedback transition grace",
            "notify_entities": "Critical notification targets"
           ,"maintenance_max_duration": "Maximum maintenance test duration"
           ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
@@ -246,6 +264,15 @@
           "leak_duration_seconds": "Leak confirmation duration",
           "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity",
+          "frost_entity": "Frost temperature entity",
+          "frost_threshold": "Frost blocking threshold",
+          "rain_stop_entity": "Current rain entity",
+          "rain_stop_threshold": "Automatic rain-stop threshold",
+          "weather_max_age_seconds": "Maximum weather safety data age",
+          "weather_failure_policy": "Weather failure policy",
+          "installation_max_delivery_runtime": "Maximum installation delivery runtime",
+          "installation_max_operation_lifetime": "Maximum operation lifetime",
+          "actuator_transition_grace_seconds": "Actuator feedback transition grace",
            "notify_entities": "Critical notification targets"
           ,"maintenance_max_duration": "Maximum maintenance test duration"
           ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
@@ -284,6 +311,8 @@
           "minimum_effective_liters": "Effective irrigation threshold",
           "maximum_target_liters": "Maximum automatic target",
           "automatic_max_duration": "Maximum automatic duration",
+          "max_delivery_runtime": "Maximum zone delivery runtime",
+          "max_operation_lifetime": "Maximum operation lifetime",
           "zone_priority": "Zone priority",
           "watering_windows": "Daily watering windows"
         }
@@ -327,6 +356,8 @@
             "minimum_effective_liters": "Effective irrigation threshold",
             "maximum_target_liters": "Maximum automatic target",
             "automatic_max_duration": "Maximum automatic duration",
+            "max_delivery_runtime": "Maximum zone delivery runtime",
+            "max_operation_lifetime": "Maximum operation lifetime",
             "zone_priority": "Zone priority",
             "watering_windows": "Daily watering windows"
           },
@@ -362,6 +393,8 @@
             "minimum_effective_liters": "Effective irrigation threshold",
             "maximum_target_liters": "Maximum automatic target",
             "automatic_max_duration": "Maximum automatic duration",
+            "max_delivery_runtime": "Maximum zone delivery runtime",
+            "max_operation_lifetime": "Maximum operation lifetime",
             "zone_priority": "Zone priority",
             "watering_windows": "Daily watering windows"
           },

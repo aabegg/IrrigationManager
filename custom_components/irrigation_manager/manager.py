@@ -14,11 +14,18 @@ from typing import Any
 from uuid import uuid4
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    STATE_OFF,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+    UnitOfTemperature,
+)
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .adapters import (
     HomeAssistantActuators,
@@ -27,6 +34,7 @@ from .adapters import (
     HomeAssistantMeter,
 )
 from .const import (
+    CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
     CONF_APPLICATION_EFFICIENCY,
     CONF_AREA_M2,
     CONF_AUTOMATIC_MAX_DURATION,
@@ -36,6 +44,10 @@ from .const import (
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
+    CONF_FROST_ENTITY,
+    CONF_FROST_THRESHOLD,
+    CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
+    CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
@@ -43,9 +55,11 @@ from .const import (
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
     CONF_MANDATORY_AMOUNT_LITERS,
+    CONF_MAX_DELIVERY_RUNTIME,
     CONF_MAX_DOSE_AMOUNT,
     CONF_MAX_DOSE_DURATION,
     CONF_MAX_FLOW,
+    CONF_MAX_OPERATION_LIFETIME,
     CONF_MAXIMUM_DEFICIT_MM,
     CONF_MAXIMUM_INTERVAL_DAYS,
     CONF_MAXIMUM_TARGET_LITERS,
@@ -56,11 +70,15 @@ from .const import (
     CONF_MINIMUM_INTERVAL_DAYS,
     CONF_MINIMUM_TRIGGER_LITERS,
     CONF_RAIN_FACTOR,
+    CONF_RAIN_STOP_ENTITY,
+    CONF_RAIN_STOP_THRESHOLD,
     CONF_SOAK_DURATION,
     CONF_WATER_METER,
     CONF_WATERING_MODE,
     CONF_WATERING_WINDOWS,
     CONF_WEATHER_ENTITY,
+    CONF_WEATHER_FAILURE_POLICY,
+    CONF_WEATHER_MAX_AGE_SECONDS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
     EXPORT_SCHEMA_VERSION,
@@ -116,6 +134,15 @@ class _ZoneConfigSnapshot:
     data: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class _WeatherSafety:
+    """Current fail-safe interpretation of configured weather interlocks."""
+
+    frost_blocked: bool
+    rain_stop_active: bool
+    status: str
+
+
 def _event_result_reason(result: str | None, status: str) -> str:
     """Keep event reasons stable and free of raw entity/error text."""
     stable_results = {
@@ -167,7 +194,14 @@ class IrrigationManager:
             config=self._installation_data,
         )
         self._has_meter = bool(self._installation_data.get(CONF_WATER_METER))
-        self._actuators = HomeAssistantActuators(hass)
+        self._actuators = HomeAssistantActuators(
+            hass,
+            self._number(
+                self._installation_data,
+                CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
+                5.0,
+            ),
+        )
         self._meter = HomeAssistantMeter(
             hass,
             self._installation_data.get(CONF_WATER_METER),
@@ -215,6 +249,14 @@ class IrrigationManager:
         self._leak_application_task: asyncio.Task[None] | None = None
         self._flow_event_tasks: set[asyncio.Task[None]] = set()
         self._unsubscribe_flow: Callable[[], None] | None = None
+        self._state_event_tasks: set[asyncio.Task[None]] = set()
+        self._state_unsubscribers: list[Callable[[], None]] = []
+        self._active_external_violation: tuple[str, str, str | None] | None = None
+        self._expected_actuator_states: dict[str, tuple[bool, float]] = {}
+        self._commanded_actuator_states: dict[str, bool] = {}
+        self._feedback_watchdog_tasks: dict[str, asyncio.Task[None]] = {}
+        self._weather_watchdog_event = asyncio.Event()
+        self._weather_watchdog_task: asyncio.Task[None] | None = None
         self._shutting_down = False
         self._active_target_type: str | None = None
         self._active_target_value: float | None = None
@@ -276,6 +318,7 @@ class IrrigationManager:
 
     async def async_initialize(self) -> None:
         """Close configured valves left open across a restart."""
+        await self._async_derive_migrated_runtime_limits()
         entity_ids = self._zone_valves()
         active_could_have_flowed = False
         if active := self._stored_state.active_execution:
@@ -320,6 +363,25 @@ class IrrigationManager:
         await self._async_expire_requests()
         await self._async_initialize_zone_balances()
         await self._async_ensure_idle_meter_baseline()
+        for entity_id in self._all_known_valves():
+            self._state_unsubscribers.append(
+                async_track_state_change_event(self._hass, entity_id, self._actuator_state_changed)
+            )
+        weather_entities: set[str] = set()
+        for key in (CONF_FROST_ENTITY, CONF_RAIN_STOP_ENTITY):
+            value = self._installation_data.get(key)
+            if isinstance(value, str):
+                weather_entities.add(value)
+        for entity_id in weather_entities:
+            self._state_unsubscribers.append(
+                async_track_state_change_event(self._hass, entity_id, self._weather_state_changed)
+            )
+        await self._async_verify_supervised_valves_after_startup()
+        self._weather_watchdog_task = self._entry.async_create_background_task(
+            self._hass,
+            self._async_weather_freshness_watchdog(),
+            "Irrigation Manager weather freshness watchdog",
+        )
         if self._leak_monitoring and self._flow is not None:
             flow_entity_id = self._installation_data[CONF_FLOW_SENSOR]
             self._unsubscribe_flow = async_track_state_change_event(
@@ -340,6 +402,95 @@ class IrrigationManager:
             "Irrigation Manager automatic planner",
         )
 
+    async def _async_verify_supervised_valves_after_startup(self) -> None:
+        """Close and lock any valve opened in the startup listener-registration gap."""
+        for entity_id in self._all_known_valves():
+            state = self._hass.states.get(entity_id)
+            if state is not None and state.state in {"on", "open"}:
+                await self._async_apply_actuator_violation(
+                    entity_id,
+                    reason=f"{entity_id} opened unexpectedly during startup",
+                    opening=True,
+                )
+
+    async def _async_derive_migrated_runtime_limits(self) -> None:
+        """Replace conservative storage placeholders with current config-derived limits."""
+        changed = False
+        requests: list[ManualIrrigationRequest] = []
+        for request in self._stored_state.manual_requests:
+            if (
+                request.runtime_limits_need_config_derivation
+                or request.delivery_runtime_limit_seconds is None
+                or request.operation_deadline_at is None
+            ):
+                zone = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+                zone_data = zone.data if zone is not None else {}
+                delivery_limit = self._delivery_runtime_limit(
+                    zone_data, request.hard_time_limit_seconds
+                )
+                operation_deadline = min(
+                    datetime.fromisoformat(request.expires_at),
+                    datetime.fromisoformat(request.created_at)
+                    + timedelta(seconds=self._operation_lifetime_limit(zone_data)),
+                )
+                request = replace(
+                    request,
+                    delivery_runtime_limit_seconds=delivery_limit,
+                    operation_deadline_at=operation_deadline.isoformat(),
+                    runtime_limits_need_config_derivation=False,
+                )
+                changed = True
+            requests.append(request)
+
+        request_by_id = {request.request_id: request for request in requests}
+        executions: list[IrrigationExecutionState] = []
+        for execution in self._stored_state.irrigation_executions:
+            if (
+                execution.runtime_limits_need_config_derivation
+                or execution.delivery_runtime_limit_seconds is None
+                or execution.operation_deadline_at is None
+            ):
+                linked_request = request_by_id.get(execution.request_id)
+                zone = next(
+                    (
+                        item
+                        for item in self._zone_configs
+                        if (item.unique_id or item.subentry_id) == execution.zone_id
+                    ),
+                    None,
+                )
+                zone_data = zone.data if zone is not None else {}
+                execution_delivery_limit = (
+                    linked_request.delivery_runtime_limit_seconds
+                    if linked_request is not None
+                    and linked_request.delivery_runtime_limit_seconds is not None
+                    else self._delivery_runtime_limit(zone_data, None)
+                )
+                execution_deadline = (
+                    linked_request.operation_deadline_at
+                    if linked_request is not None
+                    and linked_request.operation_deadline_at is not None
+                    else (
+                        datetime.fromisoformat(execution.created_at)
+                        + timedelta(seconds=self._operation_lifetime_limit(zone_data))
+                    ).isoformat()
+                )
+                execution = replace(
+                    execution,
+                    delivery_runtime_limit_seconds=execution_delivery_limit,
+                    operation_deadline_at=execution_deadline,
+                    runtime_limits_need_config_derivation=False,
+                )
+                changed = True
+            executions.append(execution)
+        if changed:
+            self._stored_state = replace(
+                self._stored_state,
+                manual_requests=tuple(requests),
+                irrigation_executions=tuple(executions),
+            )
+            await self._store.async_save(self._stored_state)
+
     async def async_shutdown(self) -> None:
         """Stop runtime work and remove all Home Assistant listeners."""
         self._shutting_down = True
@@ -359,6 +510,19 @@ class IrrigationManager:
         if self._unsubscribe_flow is not None:
             self._unsubscribe_flow()
             self._unsubscribe_flow = None
+        for unsubscribe in self._state_unsubscribers:
+            unsubscribe()
+        self._state_unsubscribers.clear()
+        for task in self._feedback_watchdog_tasks.values():
+            task.cancel()
+        if self._feedback_watchdog_tasks:
+            await asyncio.gather(*self._feedback_watchdog_tasks.values(), return_exceptions=True)
+        self._feedback_watchdog_tasks.clear()
+        weather_watchdog_task = self._weather_watchdog_task
+        self._weather_watchdog_task = None
+        if weather_watchdog_task is not None:
+            weather_watchdog_task.cancel()
+            await asyncio.gather(weather_watchdog_task, return_exceptions=True)
         confirmation_task = self._leak_confirmation_task
         application_task = self._leak_application_task
         self._cancel_leak_observation()
@@ -389,6 +553,338 @@ class IrrigationManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        state_tasks = tuple(self._state_event_tasks)
+        for task in state_tasks:
+            task.cancel()
+        if state_tasks:
+            await asyncio.gather(*state_tasks, return_exceptions=True)
+
+    @callback
+    def _actuator_state_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Continuously supervise managed actuator feedback."""
+        new_state = event.data["new_state"]
+        if self._shutting_down or new_state is None:
+            return
+        open_ = new_state.state in {"on", "open"}
+        closed = new_state.state in {STATE_OFF, "closed"}
+        entity_id = new_state.entity_id
+        active = self._stored_state.active_execution
+        if not open_ and not closed:
+            if active is not None:
+                expected = self._expected_actuator_states.get(entity_id)
+                self._schedule_feedback_watchdog(
+                    entity_id,
+                    check_at=expected[1] if expected is not None else None,
+                )
+            return
+        if self._actuator_transition_expected(entity_id, open_=open_):
+            return
+        if self._commanded_actuator_states.get(entity_id) == open_:
+            self._cancel_feedback_watchdog(entity_id)
+            return
+        if active is not None and open_ == self._active_expected_open(entity_id, active):
+            self._cancel_feedback_watchdog(entity_id)
+            return
+        task = self._hass.async_create_task(
+            self._async_handle_unexpected_actuator_state(entity_id, open_=open_),
+            "Irrigation Manager actuator safety supervision",
+        )
+        self._state_event_tasks.add(task)
+        task.add_done_callback(self._state_event_tasks.discard)
+
+    def _actuator_transition_expected(self, entity_id: str, *, open_: bool) -> bool:
+        """Consume command intent within its bounded feedback window."""
+        expected = self._expected_actuator_states.get(entity_id)
+        if expected is not None:
+            expected_open, expires_at = expected
+            if asyncio.get_running_loop().time() <= expires_at and expected_open == open_:
+                self._expected_actuator_states.pop(entity_id, None)
+                self._cancel_feedback_watchdog(entity_id)
+                return True
+            if asyncio.get_running_loop().time() > expires_at:
+                self._expected_actuator_states.pop(entity_id, None)
+        return False
+
+    async def _async_expect_actuator_state(self, entity_id: str, open_: bool) -> None:
+        """Record executor command intent before the actuator service is called."""
+        expires_at = asyncio.get_running_loop().time() + self._actuator_transition_grace_seconds
+        self._commanded_actuator_states[entity_id] = open_
+        self._expected_actuator_states[entity_id] = (open_, expires_at)
+        self._schedule_feedback_watchdog(entity_id, check_at=expires_at)
+
+    @property
+    def _actuator_transition_grace_seconds(self) -> float:
+        """Return the configured bounded actuator feedback transition grace."""
+        return self._number(
+            self._installation_data,
+            CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
+            5.0,
+        )
+
+    def _active_run_identity(self) -> str | None:
+        """Return the identity owning the current external-violation lifecycle."""
+        active = self._stored_state.active_execution
+        if active is None:
+            return None
+        if self._stored_state.maintenance_test is not None:
+            return f"maintenance:{self._stored_state.maintenance_test.test_id}"
+        return active.execution_id or active.request_id or f"prepared:{active.prepared_at}"
+
+    @staticmethod
+    def _active_expected_open(entity_id: str, active: ActiveExecutionState) -> bool:
+        """Return the steady state expected for a managed actuator during delivery."""
+        return active.zone_opening_at is not None and (
+            entity_id == active.zone_valve or entity_id == active.main_valve
+        )
+
+    def _schedule_feedback_watchdog(self, entity_id: str, *, check_at: float | None = None) -> None:
+        """Check unresolved feedback once after the configured grace."""
+        identity = self._active_run_identity()
+        if identity is None:
+            return
+        self._cancel_feedback_watchdog(entity_id)
+        deadline = check_at or (
+            asyncio.get_running_loop().time() + self._actuator_transition_grace_seconds
+        )
+        task = self._hass.async_create_task(
+            self._async_check_actuator_feedback(entity_id, identity, deadline),
+            "Irrigation Manager actuator feedback watchdog",
+        )
+        self._feedback_watchdog_tasks[entity_id] = task
+
+    def _cancel_feedback_watchdog(self, entity_id: str) -> None:
+        """Cancel one resolved actuator feedback check."""
+        task = self._feedback_watchdog_tasks.pop(entity_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _async_check_actuator_feedback(
+        self, entity_id: str, identity: str, deadline: float
+    ) -> None:
+        """Fail closed if feedback remains unavailable or contradictory."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(max(0.0, deadline - asyncio.get_running_loop().time()))
+            if self._active_run_identity() != identity:
+                return
+            active = self._stored_state.active_execution
+            if active is None:
+                return
+            state = self._hass.states.get(entity_id)
+            expected = self._expected_actuator_states.get(entity_id)
+            expected_open = (
+                expected[0]
+                if expected is not None
+                else self._commanded_actuator_states.get(
+                    entity_id, self._active_expected_open(entity_id, active)
+                )
+            )
+            actual_open = state is not None and state.state in {"on", "open"}
+            actual_closed = state is not None and state.state in {STATE_OFF, "closed"}
+            if (actual_open and expected_open) or (actual_closed and not expected_open):
+                self._expected_actuator_states.pop(entity_id, None)
+                return
+            reason = (
+                f"{entity_id} feedback unavailable after transition grace"
+                if not actual_open and not actual_closed
+                else f"{entity_id} did not reach its commanded state"
+            )
+            await self._async_apply_actuator_violation(entity_id, reason=reason)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._feedback_watchdog_tasks.get(entity_id) is current_task:
+                self._feedback_watchdog_tasks.pop(entity_id, None)
+
+    async def _async_handle_unexpected_actuator_state(self, entity_id: str, *, open_: bool) -> None:
+        """Fail closed for unsolicited openings and active valve closures."""
+        active = self._stored_state.active_execution
+        if not open_ and active is None:
+            return
+        reason = (
+            f"{entity_id} opened unexpectedly"
+            if open_
+            else f"{entity_id} closed unexpectedly during irrigation"
+        )
+        await self._async_apply_actuator_violation(entity_id, reason=reason, opening=open_)
+
+    async def _async_apply_actuator_violation(
+        self, entity_id: str, *, reason: str, opening: bool = False
+    ) -> None:
+        """Persist the correct lock, cancel the owning run, and close all valves."""
+        async with self._command_lock:
+            active = self._stored_state.active_execution
+            if active is None and not opening:
+                return
+            identity = self._active_run_identity()
+            if opening or active is None or entity_id != active.zone_valve:
+                scope = "installation"
+                self._stored_state = replace(self._stored_state, installation_safety_lock=reason)
+            else:
+                assert active is not None
+                scope = "zone"
+                zone_locks = dict(self._stored_state.zone_safety_locks)
+                zone_locks[active.zone_id] = reason
+                self._stored_state = replace(self._stored_state, zone_safety_locks=zone_locks)
+            close_entities = self._all_known_valves()
+            if identity is not None:
+                self._active_external_violation = (identity, reason, scope)
+            await self._store.async_save(self._stored_state)
+            self._publish(status="safety_lock", active_zone_id=active.zone_id if active else None)
+            for task in (self._active_task, self._maintenance_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            event_target = self._events.installation_target()
+            if scope == "zone":
+                assert active is not None
+                event_target = self._events.zone_target(active.zone_id)
+        with suppress(Exception):
+            await self._async_close_entities(close_entities)
+        self._events.fire(
+            "safety_lock_activated",
+            reason="unexpected_actuator_state",
+            target=event_target,
+            context={"safety_scope": scope, "lock_active": True},
+        )
+
+    @callback
+    def _weather_state_changed(self, _event: Event[EventStateChangedData]) -> None:
+        """Re-evaluate weather interlocks and stop affected active watering."""
+        if self._shutting_down:
+            return
+        self._weather_watchdog_event.set()
+        task = self._hass.async_create_task(
+            self._async_apply_weather_interlocks(),
+            "Irrigation Manager weather safety supervision",
+        )
+        self._state_event_tasks.add(task)
+        task.add_done_callback(self._state_event_tasks.discard)
+
+    async def _async_apply_weather_interlocks(self) -> None:
+        """Stop active watering when a hard frost or automatic rain stop applies."""
+        weather = self._weather_safety()
+        async with self._command_lock:
+            active = self._stored_state.active_execution
+            if active is None:
+                self._planning_event.set()
+                self._publish(status=self._coordinator.data.status, active_zone_id=None)
+                return
+            request = self._request(active.request_id) if active.request_id else None
+            maintenance = self._stored_state.maintenance_test
+            reason = None
+            if weather.frost_blocked:
+                reason = "Frost safety interlock activated"
+            elif weather.rain_stop_active and (
+                maintenance is not None or (request is not None and request.source == "automatic")
+            ):
+                reason = "Rain stop threshold reached"
+            if reason is None:
+                return
+            identity = self._active_run_identity()
+            if identity is not None:
+                self._active_external_violation = (identity, reason, None)
+            for task in (self._active_task, self._maintenance_task):
+                if task is not None and not task.done():
+                    task.cancel()
+        self._events.fire(
+            "weather_interlock_activated",
+            reason="frost" if weather.frost_blocked else "rain_stop",
+            target=self._events.installation_target(),
+            quality=weather.status,
+        )
+
+    def _weather_safety(self) -> _WeatherSafety:
+        """Validate freshness and plausibility, failing safe for configured sources."""
+        max_age = self._number(self._installation_data, CONF_WEATHER_MAX_AGE_SECONDS, 900)
+        frost_entity = self._installation_data.get(CONF_FROST_ENTITY)
+        rain_entity = self._installation_data.get(CONF_RAIN_STOP_ENTITY)
+        frost_blocked = False
+        rain_stop = False
+        failures: list[str] = []
+        if isinstance(frost_entity, str):
+            try:
+                value = self._numeric_weather_value(frost_entity, max_age=max_age)
+                state = self._hass.states.get(frost_entity)
+                unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
+                if unit in TemperatureConverter.VALID_UNITS:
+                    value = TemperatureConverter.convert(value, unit, UnitOfTemperature.CELSIUS)
+                if not -100 <= value <= 80:
+                    raise ValueError("implausible frost temperature")
+                frost_blocked = value <= self._number(
+                    self._installation_data, CONF_FROST_THRESHOLD, 2
+                )
+            except HomeAssistantError, ValueError:
+                frost_blocked = True
+                failures.append("frost_source_invalid")
+        if isinstance(rain_entity, str):
+            try:
+                value = self._numeric_weather_value(rain_entity, max_age=max_age)
+                if not 0 <= value <= 1_000:
+                    raise ValueError("implausible rain value")
+                rain_stop = value >= self._number(
+                    self._installation_data, CONF_RAIN_STOP_THRESHOLD, 0.1
+                )
+            except HomeAssistantError, ValueError:
+                rain_stop = True
+                failures.append("rain_source_invalid")
+        configured = isinstance(frost_entity, str) or isinstance(rain_entity, str)
+        return _WeatherSafety(
+            frost_blocked=frost_blocked,
+            rain_stop_active=rain_stop,
+            status=",".join(failures) if failures else "valid" if configured else "not_configured",
+        )
+
+    def _numeric_weather_value(self, entity_id: str, *, max_age: float) -> float:
+        """Read one finite, fresh native numeric entity value."""
+        state = self._hass.states.get(entity_id)
+        if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
+            raise HomeAssistantError(f"Weather safety entity {entity_id} is unavailable")
+        if (datetime.now(UTC) - state.last_reported).total_seconds() > max_age:
+            raise HomeAssistantError(f"Weather safety entity {entity_id} is stale")
+        try:
+            value = float(state.state)
+        except ValueError as err:
+            raise HomeAssistantError(f"Weather safety entity {entity_id} is not numeric") from err
+        if not math.isfinite(value):
+            raise HomeAssistantError(f"Weather safety entity {entity_id} is not plausible")
+        return value
+
+    def _seconds_until_weather_expiry(self) -> float | None:
+        """Return time until the oldest configured sample becomes stale while active."""
+        if self._stored_state.active_execution is None:
+            return None
+        max_age = self._number(self._installation_data, CONF_WEATHER_MAX_AGE_SECONDS, 900)
+        expiries = []
+        for key in (CONF_FROST_ENTITY, CONF_RAIN_STOP_ENTITY):
+            entity_id = self._installation_data.get(key)
+            if not isinstance(entity_id, str):
+                continue
+            state = self._hass.states.get(entity_id)
+            if state is None:
+                return 0.0
+            expiries.append(state.last_reported + timedelta(seconds=max_age))
+        if not expiries:
+            return None
+        return max(0.0, (min(expiries) - datetime.now(UTC)).total_seconds())
+
+    async def _async_weather_freshness_watchdog(self) -> None:
+        """Enforce weather expiry during active runs without needing a state event."""
+        try:
+            while not self._shutting_down:
+                self._weather_watchdog_event.clear()
+                delay = self._seconds_until_weather_expiry()
+                if delay is None:
+                    await self._weather_watchdog_event.wait()
+                    continue
+                try:
+                    await asyncio.wait_for(
+                        self._weather_watchdog_event.wait(),
+                        timeout=max(0.01, delay),
+                    )
+                except TimeoutError:
+                    await self._async_apply_weather_interlocks()
+        except asyncio.CancelledError:
+            return
 
     @callback
     def _flow_state_changed(self, event: Event[EventStateChangedData]) -> None:
@@ -979,6 +1475,7 @@ class IrrigationManager:
         errors: list[Exception] = []
         for entity_id in dict.fromkeys(entity_ids):
             try:
+                await self._async_expect_actuator_state(entity_id, False)
                 await self._actuators.close(entity_id)
             except Exception as err:  # noqa: BLE001
                 errors.append(err)
@@ -1008,6 +1505,8 @@ class IrrigationManager:
         self,
         *,
         target_zone_id: str | None = None,
+        source: str = "manual",
+        ignore_weather: bool = True,
         ignore_installation_lock: bool = False,
         ignore_winter_lock: bool = False,
         ignore_emergency_stop: bool = False,
@@ -1021,6 +1520,14 @@ class IrrigationManager:
             raise HomeAssistantError("The irrigation installation has a safety lock")
         if target_zone_id in self._stored_state.zone_safety_locks:
             raise HomeAssistantError("The irrigation zone has a safety lock")
+        if not ignore_weather:
+            weather = self._weather_safety()
+            if weather.frost_blocked:
+                raise HomeAssistantError(f"Frost safety blocks irrigation ({weather.status})")
+            if source == "automatic" and weather.rain_stop_active:
+                raise HomeAssistantError(
+                    f"Rain safety blocks automatic irrigation ({weather.status})"
+                )
         entity_ids = self._zone_valves()
         if main_valve := self._installation_data.get(CONF_MAIN_VALVE):
             entity_ids.append(main_valve)
@@ -1080,6 +1587,7 @@ class IrrigationManager:
     ) -> list[tuple[_ZoneConfigSnapshot, ZonePlanningInput, ZoneScheduleDecision]]:
         """Build reproducible per-zone decisions from config and durable balance."""
         decisions: list[tuple[_ZoneConfigSnapshot, ZonePlanningInput, ZoneScheduleDecision]] = []
+        weather = self._weather_safety()
         for subentry in self._zone_configs:
             zone_id = subentry.unique_id or subentry.subentry_id
             data = subentry.data
@@ -1120,6 +1628,8 @@ class IrrigationManager:
                     or self._stored_state.maintenance_test is not None
                     or self._stored_state.installation_safety_lock is not None
                     or zone_id in self._stored_state.zone_safety_locks
+                    or weather.frost_blocked
+                    or weather.rain_stop_active
                 ),
             )
             last_value = self._stored_state.zone_last_effective_irrigation.get(zone_id)
@@ -1222,6 +1732,11 @@ class IrrigationManager:
                     remaining_window,
                     self._number(data, CONF_AUTOMATIC_MAX_DURATION, 3_600.0),
                 )
+                delivery_limit = self._delivery_runtime_limit(data, hard_limit)
+                operation_deadline = min(
+                    decision.active_window.end,
+                    planning_now + timedelta(seconds=self._operation_lifetime_limit(data)),
+                )
                 balance_snapshot = self._balance_snapshot(data)
                 if existing is not None and existing.status in {"cancelled", "expired"}:
                     requests = tuple(
@@ -1236,8 +1751,10 @@ class IrrigationManager:
                             status="pending",
                             execution_id=None,
                             hard_time_limit_seconds=(
-                                hard_limit if target_type == "volume" else None
+                                delivery_limit if target_type == "volume" else None
                             ),
+                            delivery_runtime_limit_seconds=delivery_limit,
+                            operation_deadline_at=operation_deadline.isoformat(),
                             automatic_window_end=decision.active_window.end.isoformat(),
                             automatic_relative_need=planning_input.relative_need,
                             automatic_priority=planning_input.priority,
@@ -1274,8 +1791,10 @@ class IrrigationManager:
                                 target_value=target_value,
                                 remaining_value=target_value,
                                 hard_time_limit_seconds=(
-                                    hard_limit if target_type == "volume" else None
+                                    delivery_limit if target_type == "volume" else None
                                 ),
+                                delivery_runtime_limit_seconds=delivery_limit,
+                                operation_deadline_at=operation_deadline.isoformat(),
                                 automatic_window_end=decision.active_window.end.isoformat(),
                                 automatic_relative_need=planning_input.relative_need,
                                 automatic_priority=planning_input.priority,
@@ -1308,7 +1827,9 @@ class IrrigationManager:
                     automatic_window_end=decision.active_window.end.isoformat(),
                     automatic_relative_need=planning_input.relative_need,
                     automatic_priority=planning_input.priority,
-                    hard_time_limit_seconds=hard_limit if target_type == "volume" else None,
+                    hard_time_limit_seconds=delivery_limit if target_type == "volume" else None,
+                    delivery_runtime_limit_seconds=delivery_limit,
+                    operation_deadline_at=operation_deadline.isoformat(),
                     max_dose_value=self._optional_float(
                         data,
                         CONF_MAX_DOSE_AMOUNT if target_type == "volume" else CONF_MAX_DOSE_DURATION,
@@ -1593,6 +2114,22 @@ class IrrigationManager:
                 CONF_MAX_DOSE_AMOUNT if target_type == "volume" else CONF_MAX_DOSE_DURATION
             )
             balance_snapshot = self._balance_snapshot(subentry.data)
+            delivery_limit = self._delivery_runtime_limit(subentry.data, hard_time_limit_seconds)
+            expires_at = now + timedelta(seconds=expiry_seconds)
+            operation_deadline = min(
+                expires_at,
+                now + timedelta(seconds=self._operation_lifetime_limit(subentry.data)),
+            )
+            weather = self._weather_safety()
+            if weather.frost_blocked:
+                raise HomeAssistantError(f"Frost safety blocks irrigation ({weather.status})")
+            if weather.rain_stop_active:
+                self._events.fire(
+                    "weather_interlock_warning",
+                    reason="manual_rain_override",
+                    target=self._events.zone_target(zone_id),
+                    quality=weather.status,
+                )
             request = ManualIrrigationRequest(
                 request_id=request_id,
                 sequence=self._stored_state.next_request_sequence,
@@ -1605,8 +2142,10 @@ class IrrigationManager:
                 target_value=target_value,
                 remaining_value=target_value,
                 created_at=now.isoformat(),
-                expires_at=(now + timedelta(seconds=expiry_seconds)).isoformat(),
-                hard_time_limit_seconds=hard_time_limit_seconds,
+                expires_at=expires_at.isoformat(),
+                hard_time_limit_seconds=(delivery_limit if target_type == "volume" else None),
+                delivery_runtime_limit_seconds=delivery_limit,
+                operation_deadline_at=operation_deadline.isoformat(),
                 max_dose_value=self._optional_float(subentry.data, max_dose_key),
                 soak_duration_seconds=(
                     self._optional_float(subentry.data, CONF_SOAK_DURATION) or 0.0
@@ -1660,6 +2199,7 @@ class IrrigationManager:
         while not self._shutting_down:
             self._queue_event.clear()
             request: ManualIrrigationRequest | None = None
+            run_identity: str | None = None
             try:
                 async with self._command_lock:
                     await self._async_expire_requests()
@@ -1675,17 +2215,19 @@ class IrrigationManager:
                     continue
 
                 dose_value = dose_target(request)
-                duration_seconds = dose_value if request.target_type == "duration" else None
-                amount_liters = dose_value if request.target_type == "volume" else None
                 execution = self._execution(request.execution_id)
                 dose_number = execution.dose_number + 1 if execution is not None else 1
+                runtime_limit = (
+                    request.delivery_runtime_limit_seconds
+                    if request.delivery_runtime_limit_seconds is not None
+                    else request.hard_time_limit_seconds
+                )
                 remaining_runtime = (
                     None
-                    if request.hard_time_limit_seconds is None
+                    if runtime_limit is None
                     else max(
                         0.0,
-                        request.hard_time_limit_seconds
-                        - self._consumed_watering_seconds(request.request_id),
+                        runtime_limit - self._consumed_watering_seconds(request.request_id),
                     )
                 )
                 if remaining_runtime is not None and remaining_runtime <= 0:
@@ -1695,15 +2237,24 @@ class IrrigationManager:
                             HomeAssistantError("Irrigation execution hard runtime exhausted"),
                         )
                     continue
-                if datetime.fromisoformat(request.expires_at) <= datetime.now(UTC):
+                duration_seconds = (
+                    min(dose_value, remaining_runtime)
+                    if request.target_type == "duration" and remaining_runtime is not None
+                    else dose_value
+                    if request.target_type == "duration"
+                    else None
+                )
+                amount_liters = dose_value if request.target_type == "volume" else None
+                operation_deadline = datetime.fromisoformat(
+                    request.operation_deadline_at or request.expires_at
+                )
+                if operation_deadline <= datetime.now(UTC):
                     async with self._command_lock:
                         await self._async_expire_requests()
                     continue
                 prepare_seconds = max(
                     0.0,
-                    (
-                        datetime.fromisoformat(request.expires_at) - datetime.now(UTC)
-                    ).total_seconds(),
+                    (operation_deadline - datetime.now(UTC)).total_seconds(),
                 )
                 try:
                     async with asyncio.timeout(prepare_seconds):
@@ -1716,6 +2267,7 @@ class IrrigationManager:
                                 hard_time_limit_seconds=remaining_runtime,
                                 dose_number=dose_number,
                             )
+                            run_identity = self._active_run_identity()
                 except TimeoutError:
                     async with self._command_lock:
                         active = self._stored_state.active_execution
@@ -1725,9 +2277,7 @@ class IrrigationManager:
                     continue
                 expiry_seconds = max(
                     0.0,
-                    (
-                        datetime.fromisoformat(request.expires_at) - datetime.now(UTC)
-                    ).total_seconds(),
+                    (operation_deadline - datetime.now(UTC)).total_seconds(),
                 )
                 done, _ = await asyncio.wait((task,), timeout=expiry_seconds)
                 expired_during_dose = task not in done
@@ -1742,6 +2292,8 @@ class IrrigationManager:
                         await self._async_recover_interrupted_execution(could_have_flowed=False)
                         await self._async_expire_requests()
                     continue
+                if run_identity is not None:
+                    result = self._consume_external_violation(run_identity, result)
                 async with self._command_lock:
                     await self._async_finish_dose(
                         request.request_id,
@@ -1757,6 +2309,8 @@ class IrrigationManager:
                     async with self._command_lock:
                         await self._async_fail_request(request.request_id, err)
             finally:
+                if run_identity is not None:
+                    self._clear_external_violation(run_identity)
                 self._watering = False
                 if self._active_task is not None and self._active_task.done():
                     self._active_task = None
@@ -1859,7 +2413,7 @@ class IrrigationManager:
                 execution, status="cancelled", ended_at=now.isoformat(), result="stopped"
             )
             terminal = True
-        elif expired or datetime.fromisoformat(request.expires_at) <= now:
+        elif expired or self._request_deadline(request) <= now:
             self._pause_requested.discard(request_id)
             request = replace(
                 request,
@@ -2019,7 +2573,7 @@ class IrrigationManager:
                     "status": execution.status,
                 },
             )
-        if result.safety_violation is not None:
+        if result.safety_violation is not None and result.safety_scope is not None:
             reason = (
                 "flow_above_maximum"
                 if "exceeds maximum" in result.safety_violation
@@ -2119,7 +2673,7 @@ class IrrigationManager:
         for request in self._stored_state.manual_requests:
             if (
                 request.status in {"pending", "executing", "soaking", "paused"}
-                and datetime.fromisoformat(request.expires_at) <= now
+                and self._request_deadline(request) <= now
             ):
                 request = replace(
                     request,
@@ -2170,7 +2724,10 @@ class IrrigationManager:
             datetime.fromisoformat(value)
             for request in self._stored_state.manual_requests
             if request.status in {"pending", "executing", "soaking", "paused"}
-            for value in (request.expires_at, request.soak_until)
+            for value in (
+                (request.operation_deadline_at or request.expires_at),
+                request.soak_until,
+            )
             if value is not None
         ]
         return (
@@ -2206,6 +2763,15 @@ class IrrigationManager:
             CONF_LEAK_MONITORING,
             CONF_LEAK_FLOW_THRESHOLD,
             CONF_LEAK_DURATION_SECONDS,
+            CONF_FROST_ENTITY,
+            CONF_FROST_THRESHOLD,
+            CONF_RAIN_STOP_ENTITY,
+            CONF_RAIN_STOP_THRESHOLD,
+            CONF_WEATHER_MAX_AGE_SECONDS,
+            CONF_WEATHER_FAILURE_POLICY,
+            CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
+            CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
+            CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
             CONF_MAINTENANCE_MAX_DURATION,
             CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
             CONF_CALIBRATION_SETTLE_SECONDS,
@@ -2238,6 +2804,8 @@ class IrrigationManager:
             CONF_MINIMUM_EFFECTIVE_LITERS,
             CONF_MAXIMUM_TARGET_LITERS,
             CONF_AUTOMATIC_MAX_DURATION,
+            CONF_MAX_DELIVERY_RUNTIME,
+            CONF_MAX_OPERATION_LIFETIME,
             CONF_ZONE_PRIORITY,
             CONF_WATERING_WINDOWS,
         }
@@ -2282,6 +2850,7 @@ class IrrigationManager:
         now = dt_util.now()
         decisions = self._zone_schedule_decisions(now=now)
         active = self._stored_state.active_execution
+        weather = self._weather_safety()
         return {
             "status": self._coordinator.data.status,
             "emergency_stop": self._stored_state.emergency_stop,
@@ -2295,6 +2864,12 @@ class IrrigationManager:
             "installation_safety_lock_active": (
                 self._stored_state.installation_safety_lock is not None
             ),
+            "weather_safety": {
+                "status": weather.status,
+                "frost_blocked": weather.frost_blocked,
+                "rain_stop_active": weather.rain_stop_active,
+                "failure_policy": "fail_safe",
+            },
             "pending_config_reload": self._pending_reload_task is not None,
             "zone_safety_lock_ids": sorted(self._stored_state.zone_safety_locks),
             "active": (
@@ -2608,7 +3183,11 @@ class IrrigationManager:
             raise HomeAssistantError("The irrigation zone does not exist")
         manual_request = self._with_balance_snapshot(manual_request, subentry.data)
         zone_id = manual_request.zone_id
-        await self._async_preflight(target_zone_id=zone_id)
+        await self._async_preflight(
+            target_zone_id=zone_id,
+            source=manual_request.source,
+            ignore_weather=False,
+        )
         self._cancel_leak_observation()
 
         estimated_flow_l_min = manual_request.estimated_flow_l_min
@@ -2654,6 +3233,8 @@ class IrrigationManager:
                 remaining_value=manual_request.remaining_value,
                 status="watering",
                 created_at=now,
+                operation_deadline_at=manual_request.operation_deadline_at,
+                delivery_runtime_limit_seconds=(manual_request.delivery_runtime_limit_seconds),
                 dose_number=dose_number,
                 balance_area_m2=manual_request.balance_area_m2,
                 balance_application_efficiency=(manual_request.balance_application_efficiency),
@@ -2704,6 +3285,10 @@ class IrrigationManager:
                 estimated_flow_l_min=estimated_flow_l_min,
                 requested_amount_liters=amount_liters,
                 hard_time_limit_seconds=hard_time_limit_seconds,
+                delivery_deadline_at=(
+                    datetime.now(UTC) + timedelta(seconds=execution_time_limit)
+                ).isoformat(),
+                operation_deadline_at=manual_request.operation_deadline_at,
                 meter_failure_strategy=meter_failure_strategy,
                 request_id=manual_request.request_id,
                 execution_id=execution_id,
@@ -2741,6 +3326,8 @@ class IrrigationManager:
                 },
             )
         self._watering = True
+        self._active_external_violation = None
+        self._weather_watchdog_event.set()
         task = self._hass.async_create_task(
             self._async_execute(
                 request=ExecutionRequest(
@@ -2761,6 +3348,7 @@ class IrrigationManager:
                     on_zone_opening=self._async_mark_zone_opening,
                     on_zone_opened=self._async_mark_zone_opened,
                     on_progress=self._async_update_progress,
+                    on_actuator_command=self._async_expect_actuator_state,
                 ),
                 estimated_flow_l_min=estimated_flow_l_min,
             ),
@@ -2932,7 +3520,10 @@ class IrrigationManager:
                 return
             if not self._is_complete_idle() or self._stored_state.maintenance_test is not None:
                 raise HomeAssistantError("The irrigation installation is busy")
-            await self._async_preflight(ignore_winter_lock=True)
+            await self._async_preflight(
+                ignore_winter_lock=True,
+                ignore_installation_lock=True,
+            )
             self._stored_state = replace(self._stored_state, winter_lock=False)
             await self._store.async_save(self._stored_state)
             self._publish(status="idle", active_zone_id=None)
@@ -2981,7 +3572,10 @@ class IrrigationManager:
                 raise HomeAssistantError(
                     f"The supervised test duration must not exceed {max_duration:g} seconds"
                 )
-            await self._async_preflight(target_zone_id=subentry.unique_id or subentry.subentry_id)
+            await self._async_preflight(
+                target_zone_id=subentry.unique_id or subentry.subentry_id,
+                ignore_weather=False,
+            )
             confirmation_interval = self._number(
                 self._installation_data, CONF_MAINTENANCE_CONFIRMATION_INTERVAL, 30.0
             )
@@ -3028,6 +3622,8 @@ class IrrigationManager:
             self._maintenance_stop_reason = None
             self._maintenance_flow_samples = []
             self._watering = True
+            self._active_external_violation = None
+            self._weather_watchdog_event.set()
             self._maintenance_task = self._hass.async_create_task(
                 self._async_run_maintenance_test(test, subentry, duration_seconds),
                 f"Irrigation Manager supervised {kind} test",
@@ -3158,6 +3754,7 @@ class IrrigationManager:
                     on_flow_sample=self._async_record_maintenance_flow,
                     on_zone_opening=self._async_mark_zone_opening,
                     on_zone_opened=self._async_mark_zone_opened,
+                    on_actuator_command=self._async_expect_actuator_state,
                 )
             )
         except asyncio.CancelledError:
@@ -3179,8 +3776,14 @@ class IrrigationManager:
                 target_reached=False,
                 measurement_quality="unknown",
             )
-        async with self._command_lock:
-            await self._async_finish_maintenance_test(test, subentry, result)
+        identity = f"maintenance:{test.test_id}"
+        result = self._consume_external_violation(identity, result)
+        try:
+            async with self._command_lock:
+                await self._async_finish_maintenance_test(test, subentry, result)
+        finally:
+            self._clear_external_violation(identity)
+            self._weather_watchdog_event.set()
         return result
 
     async def _async_record_maintenance_flow(self, flow_l_min: float) -> None:
@@ -3593,6 +4196,7 @@ class IrrigationManager:
             self._execution(selected_request.execution_id) if selected_request is not None else None
         )
         schedule_decisions = self._zone_schedule_decisions(now=dt_util.now())
+        weather = self._weather_safety()
         self._coordinator.set_snapshot(
             InstallationSnapshot(
                 installation_total_liters=(self._stored_state.installation_total_liters),
@@ -3685,6 +4289,9 @@ class IrrigationManager:
                     planning_input.zone_id: decision.reason
                     for _, planning_input, decision in schedule_decisions
                 },
+                frost_blocked=weather.frost_blocked,
+                rain_stop_active=weather.rain_stop_active,
+                weather_safety_status=weather.status,
             )
         )
         self._refresh_complete_idle_event()
@@ -3695,6 +4302,31 @@ class IrrigationManager:
         self._active_target_value = None
         self._active_remaining_value = None
         self._active_measurement_quality = None
+        self._weather_watchdog_event.set()
+
+    def _consume_external_violation(
+        self, identity: str, result: ExecutionResult
+    ) -> ExecutionResult:
+        """Apply one external violation only to the run that observed it."""
+        violation = self._active_external_violation
+        if violation is None or violation[0] != identity:
+            return result
+        self._active_external_violation = None
+        return replace(
+            result,
+            stopped=False,
+            safety_violation=violation[1],
+            safety_scope=violation[2],
+            target_reached=False,
+        )
+
+    def _clear_external_violation(self, identity: str) -> None:
+        """Discard a stale external violation when its owning run terminates."""
+        if (
+            self._active_external_violation is not None
+            and self._active_external_violation[0] == identity
+        ):
+            self._active_external_violation = None
 
     def _balance_after_delivery(
         self,
@@ -3819,6 +4451,38 @@ class IrrigationManager:
     def _automatic_request_id(zone_id: str, opportunity_id: str) -> str:
         """Return the durable identity shared by planning and skip-once."""
         return f"automatic:{zone_id}:{opportunity_id}"
+
+    def _delivery_runtime_limit(
+        self, zone_data: Mapping[str, object], requested_limit: float | None
+    ) -> float:
+        """Combine caller, zone, and installation hydraulic limits by minimum."""
+        limits = [
+            self._number(
+                self._installation_data,
+                CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
+                14_400,
+            ),
+            self._number(zone_data, CONF_MAX_DELIVERY_RUNTIME, 3_600),
+        ]
+        if requested_limit is not None:
+            limits.append(requested_limit)
+        return min(limits)
+
+    def _operation_lifetime_limit(self, zone_data: Mapping[str, object]) -> float:
+        """Combine zone and installation total-lifetime limits by minimum."""
+        return min(
+            self._number(
+                self._installation_data,
+                CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
+                86_400,
+            ),
+            self._number(zone_data, CONF_MAX_OPERATION_LIFETIME, 14_400),
+        )
+
+    @staticmethod
+    def _request_deadline(request: ManualIrrigationRequest) -> datetime:
+        """Return the immutable total-lifetime deadline, including waits and soaking."""
+        return datetime.fromisoformat(request.operation_deadline_at or request.expires_at)
 
     @staticmethod
     def _estimated_flow(data: Mapping[str, object]) -> float | None:

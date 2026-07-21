@@ -45,6 +45,16 @@ async def async_setup_entry(
                 entry=entry,
                 installation_id=installation_id,
             ),
+            FrostSafetyBinarySensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+            ),
+            RainStopBinarySensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+            ),
         ]
     )
     for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
@@ -216,6 +226,87 @@ class MaintenanceModeBinarySensor(CoordinatorEntity[IrrigationCoordinator], Bina
             }.items()
             if value is not None
         }
+
+
+class _WeatherSafetyBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):
+    """Base for installation weather safety indicators."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        suffix: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{installation_id}_{suffix}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str]:
+        return {"weather_safety_status": self.coordinator.data.weather_safety_status}
+
+
+class FrostSafetyBinarySensor(_WeatherSafetyBinarySensor):
+    """Expose the non-overridable frost interlock."""
+
+    _attr_translation_key = "frost_safety"
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+    ) -> None:
+        """Initialize the frost safety indicator."""
+        super().__init__(
+            coordinator=coordinator,
+            entry=entry,
+            installation_id=installation_id,
+            suffix="frost_safety",
+        )
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        return self.coordinator.data.frost_blocked
+
+
+class RainStopBinarySensor(_WeatherSafetyBinarySensor):
+    """Expose the automatic rain-stop interlock."""
+
+    _attr_translation_key = "rain_stop"
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+    ) -> None:
+        """Initialize the automatic rain-stop indicator."""
+        super().__init__(
+            coordinator=coordinator,
+            entry=entry,
+            installation_id=installation_id,
+            suffix="rain_stop",
+        )
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        return self.coordinator.data.rain_stop_active
 
 
 class ZoneSafetyLockBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):

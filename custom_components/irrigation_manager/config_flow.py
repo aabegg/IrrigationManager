@@ -15,6 +15,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import (
     CONF_NAME,
     Platform,
+    UnitOfTemperature,
     UnitOfTime,
     UnitOfVolume,
     UnitOfVolumeFlowRate,
@@ -33,6 +34,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
     CONF_APPLICATION_EFFICIENCY,
     CONF_AREA_M2,
     CONF_AUTOMATIC_MAX_DURATION,
@@ -43,6 +45,10 @@ from .const import (
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
+    CONF_FROST_ENTITY,
+    CONF_FROST_THRESHOLD,
+    CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
+    CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
@@ -50,9 +56,11 @@ from .const import (
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
     CONF_MANDATORY_AMOUNT_LITERS,
+    CONF_MAX_DELIVERY_RUNTIME,
     CONF_MAX_DOSE_AMOUNT,
     CONF_MAX_DOSE_DURATION,
     CONF_MAX_FLOW,
+    CONF_MAX_OPERATION_LIFETIME,
     CONF_MAXIMUM_DEFICIT_MM,
     CONF_MAXIMUM_INTERVAL_DAYS,
     CONF_MAXIMUM_TARGET_LITERS,
@@ -64,11 +72,15 @@ from .const import (
     CONF_MINIMUM_TRIGGER_LITERS,
     CONF_NOTIFY_ENTITIES,
     CONF_RAIN_FACTOR,
+    CONF_RAIN_STOP_ENTITY,
+    CONF_RAIN_STOP_THRESHOLD,
     CONF_SOAK_DURATION,
     CONF_WATER_METER,
     CONF_WATERING_MODE,
     CONF_WATERING_WINDOWS,
     CONF_WEATHER_ENTITY,
+    CONF_WEATHER_FAILURE_POLICY,
+    CONF_WEATHER_MAX_AGE_SECONDS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
     DOMAIN,
@@ -77,6 +89,7 @@ from .const import (
     SUBENTRY_TYPE_ZONE,
     WATERING_MODE_DEMAND,
     WATERING_MODE_MINIMUM,
+    WEATHER_FAILURE_FAIL_SAFE,
 )
 from .scheduler import parse_daily_window
 
@@ -133,6 +146,68 @@ INSTALLATION_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_WEATHER_ENTITY): EntitySelector(
             EntitySelectorConfig(domain=Platform.WEATHER)
+        ),
+        vol.Optional(CONF_FROST_ENTITY): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR)
+        ),
+        vol.Optional(CONF_FROST_THRESHOLD, default=2): NumberSelector(
+            NumberSelectorConfig(
+                min=-50,
+                max=20,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTemperature.CELSIUS,
+            )
+        ),
+        vol.Optional(CONF_RAIN_STOP_ENTITY): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR)
+        ),
+        vol.Optional(CONF_RAIN_STOP_THRESHOLD, default=0.1): NumberSelector(
+            NumberSelectorConfig(min=0, max=1_000, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_WEATHER_MAX_AGE_SECONDS, default=900): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=86_400,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(
+            CONF_WEATHER_FAILURE_POLICY, default=WEATHER_FAILURE_FAIL_SAFE
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[WEATHER_FAILURE_FAIL_SAFE],
+                translation_key=CONF_WEATHER_FAILURE_POLICY,
+            )
+        ),
+        vol.Optional(CONF_INSTALLATION_MAX_DELIVERY_RUNTIME, default=14_400): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=604_800,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_INSTALLATION_MAX_OPERATION_LIFETIME, default=86_400): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=2_592_000,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_ACTUATOR_TRANSITION_GRACE_SECONDS, default=5): NumberSelector(
+            NumberSelectorConfig(
+                min=0.1,
+                max=60,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
         ),
         vol.Optional(CONF_NOTIFY_ENTITIES, default=[]): EntitySelector(
             EntitySelectorConfig(domain=Platform.NOTIFY, multiple=True)
@@ -286,6 +361,24 @@ ZONE_SCHEMA = vol.Schema(
             NumberSelectorConfig(
                 min=1,
                 max=14_400,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_MAX_DELIVERY_RUNTIME, default=3_600): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=604_800,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_MAX_OPERATION_LIFETIME, default=14_400): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=2_592_000,
                 step=1,
                 mode=NumberSelectorMode.BOX,
                 unit_of_measurement=UnitOfTime.SECONDS,

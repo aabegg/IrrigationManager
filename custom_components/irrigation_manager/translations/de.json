@@ -117,6 +117,9 @@
         "demand": "Bedarfsbewässerung",
         "minimum": "Mindestbewässerung"
       }
+    },
+    "weather_failure_policy": {
+      "options": {"fail_safe": "Ausfallsicher (betroffene Bewässerung sperren)"}
     }
   },
   "entity": {
@@ -138,6 +141,12 @@
       },
       "maintenance_mode": {
         "name": "Wartungsmodus"
+      },
+      "frost_safety": {
+        "name": "Frostsperre"
+      },
+      "rain_stop": {
+        "name": "Automatischer Regenstopp"
       }
     },
     "sensor": {
@@ -202,6 +211,15 @@
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
           "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity",
+          "frost_entity": "Temperatur-Entity für Frost",
+          "frost_threshold": "Schwellwert der Frostsperre",
+          "rain_stop_entity": "Entity für aktuellen Regen",
+          "rain_stop_threshold": "Schwellwert für automatischen Regenstopp",
+          "weather_max_age_seconds": "Maximales Alter der Wettersicherheitsdaten",
+          "weather_failure_policy": "Ausfallstrategie der Wettersicherheit",
+          "installation_max_delivery_runtime": "Maximale Bewässerungslaufzeit der Anlage",
+          "installation_max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
+          "actuator_transition_grace_seconds": "Übergangsfrist für Aktorrückmeldung",
            "notify_entities": "Ziele für kritische Benachrichtigungen"
           ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
           ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
@@ -246,6 +264,15 @@
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
           "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity",
+          "frost_entity": "Temperatur-Entity für Frost",
+          "frost_threshold": "Schwellwert der Frostsperre",
+          "rain_stop_entity": "Entity für aktuellen Regen",
+          "rain_stop_threshold": "Schwellwert für automatischen Regenstopp",
+          "weather_max_age_seconds": "Maximales Alter der Wettersicherheitsdaten",
+          "weather_failure_policy": "Ausfallstrategie der Wettersicherheit",
+          "installation_max_delivery_runtime": "Maximale Bewässerungslaufzeit der Anlage",
+          "installation_max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
+          "actuator_transition_grace_seconds": "Übergangsfrist für Aktorrückmeldung",
            "notify_entities": "Ziele für kritische Benachrichtigungen"
           ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
           ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
@@ -284,6 +311,8 @@
           "minimum_effective_liters": "Wirksame Mindestmenge",
           "maximum_target_liters": "Maximales automatisches Ziel",
           "automatic_max_duration": "Maximale automatische Dauer",
+          "max_delivery_runtime": "Maximale Bewässerungslaufzeit der Zone",
+          "max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
           "zone_priority": "Zonenpriorität",
           "watering_windows": "Tägliche Bewässerungsfenster"
         }
@@ -327,6 +356,8 @@
             "minimum_effective_liters": "Wirksame Mindestmenge",
             "maximum_target_liters": "Maximales automatisches Ziel",
             "automatic_max_duration": "Maximale automatische Dauer",
+            "max_delivery_runtime": "Maximale Bewässerungslaufzeit der Zone",
+            "max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
             "zone_priority": "Zonenpriorität",
             "watering_windows": "Tägliche Bewässerungsfenster"
           },
@@ -362,6 +393,8 @@
             "minimum_effective_liters": "Wirksame Mindestmenge",
             "maximum_target_liters": "Maximales automatisches Ziel",
             "automatic_max_duration": "Maximale automatische Dauer",
+            "max_delivery_runtime": "Maximale Bewässerungslaufzeit der Zone",
+            "max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
             "zone_priority": "Zonenpriorität",
             "watering_windows": "Tägliche Bewässerungsfenster"
           },

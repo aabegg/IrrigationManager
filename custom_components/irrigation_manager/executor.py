@@ -74,6 +74,7 @@ class ExecutionRequest:
     on_progress: Callable[[float, str], Awaitable[None]] | None = None
     observe_flow: bool = False
     on_flow_sample: Callable[[float], Awaitable[None]] | None = None
+    on_actuator_command: Callable[[str, bool], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
         """Reject ambiguous targets and volume requests without a hard limit."""
@@ -179,13 +180,13 @@ class IrrigationExecutor:
                             raise RuntimeError("Volume irrigation deadline is missing")
                         async with asyncio.timeout(max(0.0, deadline - self._clock.monotonic())):
                             if request.main_valve is not None:
-                                await self._open_and_confirm(request.main_valve)
+                                await self._open_and_confirm(request, request.main_valve)
                             if request.on_zone_opening is not None:
                                 await request.on_zone_opening()
                             watering_started_at = self._clock.monotonic()
                             progress.accounted_at = watering_started_at
                             zone_open_command_at = self._clock.monotonic()
-                            await self._open_and_confirm(request.zone_valve)
+                            await self._open_and_confirm(request, request.zone_valve)
                             opening_latency_seconds = self._clock.monotonic() - zone_open_command_at
                             zone_open_confirmed = True
                             if request.on_zone_opened is not None:
@@ -199,14 +200,14 @@ class IrrigationExecutor:
                             )
                     else:
                         if request.main_valve is not None:
-                            await self._open_and_confirm(request.main_valve)
+                            await self._open_and_confirm(request, request.main_valve)
                         if request.on_zone_opening is not None:
                             await request.on_zone_opening()
                         watering_started_at = self._clock.monotonic()
                         progress.accounted_at = watering_started_at
                         deadline = watering_started_at + time_limit
                         zone_open_command_at = self._clock.monotonic()
-                        await self._open_and_confirm(request.zone_valve)
+                        await self._open_and_confirm(request, request.zone_valve)
                         opening_latency_seconds = self._clock.monotonic() - zone_open_command_at
                         zone_open_confirmed = True
                         if request.on_zone_opened is not None:
@@ -241,8 +242,10 @@ class IrrigationExecutor:
                 try:
                     if request.amount_liters is not None and deadline is not None:
                         async with asyncio.timeout(max(0.0, deadline - self._clock.monotonic())):
+                            await self._notify_actuator_command(request, request.zone_valve, False)
                             await self._actuators.close(request.zone_valve)
                     else:
+                        await self._notify_actuator_command(request, request.zone_valve, False)
                         await self._actuators.close(request.zone_valve)
                     zone_closed = True
                 except TimeoutError:
@@ -282,6 +285,7 @@ class IrrigationExecutor:
                 cleanup_errors = await self._close_with_shared_feedback_budget(
                     cleanup_entities,
                     budget_seconds=CLEANUP_FEEDBACK_BUDGET_SECONDS,
+                    on_command=request.on_actuator_command,
                 )
                 for entity_id, cleanup_error in cleanup_errors.items():
                     if entity_id == request.zone_valve:
@@ -299,7 +303,8 @@ class IrrigationExecutor:
                 if violations and not deadline_expired:
                     raise RuntimeError("; ".join(violations))
 
-            await self._clock.sleep(request.settle_seconds)
+            if not stopped:
+                await self._clock.sleep(request.settle_seconds)
             if progress.measurement_quality == "measured" and meter_start_liters is not None:
                 try:
                     meter_end_liters = await self._meter.read_liters()
@@ -547,8 +552,9 @@ class IrrigationExecutor:
             raise ValueError("Water meter jump exceeds the plausible execution maximum")
         return delta_liters
 
-    async def _open_and_confirm(self, entity_id: str) -> None:
+    async def _open_and_confirm(self, request: ExecutionRequest, entity_id: str) -> None:
         """Open one actuator and reject missing feedback."""
+        await self._notify_actuator_command(request, entity_id, True)
         await self._actuators.open(entity_id)
         if not await self._actuators.is_open(entity_id):
             raise ValveDidNotOpenError(entity_id)
@@ -558,12 +564,15 @@ class IrrigationExecutor:
         entity_ids: list[str],
         *,
         budget_seconds: float,
+        on_command: Callable[[str, bool], Awaitable[None]] | None = None,
     ) -> dict[str, BaseException]:
         """Start every fail-safe close and share one bounded feedback budget.
 
         The water-runtime deadline determines when closure starts. This separate
         budget only bounds confirmation that all close commands took effect.
         """
+        if on_command is not None:
+            await asyncio.gather(*(on_command(entity_id, False) for entity_id in entity_ids))
         tasks = {
             entity_id: asyncio.create_task(self._actuators.close(entity_id))
             for entity_id in dict.fromkeys(entity_ids)
@@ -584,3 +593,11 @@ class IrrigationExecutor:
             elif task in done and (error := task.exception()) is not None:
                 errors[entity_id] = error
         return errors
+
+    @staticmethod
+    async def _notify_actuator_command(
+        request: ExecutionRequest, entity_id: str, open_: bool
+    ) -> None:
+        """Publish command intent before feedback can race the service response."""
+        if request.on_actuator_command is not None:
+            await request.on_actuator_command(entity_id, open_)

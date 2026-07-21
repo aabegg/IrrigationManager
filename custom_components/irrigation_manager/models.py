@@ -27,6 +27,9 @@ class ManualIrrigationRequest:
     automatic_priority: int | None = None
     execution_id: str | None = None
     hard_time_limit_seconds: float | None = None
+    delivery_runtime_limit_seconds: float | None = None
+    operation_deadline_at: str | None = None
+    runtime_limits_need_config_derivation: bool = False
     max_dose_value: float | None = None
     soak_duration_seconds: float = 0.0
     soak_until: str | None = None
@@ -60,21 +63,33 @@ class ManualIrrigationRequest:
         execution_id = data.get("execution_id")
         soak_until = data.get("soak_until")
         automatic_window_end = data.get("automatic_window_end")
+        operation_deadline_at = data.get("operation_deadline_at")
         status = data.get("status", "pending")
         source = data.get("source", "manual")
+        runtime_limits_need_config_derivation = data.get(
+            "runtime_limits_need_config_derivation", False
+        )
         if (
             not all(
                 value is None or isinstance(value, str)
-                for value in (main_valve, execution_id, soak_until, automatic_window_end)
+                for value in (
+                    main_valve,
+                    execution_id,
+                    soak_until,
+                    automatic_window_end,
+                    operation_deadline_at,
+                )
             )
             or not isinstance(status, str)
             or not isinstance(source, str)
+            or not isinstance(runtime_limits_need_config_derivation, bool)
         ):
             raise ValueError("Stored manual irrigation request metadata is malformed")
         main_valve = cast(str | None, main_valve)
         execution_id = cast(str | None, execution_id)
         soak_until = cast(str | None, soak_until)
         automatic_window_end = cast(str | None, automatic_window_end)
+        operation_deadline_at = cast(str | None, operation_deadline_at)
         return cls(
             request_id=str(data["request_id"]),
             sequence=int(StoredInstallationState._float(data.get("sequence"))),
@@ -99,6 +114,11 @@ class ManualIrrigationRequest:
             ),
             execution_id=execution_id,
             hard_time_limit_seconds=_optional_stored_float(data, "hard_time_limit_seconds"),
+            delivery_runtime_limit_seconds=_optional_stored_float(
+                data, "delivery_runtime_limit_seconds"
+            ),
+            operation_deadline_at=operation_deadline_at,
+            runtime_limits_need_config_derivation=runtime_limits_need_config_derivation,
             max_dose_value=_optional_stored_float(data, "max_dose_value"),
             soak_duration_seconds=StoredInstallationState._float(
                 data.get("soak_duration_seconds", 0.0)
@@ -141,6 +161,9 @@ class IrrigationExecutionState:
     remaining_value: float
     status: str
     created_at: str
+    operation_deadline_at: str | None = None
+    delivery_runtime_limit_seconds: float | None = None
+    runtime_limits_need_config_derivation: bool = False
     dose_number: int = 0
     delivered_liters: float = 0.0
     delivered_duration_seconds: float = 0.0
@@ -159,8 +182,17 @@ class IrrigationExecutionState:
             raise ValueError("Stored irrigation execution is malformed")
         ended_at = data.get("ended_at")
         result = data.get("result")
-        if not all(value is None or isinstance(value, str) for value in (ended_at, result)):
+        operation_deadline_at = data.get("operation_deadline_at")
+        runtime_limits_need_config_derivation = data.get(
+            "runtime_limits_need_config_derivation", False
+        )
+        if not all(
+            value is None or isinstance(value, str)
+            for value in (ended_at, result, operation_deadline_at)
+        ):
             raise ValueError("Stored irrigation execution result is malformed")
+        if not isinstance(runtime_limits_need_config_derivation, bool):
+            raise ValueError("Stored irrigation execution runtime migration is malformed")
         ended_at = cast(str | None, ended_at)
         result = cast(str | None, result)
         return cls(
@@ -172,6 +204,11 @@ class IrrigationExecutionState:
             remaining_value=StoredInstallationState._float(data.get("remaining_value")),
             status=str(data["status"]),
             created_at=str(data["created_at"]),
+            operation_deadline_at=cast(str | None, operation_deadline_at),
+            delivery_runtime_limit_seconds=_optional_stored_float(
+                data, "delivery_runtime_limit_seconds"
+            ),
+            runtime_limits_need_config_derivation=runtime_limits_need_config_derivation,
             dose_number=int(StoredInstallationState._float(data.get("dose_number", 0))),
             delivered_liters=StoredInstallationState._float(data.get("delivered_liters", 0.0)),
             delivered_duration_seconds=StoredInstallationState._float(
@@ -274,6 +311,9 @@ class InstallationSnapshot:
     zone_automation_needed: dict[str, bool] = field(default_factory=dict)
     zone_next_window: dict[str, str] = field(default_factory=dict)
     zone_planning_reason: dict[str, str] = field(default_factory=dict)
+    frost_blocked: bool = False
+    rain_stop_active: bool = False
+    weather_safety_status: str = "not_configured"
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +330,8 @@ class ActiveExecutionState:
     estimated_flow_l_min: float | None
     requested_amount_liters: float | None = None
     hard_time_limit_seconds: float | None = None
+    delivery_deadline_at: str | None = None
+    operation_deadline_at: str | None = None
     meter_failure_strategy: str = "abort"
     zone_opening_at: str | None = None
     fallback_started_at: str | None = None
@@ -339,6 +381,8 @@ class ActiveExecutionState:
             estimated_flow_l_min=optional_float("estimated_flow_l_min"),
             requested_amount_liters=optional_float("requested_amount_liters"),
             hard_time_limit_seconds=optional_float("hard_time_limit_seconds"),
+            delivery_deadline_at=optional_string("delivery_deadline_at"),
+            operation_deadline_at=optional_string("operation_deadline_at"),
             meter_failure_strategy=(
                 required_string("meter_failure_strategy")
                 if "meter_failure_strategy" in data
@@ -373,6 +417,8 @@ class ActiveExecutionState:
             "estimated_flow_l_min": self.estimated_flow_l_min,
             "requested_amount_liters": self.requested_amount_liters,
             "hard_time_limit_seconds": self.hard_time_limit_seconds,
+            "delivery_deadline_at": self.delivery_deadline_at,
+            "operation_deadline_at": self.operation_deadline_at,
             "meter_failure_strategy": self.meter_failure_strategy,
             "zone_opening_at": self.zone_opening_at,
             "fallback_started_at": self.fallback_started_at,

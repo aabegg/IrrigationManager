@@ -25,9 +25,10 @@ from .meter import CumulativeMeter, ImplausibleMeterRegressionError
 class HomeAssistantActuators:
     """Control switch and valve entities through native HA actions."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, transition_grace_seconds: float = 5.0) -> None:
         """Initialize the actuator adapter."""
         self._hass = hass
+        self._transition_grace_seconds = transition_grace_seconds
 
     async def open(self, entity_id: str) -> None:
         """Open a switch or valve and wait for the action call."""
@@ -67,7 +68,7 @@ class HomeAssistantActuators:
             current = self._hass.states.get(entity_id)
             if current is not None and current.state in expected_states:
                 return
-            async with asyncio.timeout(5):
+            async with asyncio.timeout(self._transition_grace_seconds):
                 await changed.wait()
         except TimeoutError as err:
             raise HomeAssistantError(

@@ -1,5 +1,6 @@
 """Versioned Home Assistant storage for critical irrigation state."""
 
+from datetime import datetime, timedelta
 from typing import override
 
 from homeassistant.core import HomeAssistant
@@ -8,7 +9,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 14
+STORAGE_MINOR_VERSION = 16
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -36,6 +37,8 @@ class _StateStore(Store[dict[str, object]]):
             11,
             12,
             13,
+            14,
+            15,
         }:
             migrated = dict(old_data)
             if old_minor_version == 1:
@@ -145,6 +148,57 @@ class _StateStore(Store[dict[str, object]]):
                         "zone_valve": "",
                         "zone_config_hash": "",
                     }
+            if old_minor_version < 15:
+                requests = migrated.get("manual_requests", [])
+                if isinstance(requests, list):
+                    migrated["manual_requests"] = [
+                        {
+                            **request,
+                            "delivery_runtime_limit_seconds": request.get(
+                                "hard_time_limit_seconds"
+                            ),
+                            "operation_deadline_at": request.get("expires_at"),
+                        }
+                        if isinstance(request, dict)
+                        else request
+                        for request in requests
+                    ]
+                executions = migrated.get("irrigation_executions", [])
+                if isinstance(executions, list):
+                    migrated["irrigation_executions"] = [
+                        {
+                            **execution,
+                            "delivery_runtime_limit_seconds": None,
+                            "operation_deadline_at": None,
+                        }
+                        if isinstance(execution, dict)
+                        else execution
+                        for execution in executions
+                    ]
+                raw_active = migrated.get("active_execution")
+                if isinstance(raw_active, dict):
+                    migrated["active_execution"] = {
+                        **raw_active,
+                        "delivery_deadline_at": None,
+                        "operation_deadline_at": None,
+                    }
+            if old_minor_version < 16:
+                requests = migrated.get("manual_requests", [])
+                if isinstance(requests, list):
+                    migrated["manual_requests"] = [
+                        _migrate_request_runtime_limits(request)
+                        if isinstance(request, dict)
+                        else request
+                        for request in requests
+                    ]
+                executions = migrated.get("irrigation_executions", [])
+                if isinstance(executions, list):
+                    migrated["irrigation_executions"] = [
+                        _migrate_execution_runtime_limits(execution)
+                        if isinstance(execution, dict)
+                        else execution
+                        for execution in executions
+                    ]
             return migrated
         raise NotImplementedError
 
@@ -159,6 +213,40 @@ def _backfill_balance_snapshot(target: dict[str, object], source: dict[str, obje
     ):
         if target.get(field) is None and source.get(field) is not None:
             target[field] = source[field]
+
+
+def _conservative_deadline(data: dict[str, object], *, lifetime_seconds: float) -> str:
+    """Derive a bounded deadline using only fields available inside storage migration."""
+    created_at = data.get("created_at")
+    expires_at = data.get("expires_at")
+    if not isinstance(created_at, str):
+        raise ValueError("Stored irrigation runtime has no creation timestamp")
+    deadline = datetime.fromisoformat(created_at) + timedelta(seconds=lifetime_seconds)
+    if isinstance(expires_at, str):
+        deadline = min(deadline, datetime.fromisoformat(expires_at))
+    return deadline.isoformat()
+
+
+def _migrate_request_runtime_limits(request: dict[str, object]) -> dict[str, object]:
+    """Give every legacy request conservative non-null limits pending config derivation."""
+    hard_limit = request.get("hard_time_limit_seconds")
+    delivery_limit = float(hard_limit) if isinstance(hard_limit, int | float) else 3_600.0
+    return {
+        **request,
+        "delivery_runtime_limit_seconds": delivery_limit,
+        "operation_deadline_at": _conservative_deadline(request, lifetime_seconds=14_400),
+        "runtime_limits_need_config_derivation": True,
+    }
+
+
+def _migrate_execution_runtime_limits(execution: dict[str, object]) -> dict[str, object]:
+    """Give every legacy execution conservative non-null limits pending config derivation."""
+    return {
+        **execution,
+        "delivery_runtime_limit_seconds": 3_600.0,
+        "operation_deadline_at": _conservative_deadline(execution, lifetime_seconds=14_400),
+        "runtime_limits_need_config_derivation": True,
+    }
 
 
 class IrrigationStore:

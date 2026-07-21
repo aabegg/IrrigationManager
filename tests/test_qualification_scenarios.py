@@ -3,9 +3,10 @@
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
-from homeassistant.const import STATE_OFF
+from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
@@ -16,6 +17,7 @@ from custom_components.irrigation_manager.executor import (
     IrrigationExecutor,
     ValveDidNotOpenError,
 )
+from custom_components.irrigation_manager.manager import IrrigationManager
 from custom_components.irrigation_manager.models import (
     IrrigationExecutionState,
     ManualIrrigationRequest,
@@ -559,3 +561,591 @@ async def test_finalized_weather_rejects_nan_without_mutating_balance(
         )
 
     assert manager._stored_state == before
+
+
+async def test_idle_unexpected_valve_open_closes_and_locks_without_flow_sensor(
+    hass: HomeAssistant,
+) -> None:
+    """Supervise actuators continuously even when no flow safety is available."""
+    plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
+    entry = await plant.setup_entry(with_flow=False, with_meter=False)
+
+    plant.force_feedback("switch.zone_lawn", open_=True)
+    async with asyncio.timeout(2):
+        while (  # noqa: ASYNC110 - the state transition is the production test seam
+            entry.runtime_data.manager._stored_state.installation_safety_lock is None
+        ):
+            await asyncio.sleep(0.001)
+
+    assert plant.open_valves == set()
+    assert "opened unexpectedly" in (
+        entry.runtime_data.manager._stored_state.installation_safety_lock or ""
+    )
+
+
+async def test_active_unexpected_main_closure_aborts_and_locks_without_flow_sensor(
+    hass: HomeAssistant,
+) -> None:
+    """Abort an active operation when unsolicited feedback closes the main valve."""
+    plant = FakeHaIrrigationPlant(
+        hass,
+        zone_flows_l_min={"switch.zone_lawn": 10},
+        auto_advance=False,
+    )
+    entry = await plant.setup_entry(with_flow=False, with_meter=False)
+    manager = entry.runtime_data.manager
+    manager._executor = IrrigationExecutor(
+        actuators=plant,
+        meter=plant,
+        flow=None,
+        clock=plant.clock,
+    )
+    response = await manager.async_start_manual(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=60,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        wait_for_completion=False,
+    )
+    await plant.clock.sleeping.wait()
+
+    plant.force_feedback(plant.main_valve or "", open_=False)
+    async with asyncio.timeout(2):
+        while manager._stored_state.installation_safety_lock is None:  # noqa: ASYNC110
+            await asyncio.sleep(0.001)
+    await manager._terminal_events[str(response["request_id"])].wait()
+
+    request = manager._request(str(response["request_id"]))
+    assert request is not None
+    assert request.status == "cancelled"
+    assert "closed unexpectedly" in (manager._stored_state.installation_safety_lock or "")
+    assert plant.open_valves == set()
+
+
+async def test_commanded_transitions_do_not_trigger_actuator_supervision(
+    hass: HomeAssistant,
+) -> None:
+    """Do not classify the integration's own immediate feedback as unsolicited."""
+    plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
+    entry = await plant.setup_entry(with_flow=False, with_meter=False)
+
+    await entry.runtime_data.manager.async_start_manual(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=0.01,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+    )
+
+    assert entry.runtime_data.manager._stored_state.installation_safety_lock is None
+    assert plant.open_valves == set()
+
+
+async def test_weather_interlocks_fail_safe_and_allow_manual_rain_override(
+    hass: HomeAssistant,
+) -> None:
+    """Block frost globally, rain automatically, and expose invalid sources as unsafe."""
+    plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
+    hass.states.async_set("sensor.frost", "-1", {"unit_of_measurement": "°C"})
+    hass.states.async_set("sensor.rain", "0")
+    entry = await plant.setup_entry(
+        with_flow=False,
+        with_meter=False,
+        installation_data={
+            "frost_entity": "sensor.frost",
+            "frost_threshold": 2,
+            "rain_stop_entity": "sensor.rain",
+            "rain_stop_threshold": 0.1,
+            "weather_max_age_seconds": 300,
+        },
+        zone_data=({"automation_enabled": True, "watering_windows": ["00:00-23:59"]},),
+    )
+    manager = entry.runtime_data.manager
+
+    with pytest.raises(HomeAssistantError, match="Frost safety"):
+        await manager.async_start_manual(
+            zone_subentry_id="qualification-zone-1",
+            duration_seconds=1,
+            amount_liters=None,
+            hard_time_limit_seconds=None,
+            wait_for_completion=False,
+        )
+
+    hass.states.async_set("sensor.frost", "10", {"unit_of_measurement": "°C"})
+    hass.states.async_set("sensor.rain", "1")
+    await hass.async_block_till_done()
+    report = await manager.async_plan_automatic(dry_run=True)
+    assert report["zones"][0]["reason"] == "safety_blocked"
+
+    response = await manager.async_start_manual(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=0.01,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        wait_for_completion=False,
+    )
+    assert response["request_id"]
+
+    hass.states.async_set("sensor.frost", "unavailable", {"unit_of_measurement": "°C"})
+    await hass.async_block_till_done()
+    assert manager._weather_safety().frost_blocked
+    assert "frost_source_invalid" in manager._weather_safety().status
+
+
+async def test_runtime_snapshots_use_minimum_limits_and_lifetime_includes_soaking(
+    hass: HomeAssistant,
+) -> None:
+    """Persist minimum safety ceilings and expire the operation during its soak."""
+    plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
+    entry = await plant.setup_entry(
+        with_flow=False,
+        with_meter=False,
+        installation_data={
+            "installation_max_delivery_runtime": 0.03,
+            "installation_max_operation_lifetime": 0.03,
+        },
+        zone_data=(
+            {
+                "max_delivery_runtime": 1,
+                "max_operation_lifetime": 1,
+                "max_dose_duration": 0.01,
+                "soak_duration": 0.1,
+            },
+        ),
+    )
+    manager = entry.runtime_data.manager
+
+    response = await manager.async_start_manual(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=0.02,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        expiry_seconds=60,
+    )
+    request = manager._request(str(response["request_id"]))
+    assert request is not None
+    assert request.delivery_runtime_limit_seconds == pytest.approx(0.03)
+    assert request.operation_deadline_at is not None
+    assert datetime.fromisoformat(request.operation_deadline_at) < datetime.fromisoformat(
+        request.expires_at
+    )
+    assert request.status == "expired"
+    execution = manager._execution(request.execution_id)
+    assert execution is not None
+    assert execution.delivery_runtime_limit_seconds == pytest.approx(0.03)
+    assert execution.operation_deadline_at == request.operation_deadline_at
+
+    deadline = request.operation_deadline_at
+    delivery_limit = request.delivery_runtime_limit_seconds
+    await plant.restart()
+    restarted = await IrrigationStore(hass, entry.entry_id).async_load()
+    persisted = next(
+        item for item in restarted.manual_requests if item.request_id == request.request_id
+    )
+    assert persisted.operation_deadline_at == deadline
+    assert persisted.delivery_runtime_limit_seconds == delivery_limit
+
+
+@pytest.mark.parametrize(
+    ("kind", "unsafe_entity", "unsafe_value"),
+    [
+        ("maintenance", "sensor.frost", "-5"),
+        ("calibration", "sensor.rain", STATE_UNAVAILABLE),
+    ],
+)
+async def test_weather_unsafe_stops_supervised_tests_without_leaking_violation(
+    hass: HomeAssistant,
+    kind: str,
+    unsafe_entity: str,
+    unsafe_value: str,
+) -> None:
+    """Stop maintenance and calibration, then keep the violation out of the next run."""
+    plant = FakeHaIrrigationPlant(
+        hass,
+        zone_flows_l_min={"switch.zone_lawn": 10},
+        auto_advance=False,
+    )
+    hass.states.async_set("sensor.frost", "10", {"unit_of_measurement": "°C"})
+    hass.states.async_set("sensor.rain", "0")
+    entry = await plant.setup_entry(
+        installation_data={
+            "frost_entity": "sensor.frost",
+            "rain_stop_entity": "sensor.rain",
+            "weather_max_age_seconds": 300,
+            "maintenance_confirmation_interval": 10,
+        }
+    )
+    manager = entry.runtime_data.manager
+    manager._executor = IrrigationExecutor(
+        actuators=plant,
+        meter=plant,
+        flow=plant,
+        clock=plant.clock,
+    )
+    await manager.async_start_maintenance_test(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=5,
+        kind=kind,
+    )
+    await plant.clock.sleeping.wait()
+
+    attributes = {"unit_of_measurement": "°C"} if unsafe_entity == "sensor.frost" else {}
+    hass.states.async_set(unsafe_entity, unsafe_value, attributes)
+    await manager._async_apply_weather_interlocks()
+    async with asyncio.timeout(2):
+        while manager._stored_state.maintenance_test is not None:  # noqa: ASYNC110
+            await asyncio.sleep(0.001)
+
+    assert manager._active_external_violation is None
+    if kind == "calibration":
+        assert manager._stored_state.calibration_proposal is None
+
+    plant.clock.auto_advance = True
+    hass.states.async_set("sensor.frost", "10", {"unit_of_measurement": "°C"})
+    hass.states.async_set("sensor.rain", "0")
+    await hass.async_block_till_done()
+    await manager.async_start_maintenance_test(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=0.01,
+        kind="maintenance",
+    )
+    task = manager._maintenance_task
+    assert task is not None
+    result = await task
+    assert result.safety_violation is None
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "state", "lock_scope"),
+    [
+        ("switch.irrigation_main", STATE_UNKNOWN, "installation"),
+        ("switch.irrigation_main", STATE_UNAVAILABLE, "installation"),
+        ("switch.zone_lawn", STATE_UNKNOWN, "zone"),
+        ("switch.zone_lawn", STATE_UNAVAILABLE, "zone"),
+    ],
+)
+async def test_unavailable_active_feedback_fails_after_configured_grace(
+    hass: HomeAssistant,
+    entity_id: str,
+    state: str,
+    lock_scope: str,
+) -> None:
+    """Allow only the command grace before unknown active feedback fails closed."""
+    plant = FakeHaIrrigationPlant(
+        hass,
+        zone_flows_l_min={"switch.zone_lawn": 10},
+        auto_advance=False,
+    )
+    entry = await plant.setup_entry(
+        with_flow=False,
+        with_meter=False,
+        installation_data={"actuator_transition_grace_seconds": 0.02},
+    )
+    manager = entry.runtime_data.manager
+    manager._executor = IrrigationExecutor(
+        actuators=plant,
+        meter=plant,
+        flow=None,
+        clock=plant.clock,
+    )
+    await manager.async_start_manual(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=60,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        wait_for_completion=False,
+    )
+    await plant.clock.sleeping.wait()
+
+    hass.states.async_set(entity_id, state)
+    await asyncio.sleep(0.005)
+    assert manager._stored_state.installation_safety_lock is None
+    assert manager._stored_state.zone_safety_locks == {}
+    await asyncio.sleep(0.03)
+
+    if lock_scope == "installation":
+        assert "feedback unavailable" in (manager._stored_state.installation_safety_lock or "")
+    else:
+        assert (
+            "feedback unavailable"
+            in manager._stored_state.zone_safety_locks["qualification-zone-1"]
+        )
+    assert plant.open_valves == set()
+
+
+async def test_unavailable_feedback_stops_supervised_test_after_grace(
+    hass: HomeAssistant,
+) -> None:
+    """Apply the same feedback watchdog to maintenance and calibration execution."""
+    plant = FakeHaIrrigationPlant(
+        hass,
+        zone_flows_l_min={"switch.zone_lawn": 10},
+        auto_advance=False,
+    )
+    entry = await plant.setup_entry(
+        with_flow=False,
+        with_meter=False,
+        installation_data={
+            "actuator_transition_grace_seconds": 0.02,
+            "maintenance_confirmation_interval": 10,
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._executor = IrrigationExecutor(
+        actuators=plant,
+        meter=plant,
+        flow=None,
+        clock=plant.clock,
+    )
+    await manager.async_start_maintenance_test(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=5,
+        bypass_checks=("flow",),
+    )
+    await plant.clock.sleeping.wait()
+
+    hass.states.async_set("switch.irrigation_main", STATE_UNAVAILABLE)
+    await asyncio.sleep(0.03)
+
+    assert manager._stored_state.maintenance_test is None
+    assert manager._stored_state.installation_safety_lock is not None
+    assert plant.open_valves == set()
+
+
+async def test_startup_listener_gap_is_closed_by_authoritative_final_check(
+    hass: HomeAssistant,
+) -> None:
+    """Catch a valve opening injected exactly after listener registration."""
+    plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
+    original = IrrigationManager._async_verify_supervised_valves_after_startup
+
+    async def inject_open(manager: IrrigationManager) -> None:
+        plant.force_feedback("switch.zone_lawn", open_=True)
+        await original(manager)
+
+    with patch.object(
+        IrrigationManager,
+        "_async_verify_supervised_valves_after_startup",
+        inject_open,
+    ):
+        entry = await plant.setup_entry(with_flow=False, with_meter=False)
+
+    assert "opened unexpectedly" in (
+        entry.runtime_data.manager._stored_state.installation_safety_lock or ""
+    )
+    assert plant.open_valves == set()
+
+
+async def test_startup_unavailable_feedback_does_not_create_false_lock(
+    hass: HomeAssistant,
+) -> None:
+    """Do not lock merely because startup feedback is temporarily unavailable."""
+    plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
+    original = IrrigationManager._async_verify_supervised_valves_after_startup
+
+    async def inject_unavailable(manager: IrrigationManager) -> None:
+        hass.states.async_set("switch.zone_lawn", STATE_UNAVAILABLE)
+        await original(manager)
+
+    with patch.object(
+        IrrigationManager,
+        "_async_verify_supervised_valves_after_startup",
+        inject_unavailable,
+    ):
+        entry = await plant.setup_entry(with_flow=False, with_meter=False)
+
+    assert entry.runtime_data.manager._stored_state.installation_safety_lock is None
+    assert entry.runtime_data.manager._stored_state.zone_safety_locks == {}
+
+
+async def test_weather_freshness_watchdog_stops_test_without_state_event(
+    hass: HomeAssistant,
+) -> None:
+    """Stop an active test when its unchanged weather sample merely becomes stale."""
+    plant = FakeHaIrrigationPlant(
+        hass,
+        zone_flows_l_min={"switch.zone_lawn": 10},
+        auto_advance=False,
+    )
+    hass.states.async_set("sensor.frost", "10", {"unit_of_measurement": "°C"})
+    entry = await plant.setup_entry(
+        with_flow=False,
+        with_meter=False,
+        installation_data={
+            "frost_entity": "sensor.frost",
+            "weather_max_age_seconds": 0.03,
+            "maintenance_confirmation_interval": 10,
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._executor = IrrigationExecutor(
+        actuators=plant,
+        meter=plant,
+        flow=None,
+        clock=plant.clock,
+    )
+    hass.states.async_set("sensor.frost", "10", {"unit_of_measurement": "°C"})
+    await manager.async_start_maintenance_test(
+        zone_subentry_id="qualification-zone-1",
+        duration_seconds=5,
+        bypass_checks=("flow",),
+    )
+    await plant.clock.sleeping.wait()
+
+    async with asyncio.timeout(2):
+        while manager._stored_state.maintenance_test is not None:  # noqa: ASYNC110
+            await asyncio.sleep(0.001)
+
+    assert manager._active_external_violation is None
+    assert plant.open_valves == set()
+
+
+async def test_weather_freshness_watchdog_stops_automatic_watering_without_event(
+    hass: HomeAssistant,
+) -> None:
+    """Apply timer-driven freshness failure to active automatic watering too."""
+    plant = FakeHaIrrigationPlant(
+        hass,
+        zone_flows_l_min={"switch.zone_lawn": 10},
+        auto_advance=False,
+    )
+    hass.states.async_set("sensor.frost", "10", {"unit_of_measurement": "°C"})
+    entry = await plant.setup_entry(
+        with_flow=False,
+        with_meter=False,
+        installation_data={
+            "frost_entity": "sensor.frost",
+            "weather_max_age_seconds": 0.05,
+        },
+        zone_data=(
+            {
+                "automation_enabled": True,
+                "watering_mode": "demand",
+                "area_m2": 10,
+                "application_efficiency": 0.5,
+                "maximum_deficit_mm": 50,
+                "minimum_interval_days": 0,
+                "maximum_interval_days": 7,
+                "minimum_trigger_liters": 0.01,
+                "minimum_effective_liters": 0.01,
+                "maximum_target_liters": 100,
+                "automatic_max_duration": 60,
+                "watering_windows": ["00:00-23:59"],
+            },
+        ),
+    )
+    manager = entry.runtime_data.manager
+    manager._executor = IrrigationExecutor(
+        actuators=plant,
+        meter=plant,
+        flow=None,
+        clock=plant.clock,
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        zone_deficit_mm={"qualification-zone-1": 1},
+        zone_last_effective_irrigation={
+            "qualification-zone-1": (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        },
+    )
+    hass.states.async_set("sensor.frost", "10", {"unit_of_measurement": "°C"})
+    report = await manager.async_plan_automatic(now=datetime.now(UTC))
+    assert report["created_request_ids"]
+    request_id = str(report["created_request_ids"][0])
+    await plant.clock.sleeping.wait()
+
+    async with asyncio.timeout(2):
+        while manager._request(request_id).status not in {  # noqa: ASYNC110
+            "cancelled",
+            "expired",
+        }:
+            await asyncio.sleep(0.001)
+
+    request = manager._request(request_id)
+    assert request is not None
+    assert request.status == "cancelled"
+    assert plant.open_valves == set()
+
+
+async def test_minor_14_duration_runtime_limits_are_derived_before_execution(
+    hass: HomeAssistant,
+) -> None:
+    """Migrate non-null conservative limits, refine from config, and execute safely."""
+    plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
+    entry = await plant.setup_entry(
+        with_flow=False,
+        with_meter=False,
+        installation_data={
+            "installation_max_delivery_runtime": 0.05,
+            "installation_max_operation_lifetime": 0.06,
+        },
+        zone_data=({"max_delivery_runtime": 0.03, "max_operation_lifetime": 0.04},),
+    )
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    now = datetime.now(UTC)
+    request = ManualIrrigationRequest(
+        request_id="legacy-duration",
+        sequence=1,
+        zone_id="qualification-zone-1",
+        zone_subentry_id="qualification-zone-1",
+        zone_name="Zone 1",
+        zone_valve="switch.zone_lawn",
+        main_valve=plant.main_valve,
+        target_type="duration",
+        target_value=0.01,
+        remaining_value=0.01,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(minutes=1)).isoformat(),
+        execution_id="legacy-execution",
+    ).as_dict()
+    execution = IrrigationExecutionState(
+        execution_id="legacy-execution",
+        request_id="legacy-duration",
+        zone_id="qualification-zone-1",
+        target_type="duration",
+        target_value=0.01,
+        remaining_value=0.01,
+        status="waiting",
+        created_at=now.isoformat(),
+    ).as_dict()
+    for record in (request, execution):
+        record.pop("delivery_runtime_limit_seconds", None)
+        record.pop("operation_deadline_at", None)
+        record.pop("runtime_limits_need_config_derivation", None)
+    await Store[dict[str, object]](
+        hass,
+        1,
+        f"irrigation_manager.{entry.entry_id}",
+        atomic_writes=True,
+        minor_version=14,
+    ).async_save(
+        {
+            "manual_requests": [request],
+            "irrigation_executions": [execution],
+            "next_request_sequence": 2,
+        }
+    )
+
+    raw_migrated = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert raw_migrated.manual_requests[0].delivery_runtime_limit_seconds is not None
+    assert raw_migrated.manual_requests[0].operation_deadline_at is not None
+    assert raw_migrated.irrigation_executions[0].delivery_runtime_limit_seconds is not None
+    assert raw_migrated.irrigation_executions[0].operation_deadline_at is not None
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    async with asyncio.timeout(2):
+        while (  # noqa: ASYNC110
+            entry.runtime_data.manager._request("legacy-duration").status != "completed"
+        ):
+            await asyncio.sleep(0.001)
+
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    migrated_request = next(
+        item for item in stored.manual_requests if item.request_id == "legacy-duration"
+    )
+    migrated_execution = next(
+        item for item in stored.irrigation_executions if item.execution_id == "legacy-execution"
+    )
+    assert migrated_request.delivery_runtime_limit_seconds == pytest.approx(0.03)
+    assert migrated_execution.delivery_runtime_limit_seconds == pytest.approx(0.03)
+    assert migrated_request.runtime_limits_need_config_derivation is False
+    assert migrated_execution.runtime_limits_need_config_derivation is False
