@@ -3,8 +3,8 @@
   "name": "Irrigation Manager",
   "version": "0.1.0",
   "config_flow": true,
-  "dependencies": [],
-  "after_dependencies": ["frontend", "http", "recorder", "weather"],
+  "dependencies": ["frontend"],
+  "after_dependencies": ["recorder", "weather"],
   "integration_type": "hub",
   "iot_class": "calculated",
   "requirements": []

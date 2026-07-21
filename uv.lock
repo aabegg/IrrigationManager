@@ -1020,12 +1020,22 @@ wheels = [
 ]
 
 [[package]]
+name = "home-assistant-frontend"
+version = "20260624.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/15/b7a61818426ab5531f13ebc0ea98853dc4f9307aa312b097c44751c85448/home_assistant_frontend-20260624.5.tar.gz", hash = "sha256:eeae93287cc482d13f48a4d2ba1e94268122c7828b6d4db412ce314e6586b677", size = 124741712, upload-time = "2026-07-10T13:36:49.223Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/92/73/c2695239fd58983171560d37159a06953c4cfbd610cf0401ed07c1a1223e/home_assistant_frontend-20260624.5-py3-none-any.whl", hash = "sha256:ee8d086ae9c21e1ea32a55bc3716cc4b0a0d09fa9c20a0ea3d5e97823cf8d908", size = 124577661, upload-time = "2026-07-10T13:36:43.684Z" },
+]
+
+[[package]]
 name = "home-assistant-irrigation-manager"
 version = "0.1.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "home-assistant-frontend" },
     { name = "mypy" },
     { name = "pytest-homeassistant-custom-component" },
     { name = "ruff" },
@@ -1035,6 +1045,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "home-assistant-frontend", specifier = "==20260624.5" },
     { name = "mypy", specifier = "==2.3.0" },
     { name = "pytest-homeassistant-custom-component", specifier = "==0.13.346" },
     { name = "ruff", specifier = "==0.15.21" },

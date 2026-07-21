@@ -262,6 +262,7 @@ class InstallationSnapshot:
     current_dose_number: int | None = None
     active_request_id: str | None = None
     active_execution_id: str | None = None
+    active_zone_subentry_id: str | None = None
     zone_deficit_mm: dict[str, float] = field(default_factory=dict)
     zone_target_liters: dict[str, float] = field(default_factory=dict)
     zone_automation_needed: dict[str, bool] = field(default_factory=dict)

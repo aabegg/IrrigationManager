@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_OFF, STATE_ON, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager.const import DOMAIN
@@ -289,6 +290,15 @@ async def test_pause_and_resume_preserve_the_remaining_target(hass: HomeAssistan
     await _wait_until(
         lambda: (state := hass.states.get("switch.lawn")) is not None and state.state == STATE_ON
     )
+    registry = er.async_get(hass)
+    dose_entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, "installation-requests_current_dose"
+    )
+    assert dose_entity_id is not None
+    dose_state = hass.states.get(dose_entity_id)
+    assert dose_state is not None
+    assert dose_state.attributes["request_id"] == request_id
+    assert dose_state.attributes["zone_subentry_id"] == zones[0].subentry_id
 
     await hass.services.async_call(
         DOMAIN,

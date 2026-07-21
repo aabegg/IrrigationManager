@@ -76,6 +76,7 @@ async def async_setup_entry(
                 coordinator=entry.runtime_data.coordinator,
                 entry=entry,
                 installation_id=installation_id,
+                config_entry_id=entry.entry_id,
             ),
             ActiveZoneSensor(
                 coordinator=entry.runtime_data.coordinator,
@@ -117,6 +118,8 @@ async def async_setup_entry(
                     installation_id=installation_id,
                     zone_id=zone_id,
                     zone_name=subentry.title,
+                    config_entry_id=entry.entry_id,
+                    zone_subentry_id=subentry.subentry_id,
                 ),
                 ZoneLastDeliveredSensor(
                     coordinator=entry.runtime_data.coordinator,
@@ -232,9 +235,11 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
         coordinator: IrrigationCoordinator,
         entry: IrrigationConfigEntry,
         installation_id: str,
+        config_entry_id: str,
     ) -> None:
         """Initialize the installation status entity."""
         super().__init__(coordinator)
+        self._config_entry_id = config_entry_id
         self._attr_options = [
             "idle",
             "watering",
@@ -256,6 +261,12 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
     def native_value(self) -> str:
         """Return the current installation status."""
         return self.coordinator.data.status
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Expose the native-action installation identifier."""
+        return {"config_entry_id": self._config_entry_id}
 
 
 class ActiveZoneSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
@@ -357,6 +368,7 @@ class IrrigationQueueSensor(CoordinatorEntity[IrrigationCoordinator], SensorEnti
             for key, value in {
                 "request_id": snapshot.active_request_id,
                 "execution_id": snapshot.active_execution_id,
+                "zone_subentry_id": snapshot.active_zone_subentry_id,
                 "target_type": snapshot.active_target_type,
             }.items()
             if value is not None
@@ -382,10 +394,14 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
         installation_id: str,
         zone_id: str,
         zone_name: str,
+        config_entry_id: str,
+        zone_subentry_id: str,
     ) -> None:
         """Initialize a cumulative water sensor for one zone."""
         super().__init__(coordinator)
         self._zone_id = zone_id
+        self._config_entry_id = config_entry_id
+        self._zone_subentry_id = zone_subentry_id
         self._attr_unique_id = f"{zone_id}_water_total"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, zone_id)},
@@ -404,11 +420,13 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
     @property
     @override
     def extra_state_attributes(self) -> dict[str, str]:
-        """Expose whether the latest contribution was measured or estimated."""
+        """Expose quality and identifiers accepted by native actions."""
         return {
+            "config_entry_id": self._config_entry_id,
+            "zone_subentry_id": self._zone_subentry_id,
             "measurement_quality": self.coordinator.data.zone_measurement_quality.get(
                 self._zone_id, "unknown"
-            )
+            ),
         }
 
 

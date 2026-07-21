@@ -9,6 +9,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 from .coordinator import IrrigationCoordinator
+from .frontend import async_register_frontend, async_unregister_frontend
 from .manager import IrrigationManager
 from .models import InstallationSnapshot
 from .runtime import IrrigationConfigEntry, IrrigationRuntimeData
@@ -76,6 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await async_register_frontend(hass, entry.entry_id)
     return True
 
 
@@ -103,6 +105,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) 
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        await async_unregister_frontend(hass, entry.entry_id)
     return unloaded
 
 

@@ -29,6 +29,10 @@ IrrigationManager ist eine geplante Home-Assistant-Integration für intelligente
 
 Die fachliche und technische Planung befindet sich im Ordner [`docs`](docs/).
 
+Die mitgelieferten Lovelace-Karten, ihre grafischen Editoren und Beispiele sind unter
+[`custom_components/irrigation_manager/frontend`](custom_components/irrigation_manager/frontend/README.md)
+dokumentiert. Das Frontend-Modul wird von der Integration automatisch registriert.
+
 ## Projektstatus
 
-Spezifikationsphase. Der funktionale Zielumfang wurde in einer Grill-Session konkretisiert; Implementierung und Tests stehen noch aus.
+Aktive Entwicklung. Backend, Config Flow und die ersten Lovelace-Karten sind implementiert und getestet; der in den Fachdokumenten beschriebene Gesamtumfang ist noch nicht vollständig umgesetzt.

@@ -2985,6 +2985,9 @@ class IrrigationManager:
                 active_execution_id=(
                     selected_execution.execution_id if selected_execution else None
                 ),
+                active_zone_subentry_id=(
+                    selected_request.zone_subentry_id if selected_request else None
+                ),
                 zone_deficit_mm=dict(self._stored_state.zone_deficit_mm),
                 zone_target_liters={
                     planning_input.zone_id: decision.target_liters

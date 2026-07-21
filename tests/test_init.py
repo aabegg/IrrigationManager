@@ -343,6 +343,12 @@ async def test_setup_creates_installation_and_zone_water_sensors(
     assert zone_entity_id is not None
     assert hass.states.get(installation_entity_id).state == "0.0"
     assert hass.states.get(zone_entity_id).state == "0.0"
+    assert hass.states.get(zone_entity_id).attributes["config_entry_id"] == entry.entry_id
+    assert hass.states.get(zone_entity_id).attributes["zone_subentry_id"] == subentry.subentry_id
+
+    status_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "installation-1_status")
+    assert status_entity_id is not None
+    assert hass.states.get(status_entity_id).attributes["config_entry_id"] == entry.entry_id
 
     assert await hass.config_entries.async_unload(entry.entry_id)
 

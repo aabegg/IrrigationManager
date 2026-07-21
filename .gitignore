@@ -12,3 +12,5 @@ frontend/dist/
 custom_components/irrigation_manager/frontend/*.js
 custom_components/irrigation_manager/frontend/*.map
 dist/
+!custom_components/irrigation_manager/frontend/dist/
+!custom_components/irrigation_manager/frontend/dist/irrigation-manager.js
