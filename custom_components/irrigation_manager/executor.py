@@ -1,6 +1,7 @@
 """Safe, serialized execution of irrigation requests."""
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -133,6 +134,7 @@ class IrrigationExecutor:
             if not using_estimated_fallback:
                 try:
                     meter_start_liters = await self._meter.read_liters()
+                    self._validate_meter_reading(meter_start_liters)
                 except Exception:
                     if (
                         request.amount_liters is None
@@ -288,7 +290,16 @@ class IrrigationExecutor:
                     if request.amount_liters is None:
                         execution_error = execution_error or err
                 else:
-                    progress.delivered_liters = max(0.0, meter_end_liters - meter_start_liters)
+                    try:
+                        progress.delivered_liters = self._meter_delta(
+                            request,
+                            start_liters=meter_start_liters,
+                            current_liters=meter_end_liters,
+                        )
+                    except ValueError as err:
+                        violations.append(str(err))
+                        progress.target_reached = False
+                        safety_scope = "installation"
             if execution_error is not None:
                 violations.append(str(execution_error))
 
@@ -414,7 +425,16 @@ class IrrigationExecutor:
                     else:
                         if meter_start_liters is None:
                             raise RuntimeError("Volume irrigation meter baseline is missing")
-                        progress.delivered_liters = max(0.0, current_liters - meter_start_liters)
+                        try:
+                            progress.delivered_liters = self._meter_delta(
+                                request,
+                                start_liters=meter_start_liters,
+                                current_liters=current_liters,
+                            )
+                        except ValueError as err:
+                            violations.append(str(err))
+                            progress.target_reached = False
+                            return "installation"
                         progress.accounted_at = self._clock.monotonic()
                 else:
                     if request.estimated_flow_l_min is None or request.estimated_flow_l_min <= 0:
@@ -468,6 +488,35 @@ class IrrigationExecutor:
             max(0.0, now - progress.accounted_at) * request.estimated_flow_l_min / 60
         )
         progress.accounted_at = now
+
+    @staticmethod
+    def _validate_meter_reading(reading_liters: float) -> None:
+        """Reject values that cannot represent a cumulative physical meter."""
+        if not math.isfinite(reading_liters) or reading_liters < 0:
+            raise ValueError("Water meter reading is not plausible")
+
+    @classmethod
+    def _meter_delta(
+        cls,
+        request: ExecutionRequest,
+        *,
+        start_liters: float,
+        current_liters: float,
+    ) -> float:
+        """Return a plausible dose delta without converting bad input into water."""
+        cls._validate_meter_reading(start_liters)
+        cls._validate_meter_reading(current_liters)
+        if current_liters < start_liters:
+            raise ValueError("Water meter regressed during irrigation")
+        delta_liters = current_liters - start_liters
+        maximum_duration_seconds = request.hard_time_limit_seconds or request.duration_seconds
+        if (
+            request.maximum_flow_l_min is not None
+            and maximum_duration_seconds is not None
+            and delta_liters > request.maximum_flow_l_min * maximum_duration_seconds / 60
+        ):
+            raise ValueError("Water meter jump exceeds the plausible execution maximum")
+        return delta_liters
 
     async def _open_and_confirm(self, entity_id: str) -> None:
         """Open one actuator and reject missing feedback."""

@@ -1,6 +1,11 @@
 """Behavior tests for cumulative water-meter normalization."""
 
-from custom_components.irrigation_manager.meter import CumulativeMeter
+import pytest
+
+from custom_components.irrigation_manager.meter import (
+    CumulativeMeter,
+    ImplausibleMeterRegressionError,
+)
 
 
 def test_meter_keeps_total_across_source_reset() -> None:
@@ -25,3 +30,15 @@ def test_meter_correction_changes_displayed_total_without_rewriting_consumption(
     assert corrected.total_liters == 1_300.0
     assert advanced.accumulated_liters == 1_260.0
     assert advanced.total_liters == 1_310.0
+
+
+def test_meter_rejects_ambiguous_small_regression_without_advancing_baseline() -> None:
+    """Do not convert an ordinary backwards sample into reset consumption."""
+    meter = CumulativeMeter.start(raw_liters=100)
+
+    with pytest.raises(ImplausibleMeterRegressionError):
+        meter.update(raw_liters=99)
+
+    advanced = meter.update(raw_liters=101)
+    assert advanced.total_liters == 101
+    assert advanced.reset_count == 0

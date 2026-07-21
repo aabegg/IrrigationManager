@@ -162,6 +162,7 @@
           "name": "Name",
           "main_valve": "Main valve",
           "water_meter": "Cumulative water meter",
+          "meter_max_age_seconds": "Maximum water meter data age",
           "flow_sensor": "Flow sensor",
           "leak_monitoring": "Monitor for leaks while idle",
           "leak_flow_threshold": "Idle leak flow threshold",
@@ -173,6 +174,7 @@
         "data_description": {
           "main_valve": "Optional switch or valve that isolates the complete installation.",
           "water_meter": "Optional cumulative water sensor. Without it only time control is available.",
+          "meter_max_age_seconds": "Maximum accepted age of a cumulative meter sample before volume control uses its configured failure strategy.",
           "flow_sensor": "Optional rate sensor for faster flow safety checks and idle leak monitoring.",
           "leak_monitoring": "Enabled by default when a flow sensor is configured.",
           "leak_flow_threshold": "Continuous idle flow above this rate is hazardous.",
@@ -201,6 +203,7 @@
           "name": "Name",
           "main_valve": "Main valve",
           "water_meter": "Cumulative water meter",
+          "meter_max_age_seconds": "Maximum water meter data age",
           "flow_sensor": "Flow sensor",
           "leak_monitoring": "Monitor for leaks while idle",
           "leak_flow_threshold": "Idle leak flow threshold",

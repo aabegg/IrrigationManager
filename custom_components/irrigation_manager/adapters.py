@@ -19,7 +19,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.unit_conversion import VolumeConverter, VolumeFlowRateConverter
 
-from .meter import CumulativeMeter
+from .meter import CumulativeMeter, ImplausibleMeterRegressionError
 
 
 class HomeAssistantActuators:
@@ -80,20 +80,32 @@ class HomeAssistantActuators:
 class HomeAssistantMeter:
     """Normalize a cumulative HA volume sensor to liters."""
 
-    def __init__(self, hass: HomeAssistant, entity_id: str | None) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entity_id: str | None,
+        max_age_seconds: float | None = None,
+    ) -> None:
         """Initialize the meter adapter; a missing source reads zero."""
         self._hass = hass
         self._entity_id = entity_id
+        self._max_age_seconds = max_age_seconds
         self._continuity: CumulativeMeter | None = None
 
     async def read_liters(self) -> float:
         """Return the cumulative source value converted to liters."""
         raw_liters = await self.read_raw_liters()
-        self._continuity = (
-            CumulativeMeter.start(raw_liters=raw_liters)
-            if self._continuity is None
-            else self._continuity.update(raw_liters=raw_liters)
-        )
+        try:
+            continuity = (
+                CumulativeMeter.start(raw_liters=raw_liters)
+                if self._continuity is None
+                else self._continuity.update(raw_liters=raw_liters)
+            )
+        except ImplausibleMeterRegressionError as err:
+            raise HomeAssistantError(
+                f"Water meter {self._entity_id} reported an invalid decrease: {err}"
+            ) from err
+        self._continuity = continuity
         return self._continuity.total_liters
 
     async def read_raw_liters(self) -> float:
@@ -103,6 +115,11 @@ class HomeAssistantMeter:
         state = self._hass.states.get(self._entity_id)
         if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
             raise HomeAssistantError(f"Water meter {self._entity_id} is not available")
+        if (
+            self._max_age_seconds is not None
+            and (datetime.now(UTC) - state.last_reported).total_seconds() > self._max_age_seconds
+        ):
+            raise HomeAssistantError(f"Water meter {self._entity_id} is stale")
         unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
         if unit not in VolumeConverter.VALID_UNITS:
             raise HomeAssistantError(f"Water meter {self._entity_id} has unsupported unit {unit!r}")
@@ -110,6 +127,8 @@ class HomeAssistantMeter:
             value = float(state.state)
         except ValueError as err:
             raise HomeAssistantError(f"Water meter {self._entity_id} is not numeric") from err
+        if not math.isfinite(value) or value < 0:
+            raise HomeAssistantError(f"Water meter {self._entity_id} is not plausible")
         return VolumeConverter.convert(value, unit, UnitOfVolume.LITERS)
 
 

@@ -12,7 +12,7 @@ Die Implementierung erfolgt in vertikalen, simulierbaren Stufen. Keine Zwischens
 - [x] Scheduler-, Wetter-, Zähler- und Sicherheitsverhalten spezifizieren
 - [ ] konkrete Profilwerte und Standardgrenzen fachlich validieren
 - [ ] unterstützte Home-Assistant-Mindestversion festlegen
-- [ ] Akzeptanzszenarien aus den Anforderungen ableiten
+- [x] Akzeptanzszenarien aus den Anforderungen ableiten
 
 ## Phase 1: Fundament und Simulation
 

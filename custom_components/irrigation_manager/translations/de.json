@@ -162,6 +162,7 @@
           "name": "Name",
           "main_valve": "Hauptventil",
           "water_meter": "Kumulativer Wasserzähler",
+          "meter_max_age_seconds": "Maximales Alter der Wasserzählerdaten",
           "flow_sensor": "Durchflusssensor",
           "leak_monitoring": "Leckage im Leerlauf überwachen",
           "leak_flow_threshold": "Durchflussgrenze für Leckage",
@@ -173,6 +174,7 @@
         "data_description": {
           "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
           "water_meter": "Optionaler kumulativer Wassersensor. Ohne ihn ist nur Zeitsteuerung möglich.",
+          "meter_max_age_seconds": "Maximal akzeptiertes Alter eines Zählerwerts, bevor die konfigurierte Zählerausfallstrategie greift.",
           "flow_sensor": "Optionale Durchflussrate für schnellere Sicherheitsprüfungen und Leckageüberwachung.",
           "leak_monitoring": "Bei konfiguriertem Durchflusssensor standardmäßig aktiv.",
           "leak_flow_threshold": "Ein dauerhaft höherer Durchfluss im Leerlauf gilt als Gefahr.",
@@ -201,6 +203,7 @@
           "name": "Name",
           "main_valve": "Hauptventil",
           "water_meter": "Kumulativer Wasserzähler",
+          "meter_max_age_seconds": "Maximales Alter der Wasserzählerdaten",
           "flow_sensor": "Durchflusssensor",
           "leak_monitoring": "Leckage im Leerlauf überwachen",
           "leak_flow_threshold": "Durchflussgrenze für Leckage",

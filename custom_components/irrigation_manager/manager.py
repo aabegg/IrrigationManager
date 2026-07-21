@@ -4,6 +4,7 @@ import asyncio
 import csv
 import io
 import json
+import math
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -45,6 +46,7 @@ from .const import (
     CONF_MAXIMUM_INTERVAL_DAYS,
     CONF_MAXIMUM_TARGET_LITERS,
     CONF_METER_FAILURE_STRATEGY,
+    CONF_METER_MAX_AGE_SECONDS,
     CONF_MIN_FLOW,
     CONF_MINIMUM_EFFECTIVE_LITERS,
     CONF_MINIMUM_INTERVAL_DAYS,
@@ -160,7 +162,11 @@ class IrrigationManager:
         )
         self._has_meter = bool(self._installation_data.get(CONF_WATER_METER))
         self._actuators = HomeAssistantActuators(hass)
-        self._meter = HomeAssistantMeter(hass, self._installation_data.get(CONF_WATER_METER))
+        self._meter = HomeAssistantMeter(
+            hass,
+            self._installation_data.get(CONF_WATER_METER),
+            self._optional_float(self._installation_data, CONF_METER_MAX_AGE_SECONDS) or 300.0,
+        )
         flow_entity_id = self._installation_data.get(CONF_FLOW_SENSOR)
         self._flow = (
             HomeAssistantFlow(
@@ -282,6 +288,7 @@ class IrrigationManager:
             entity_ids.append(main_valve)
         await self._async_close_entities(list(dict.fromkeys(entity_ids)))
         await self._async_recover_interrupted_execution(could_have_flowed=active_could_have_flowed)
+        await self._async_recover_inactive_open_executions()
         await self._async_expire_requests()
         await self._async_initialize_zone_balances()
         await self._async_ensure_idle_meter_baseline()
@@ -870,6 +877,65 @@ class IrrigationManager:
         self._publish(status="idle", active_zone_id=None)
         self._planning_event.set()
 
+    async def _async_recover_inactive_open_executions(self) -> None:
+        """Interrupt persisted waits, pauses, and soaks without losing request remainder."""
+        open_statuses = {"waiting", "watering", "soaking", "paused"}
+        open_executions = {
+            execution.execution_id: execution
+            for execution in self._stored_state.irrigation_executions
+            if execution.status in open_statuses
+        }
+        if not open_executions:
+            return
+        now = datetime.now(UTC).isoformat()
+        requests = tuple(
+            replace(
+                request,
+                status="paused" if request.status == "paused" else "pending",
+                execution_id=None,
+                soak_until=None,
+                revision=request.revision + 1,
+            )
+            if request.execution_id in open_executions
+            and request.status not in {"completed", "cancelled", "expired"}
+            else request
+            for request in self._stored_state.manual_requests
+        )
+        executions = tuple(
+            replace(
+                execution,
+                status="interrupted",
+                ended_at=now,
+                result="restart",
+            )
+            if execution.execution_id in open_executions
+            else execution
+            for execution in self._stored_state.irrigation_executions
+        )
+        self._stored_state = replace(
+            self._stored_state,
+            manual_requests=requests,
+            irrigation_executions=executions,
+        )
+        await self._store.async_save(self._stored_state)
+        for execution in open_executions.values():
+            self._events.fire(
+                "execution_ended",
+                reason="restart",
+                target=self._events.zone_target(execution.zone_id),
+                measurements={
+                    "delivered_liters": execution.delivered_liters,
+                    "duration_seconds": execution.delivered_duration_seconds,
+                },
+                quality="unknown",
+                context={
+                    "request_id": execution.request_id,
+                    "execution_id": execution.execution_id,
+                    "status": "interrupted",
+                    "recovered": True,
+                },
+            )
+
     async def _async_close_entities(self, entity_ids: list[str]) -> None:
         """Attempt every requested closure before reporting any failures."""
         errors: list[Exception] = []
@@ -1346,6 +1412,11 @@ class IrrigationManager:
         rain_mm: float,
     ) -> dict[str, object]:
         """Apply one finalized daily weather contribution exactly once."""
+        if not all(
+            math.isfinite(value) and value >= 0
+            for value in (reference_evapotranspiration_mm, rain_mm)
+        ):
+            raise HomeAssistantError("Finalized weather values must be finite and non-negative")
         signature = json.dumps([reference_evapotranspiration_mm, rain_mm], separators=(",", ":"))
         async with self._command_lock:
             previous = self._stored_state.finalized_weather_periods.get(period_id)
@@ -2078,6 +2149,7 @@ class IrrigationManager:
         installation_keys = {
             CONF_MAIN_VALVE,
             CONF_WATER_METER,
+            CONF_METER_MAX_AGE_SECONDS,
             CONF_FLOW_SENSOR,
             CONF_FLOW_MAX_AGE_SECONDS,
             CONF_LEAK_MONITORING,

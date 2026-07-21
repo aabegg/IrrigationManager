@@ -54,6 +54,7 @@ from .const import (
     CONF_MAXIMUM_INTERVAL_DAYS,
     CONF_MAXIMUM_TARGET_LITERS,
     CONF_METER_FAILURE_STRATEGY,
+    CONF_METER_MAX_AGE_SECONDS,
     CONF_MIN_FLOW,
     CONF_MINIMUM_EFFECTIVE_LITERS,
     CONF_MINIMUM_INTERVAL_DAYS,
@@ -86,6 +87,15 @@ INSTALLATION_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_WATER_METER): EntitySelector(
             EntitySelectorConfig(domain=Platform.SENSOR)
+        ),
+        vol.Optional(CONF_METER_MAX_AGE_SECONDS, default=300): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=86_400,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
         ),
         vol.Optional(CONF_FLOW_SENSOR): EntitySelector(
             EntitySelectorConfig(domain=Platform.SENSOR)

@@ -7,6 +7,7 @@ INTEGRATION_NAME: Final = "Irrigation Manager"
 
 CONF_MAIN_VALVE: Final = "main_valve"
 CONF_WATER_METER: Final = "water_meter"
+CONF_METER_MAX_AGE_SECONDS: Final = "meter_max_age_seconds"
 CONF_FLOW_SENSOR: Final = "flow_sensor"
 CONF_FLOW_MAX_AGE_SECONDS: Final = "flow_max_age_seconds"
 CONF_LEAK_MONITORING: Final = "leak_monitoring"
