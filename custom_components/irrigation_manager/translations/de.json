@@ -9,9 +9,26 @@
         "zone_subentry_id": {"name": "Bewässerungszone"},
         "duration": {"name": "Dauer", "description": "Zeitziel in Sekunden."},
         "amount": {"name": "Menge", "description": "Mengenziel in Litern."},
-        "hard_time_limit": {"name": "Hartes Zeitlimit", "description": "Erforderliches Sicherheitslimit in Sekunden für ein Mengenziel."}
+        "hard_time_limit": {"name": "Hartes Zeitlimit", "description": "Erforderliches Sicherheitslimit in Sekunden für ein Mengenziel."},
+        "expiry": {"name": "Ablauf", "description": "Maximale Zeit in Sekunden, bevor ein offener Auftrag verfällt."}
       }
-    }
+    },
+    "create_manual": {
+      "name": "Manuellen Bewässerungsauftrag erstellen",
+      "description": "Erstellt und persistiert einen manuellen Bewässerungsauftrag.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "zone_subentry_id": {"name": "Bewässerungszone"},
+        "duration": {"name": "Dauer"},
+        "amount": {"name": "Menge"},
+        "hard_time_limit": {"name": "Hartes Zeitlimit"},
+        "expiry": {"name": "Ablauf"}
+      }
+    },
+    "list_requests": {"name": "Bewässerungsaufträge auflisten", "description": "Gibt persistierte manuelle Bewässerungsaufträge zurück."},
+    "cancel_request": {"name": "Bewässerungsauftrag stornieren", "description": "Storniert einen ausgewählten Auftrag."},
+    "pause_request": {"name": "Bewässerungsauftrag pausieren", "description": "Pausiert einen Auftrag und bewahrt sein Restziel."},
+    "resume_request": {"name": "Bewässerungsauftrag fortsetzen", "description": "Setzt einen pausierten Auftrag fort."}
   },
   "selector": {
     "meter_failure_strategy": {
@@ -47,12 +64,16 @@
           "watering": "Bewässerung",
           "error": "Fehler",
           "safety_lock": "Sicherheitssperre",
-          "emergency_stop": "Not-Aus"
+          "emergency_stop": "Not-Aus",
+          "soaking": "Sickerpause"
         }
       },
       "active_zone": {
         "name": "Aktive Zone"
       },
+      "pending_requests": {"name": "Offene Aufträge"},
+      "current_dose": {"name": "Aktuelle Teilgabe"},
+      "remaining_target": {"name": "Verbleibendes Ziel"},
       "last_delivered": {
         "name": "Letzte gelieferte Menge"
       },
@@ -114,7 +135,10 @@
             "min_flow": "Minimal erwarteter Durchfluss",
             "max_flow": "Maximal erwarteter Durchfluss",
             "flow_grace_seconds": "Durchfluss-Stabilisierungszeit",
-            "meter_failure_strategy": "Zählerausfallstrategie"
+            "meter_failure_strategy": "Zählerausfallstrategie",
+            "max_dose_amount": "Maximale Teilgabemenge",
+            "max_dose_duration": "Maximale Teilgabedauer",
+            "soak_duration": "Sickerpause"
           },
           "data_description": {
             "meter_failure_strategy": "Gilt nur beim Ausfall eines konfigurierten kumulativen Zählers. Der geschätzte Ersatz setzt zeitgesteuert mit dem Durchflussprofil der Zone fort. Ohne kumulativen Zähler sind Mengenziele nicht verfügbar."
@@ -129,7 +153,10 @@
             "min_flow": "Minimal erwarteter Durchfluss",
             "max_flow": "Maximal erwarteter Durchfluss",
             "flow_grace_seconds": "Durchfluss-Stabilisierungszeit",
-            "meter_failure_strategy": "Zählerausfallstrategie"
+            "meter_failure_strategy": "Zählerausfallstrategie",
+            "max_dose_amount": "Maximale Teilgabemenge",
+            "max_dose_duration": "Maximale Teilgabedauer",
+            "soak_duration": "Sickerpause"
           },
           "data_description": {
             "meter_failure_strategy": "Gilt nur beim Ausfall eines konfigurierten kumulativen Zählers. Der geschätzte Ersatz setzt zeitgesteuert mit dem Durchflussprofil der Zone fort. Ohne kumulativen Zähler sind Mengenziele nicht verfügbar."

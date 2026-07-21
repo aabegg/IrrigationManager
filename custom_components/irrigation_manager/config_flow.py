@@ -11,7 +11,13 @@ from homeassistant.config_entries import (
     ConfigSubentryFlow,
     SubentryFlowResult,
 )
-from homeassistant.const import CONF_NAME, Platform, UnitOfTime, UnitOfVolumeFlowRate
+from homeassistant.const import (
+    CONF_NAME,
+    Platform,
+    UnitOfTime,
+    UnitOfVolume,
+    UnitOfVolumeFlowRate,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -34,9 +40,12 @@ from .const import (
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
+    CONF_MAX_DOSE_AMOUNT,
+    CONF_MAX_DOSE_DURATION,
     CONF_MAX_FLOW,
     CONF_METER_FAILURE_STRATEGY,
     CONF_MIN_FLOW,
+    CONF_SOAK_DURATION,
     CONF_WATER_METER,
     CONF_WEATHER_ENTITY,
     CONF_ZONE_VALVE,
@@ -138,6 +147,33 @@ ZONE_SCHEMA = vol.Schema(
             SelectSelectorConfig(
                 options=[METER_FAILURE_ABORT, METER_FAILURE_ESTIMATED_TIME_FALLBACK],
                 translation_key=CONF_METER_FAILURE_STRATEGY,
+            )
+        ),
+        vol.Optional(CONF_MAX_DOSE_AMOUNT): NumberSelector(
+            NumberSelectorConfig(
+                min=0.001,
+                max=1_000_000,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfVolume.LITERS,
+            )
+        ),
+        vol.Optional(CONF_MAX_DOSE_DURATION): NumberSelector(
+            NumberSelectorConfig(
+                min=0.001,
+                max=14_400,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_SOAK_DURATION, default=0): NumberSelector(
+            NumberSelectorConfig(
+                min=0,
+                max=86_400,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
             )
         ),
     }

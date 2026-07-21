@@ -1,6 +1,167 @@
 """Runtime models shared by the Home Assistant platforms."""
 
 from dataclasses import dataclass, field
+from typing import cast
+
+
+@dataclass(frozen=True, slots=True)
+class ManualIrrigationRequest:
+    """Durable manual irrigation order with an immutable zone snapshot."""
+
+    request_id: str
+    sequence: int
+    zone_id: str
+    zone_subentry_id: str
+    zone_name: str
+    zone_valve: str
+    main_valve: str | None
+    target_type: str
+    target_value: float
+    remaining_value: float
+    created_at: str
+    expires_at: str
+    status: str = "pending"
+    source: str = "manual"
+    execution_id: str | None = None
+    hard_time_limit_seconds: float | None = None
+    max_dose_value: float | None = None
+    soak_duration_seconds: float = 0.0
+    soak_until: str | None = None
+    meter_failure_strategy: str = "abort"
+    estimated_flow_l_min: float | None = None
+    minimum_flow_l_min: float | None = None
+    maximum_flow_l_min: float | None = None
+    flow_grace_seconds: float = 5.0
+    revision: int = 1
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> ManualIrrigationRequest:
+        """Deserialize one persisted manual order."""
+        required_strings = (
+            "request_id",
+            "zone_id",
+            "zone_subentry_id",
+            "zone_name",
+            "zone_valve",
+            "target_type",
+            "created_at",
+            "expires_at",
+        )
+        if not all(isinstance(data.get(key), str) for key in required_strings):
+            raise ValueError("Stored manual irrigation request is malformed")
+        main_valve = data.get("main_valve")
+        execution_id = data.get("execution_id")
+        soak_until = data.get("soak_until")
+        status = data.get("status", "pending")
+        source = data.get("source", "manual")
+        if (
+            not all(
+                value is None or isinstance(value, str)
+                for value in (main_valve, execution_id, soak_until)
+            )
+            or not isinstance(status, str)
+            or not isinstance(source, str)
+        ):
+            raise ValueError("Stored manual irrigation request metadata is malformed")
+        main_valve = cast(str | None, main_valve)
+        execution_id = cast(str | None, execution_id)
+        soak_until = cast(str | None, soak_until)
+        return cls(
+            request_id=str(data["request_id"]),
+            sequence=int(StoredInstallationState._float(data.get("sequence"))),
+            zone_id=str(data["zone_id"]),
+            zone_subentry_id=str(data["zone_subentry_id"]),
+            zone_name=str(data["zone_name"]),
+            zone_valve=str(data["zone_valve"]),
+            main_valve=main_valve,
+            target_type=str(data["target_type"]),
+            target_value=StoredInstallationState._float(data.get("target_value")),
+            remaining_value=StoredInstallationState._float(data.get("remaining_value")),
+            created_at=str(data["created_at"]),
+            expires_at=str(data["expires_at"]),
+            status=status,
+            source=source,
+            execution_id=execution_id,
+            hard_time_limit_seconds=_optional_stored_float(data, "hard_time_limit_seconds"),
+            max_dose_value=_optional_stored_float(data, "max_dose_value"),
+            soak_duration_seconds=StoredInstallationState._float(
+                data.get("soak_duration_seconds", 0.0)
+            ),
+            soak_until=soak_until,
+            meter_failure_strategy=(
+                str(data["meter_failure_strategy"])
+                if isinstance(data.get("meter_failure_strategy"), str)
+                else "abort"
+            ),
+            estimated_flow_l_min=_optional_stored_float(data, "estimated_flow_l_min"),
+            minimum_flow_l_min=_optional_stored_float(data, "minimum_flow_l_min"),
+            maximum_flow_l_min=_optional_stored_float(data, "maximum_flow_l_min"),
+            flow_grace_seconds=StoredInstallationState._float(data.get("flow_grace_seconds", 5.0)),
+            revision=int(StoredInstallationState._float(data.get("revision", 1))),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize one manual order."""
+        return {field: getattr(self, field) for field in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True, slots=True)
+class IrrigationExecutionState:
+    """Durable lifecycle of one accepted irrigation order."""
+
+    execution_id: str
+    request_id: str
+    zone_id: str
+    target_type: str
+    target_value: float
+    remaining_value: float
+    status: str
+    created_at: str
+    dose_number: int = 0
+    delivered_liters: float = 0.0
+    delivered_duration_seconds: float = 0.0
+    ended_at: str | None = None
+    result: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> IrrigationExecutionState:
+        """Deserialize one persisted execution."""
+        strings = ("execution_id", "request_id", "zone_id", "target_type", "status", "created_at")
+        if not all(isinstance(data.get(key), str) for key in strings):
+            raise ValueError("Stored irrigation execution is malformed")
+        ended_at = data.get("ended_at")
+        result = data.get("result")
+        if not all(value is None or isinstance(value, str) for value in (ended_at, result)):
+            raise ValueError("Stored irrigation execution result is malformed")
+        ended_at = cast(str | None, ended_at)
+        result = cast(str | None, result)
+        return cls(
+            execution_id=str(data["execution_id"]),
+            request_id=str(data["request_id"]),
+            zone_id=str(data["zone_id"]),
+            target_type=str(data["target_type"]),
+            target_value=StoredInstallationState._float(data.get("target_value")),
+            remaining_value=StoredInstallationState._float(data.get("remaining_value")),
+            status=str(data["status"]),
+            created_at=str(data["created_at"]),
+            dose_number=int(StoredInstallationState._float(data.get("dose_number", 0))),
+            delivered_liters=StoredInstallationState._float(data.get("delivered_liters", 0.0)),
+            delivered_duration_seconds=StoredInstallationState._float(
+                data.get("delivered_duration_seconds", 0.0)
+            ),
+            ended_at=ended_at,
+            result=result,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize one irrigation execution."""
+        return {field: getattr(self, field) for field in self.__dataclass_fields__}
+
+
+def _optional_stored_float(data: dict[str, object], key: str) -> float | None:
+    """Read one optional persisted number."""
+    value = data.get(key)
+    return None if value is None else StoredInstallationState._float(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +185,10 @@ class InstallationSnapshot:
     active_target_value: float | None = None
     active_remaining_value: float | None = None
     active_measurement_quality: str | None = None
+    pending_request_count: int = 0
+    current_dose_number: int | None = None
+    active_request_id: str | None = None
+    active_execution_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +210,10 @@ class ActiveExecutionState:
     fallback_started_at: str | None = None
     fallback_checkpoint_at: str | None = None
     delivered_liters_at_fallback: float = 0.0
+    request_id: str | None = None
+    execution_id: str | None = None
+    dose_number: int = 1
+    dose_target_value: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> ActiveExecutionState:
@@ -92,6 +261,10 @@ class ActiveExecutionState:
             delivered_liters_at_fallback=StoredInstallationState._float(
                 data.get("delivered_liters_at_fallback", 0.0)
             ),
+            request_id=optional_string("request_id"),
+            execution_id=optional_string("execution_id"),
+            dose_number=int(StoredInstallationState._float(data.get("dose_number", 1))),
+            dose_target_value=optional_float("dose_target_value"),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -112,6 +285,10 @@ class ActiveExecutionState:
             "fallback_started_at": self.fallback_started_at,
             "fallback_checkpoint_at": self.fallback_checkpoint_at,
             "delivered_liters_at_fallback": self.delivered_liters_at_fallback,
+            "request_id": self.request_id,
+            "execution_id": self.execution_id,
+            "dose_number": self.dose_number,
+            "dose_target_value": self.dose_target_value,
         }
 
 
@@ -132,6 +309,9 @@ class StoredInstallationState:
     emergency_stop: bool = False
     installation_safety_lock: str | None = None
     active_execution: ActiveExecutionState | None = None
+    manual_requests: tuple[ManualIrrigationRequest, ...] = ()
+    irrigation_executions: tuple[IrrigationExecutionState, ...] = ()
+    next_request_sequence: int = 1
 
     @staticmethod
     def _float(value: object) -> float:
@@ -176,6 +356,16 @@ class StoredInstallationState:
         raw_active_execution = data.get("active_execution")
         if raw_active_execution is not None and not isinstance(raw_active_execution, dict):
             raise ValueError("Stored active execution is malformed")
+        raw_requests = data.get("manual_requests", [])
+        raw_executions = data.get("irrigation_executions", [])
+        if not isinstance(raw_requests, list) or not all(
+            isinstance(item, dict) for item in raw_requests
+        ):
+            raise ValueError("Stored manual irrigation requests are malformed")
+        if not isinstance(raw_executions, list) or not all(
+            isinstance(item, dict) for item in raw_executions
+        ):
+            raise ValueError("Stored irrigation executions are malformed")
         unassigned_quality = data.get("unassigned_measurement_quality", "unknown")
         unassigned_origin = data.get("unassigned_measurement_origin", "unknown")
         if not isinstance(unassigned_quality, str) or not isinstance(unassigned_origin, str):
@@ -200,6 +390,13 @@ class StoredInstallationState:
                 if raw_active_execution is not None
                 else None
             ),
+            manual_requests=tuple(ManualIrrigationRequest.from_dict(item) for item in raw_requests),
+            irrigation_executions=tuple(
+                IrrigationExecutionState.from_dict(item) for item in raw_executions
+            ),
+            next_request_sequence=int(
+                cls._float(data.get("next_request_sequence", len(raw_requests) + 1))
+            ),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -220,4 +417,9 @@ class StoredInstallationState:
             "active_execution": (
                 self.active_execution.as_dict() if self.active_execution is not None else None
             ),
+            "manual_requests": [request.as_dict() for request in self.manual_requests],
+            "irrigation_executions": [
+                execution.as_dict() for execution in self.irrigation_executions
+            ],
+            "next_request_sequence": self.next_request_sequence,
         }

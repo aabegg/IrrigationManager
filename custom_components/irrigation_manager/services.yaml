@@ -36,6 +36,104 @@ start_manual:
           step: 1
           unit_of_measurement: s
           mode: box
+    expiry:
+      required: false
+      default: 3600
+      selector:
+        number:
+          min: 0.001
+          max: 604800
+          step: 1
+          unit_of_measurement: s
+          mode: box
+create_manual:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id:
+      required: true
+      selector:
+        text:
+    duration:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          max: 14400
+          step: 1
+          unit_of_measurement: s
+          mode: box
+    amount:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          max: 1000000
+          step: 0.001
+          unit_of_measurement: L
+          mode: box
+    hard_time_limit:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          max: 14400
+          step: 1
+          unit_of_measurement: s
+          mode: box
+    expiry:
+      required: false
+      default: 3600
+      selector:
+        number:
+          min: 0.001
+          max: 604800
+          step: 1
+          unit_of_measurement: s
+          mode: box
+list_requests:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+cancel_request:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    request_id:
+      required: true
+      selector:
+        text:
+pause_request:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    request_id:
+      required: true
+      selector:
+        text:
+resume_request:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    request_id:
+      required: true
+      selector:
+        text:
 stop:
   fields:
     config_entry_id:
@@ -43,6 +141,14 @@ stop:
       selector:
         config_entry:
           integration: irrigation_manager
+    request_id:
+      required: false
+      selector:
+        text:
+    execution_id:
+      required: false
+      selector:
+        text:
 emergency_stop:
   fields:
     config_entry_id:

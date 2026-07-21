@@ -85,6 +85,24 @@ async def async_setup_entry(
                     for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
                 },
             ),
+            IrrigationQueueSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                key="pending_requests",
+            ),
+            IrrigationQueueSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                key="current_dose",
+            ),
+            IrrigationQueueSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                key="remaining_target",
+            ),
         ]
     )
 
@@ -187,6 +205,7 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
         self._attr_options = [
             "idle",
             "watering",
+            "soaking",
             "error",
             "safety_lock",
             "emergency_stop",
@@ -253,6 +272,63 @@ class ActiveZoneSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
         if snapshot.active_measurement_quality is not None:
             attributes["measurement_quality"] = snapshot.active_measurement_quality
         return attributes
+
+
+class IrrigationQueueSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Expose persisted request and split-dose progress."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        key: str,
+    ) -> None:
+        """Initialize one installation request-progress sensor."""
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{installation_id}_{key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> int | Decimal | None:
+        """Return queue count, current dose number, or overall remaining target."""
+        snapshot = self.coordinator.data
+        if self._key == "pending_requests":
+            return snapshot.pending_request_count
+        if self._key == "current_dose":
+            return snapshot.current_dose_number
+        return (
+            Decimal(str(snapshot.active_remaining_value))
+            if snapshot.active_remaining_value is not None
+            else None
+        )
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str] | None:
+        """Identify the selected request/execution and remaining target type."""
+        snapshot = self.coordinator.data
+        attributes = {
+            key: value
+            for key, value in {
+                "request_id": snapshot.active_request_id,
+                "execution_id": snapshot.active_execution_id,
+                "target_type": snapshot.active_target_type,
+            }.items()
+            if value is not None
+        }
+        return attributes or None
 
 
 class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):

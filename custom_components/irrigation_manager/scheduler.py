@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from .models import IrrigationExecutionState, ManualIrrigationRequest
+
 
 class WateringMode(StrEnum):
     """Decide whether calculated demand or a guaranteed minimum applies."""
@@ -86,3 +88,46 @@ def _plan_zone(*, now: datetime, zone: ZonePlanningInput) -> PlannedOrder | None
         is_partial=planned_liters < target_liters,
         window_end=zone.window_end,
     )
+
+
+def select_manual_request(
+    *,
+    now: datetime,
+    requests: Iterable[ManualIrrigationRequest],
+    executions: Iterable[IrrigationExecutionState] = (),
+) -> ManualIrrigationRequest | None:
+    """Select the next hydraulically ready manual order in stable FIFO order."""
+    requests = tuple(requests)
+    soaking_request_ids_by_zone: dict[str, set[str]] = {}
+    for execution in executions:
+        if execution.status == "soaking":
+            soaking_request_ids_by_zone.setdefault(execution.zone_id, set()).add(
+                execution.request_id
+            )
+    for request in requests:
+        if request.status == "soaking":
+            soaking_request_ids_by_zone.setdefault(request.zone_id, set()).add(request.request_id)
+    ready = [
+        request
+        for request in requests
+        if request.status in {"pending", "soaking"}
+        and not (soaking_request_ids_by_zone.get(request.zone_id, set()) - {request.request_id})
+        and not (
+            request.request_id in soaking_request_ids_by_zone.get(request.zone_id, set())
+            and request.status != "soaking"
+        )
+        and datetime.fromisoformat(request.expires_at) > now
+        and (
+            request.status == "pending"
+            or request.soak_until is None
+            or datetime.fromisoformat(request.soak_until) <= now
+        )
+    ]
+    return min(ready, key=lambda request: (request.sequence, request.request_id), default=None)
+
+
+def dose_target(request: ManualIrrigationRequest) -> float:
+    """Bound the next dose while preserving the order's remaining target."""
+    if request.max_dose_value is None or request.max_dose_value <= 0:
+        return request.remaining_value
+    return min(request.remaining_value, request.max_dose_value)

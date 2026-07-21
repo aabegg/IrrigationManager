@@ -86,6 +86,9 @@ async def test_storage_migrates_legacy_state(hass: HomeAssistant) -> None:
     assert state.idle_meter_raw_baseline_liters is None
     assert state.unassigned_measurement_quality == "unknown"
     assert state.unassigned_measurement_origin == "unknown"
+    assert state.manual_requests == ()
+    assert state.irrigation_executions == ()
+    assert state.next_request_sequence == 1
 
 
 async def test_storage_migrates_active_execution_without_resetting_minor_six_state(
@@ -208,6 +211,7 @@ async def test_setup_creates_installation_and_zone_water_sensors(
 
 async def test_manual_timed_action_controls_valves_and_attributes_water(
     hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Run a manual dose through HA services and publish measured consumption."""
     operations: list[tuple[str, str]] = []
@@ -273,6 +277,15 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     operations.clear()
+    persisted_transitions: list[StoredInstallationState] = []
+    manager = entry.runtime_data.manager
+    original_save = manager._store.async_save
+
+    async def record_save(state: StoredInstallationState) -> None:
+        persisted_transitions.append(state)
+        await original_save(state)
+
+    monkeypatch.setattr(manager._store, "async_save", record_save)
 
     await hass.services.async_call(
         DOMAIN,
@@ -322,6 +335,19 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
         ("turn_off", "switch.main"),
     ]
     assert persisted_zone_at_open == ["zone-1"]
+    executing_transitions = [
+        state
+        for state in persisted_transitions
+        if state.manual_requests and state.manual_requests[0].status == "executing"
+    ]
+    assert executing_transitions
+    assert all(state.active_execution is not None for state in executing_transitions)
+    assert all(
+        state.irrigation_executions
+        and state.irrigation_executions[0].status == "watering"
+        and state.active_execution.execution_id == state.irrigation_executions[0].execution_id
+        for state in executing_transitions
+    )
 
 
 async def test_manual_volume_action_aborts_preflight_without_meter(

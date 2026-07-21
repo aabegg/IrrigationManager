@@ -8,7 +8,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 7
+STORAGE_MINOR_VERSION = 9
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -22,7 +22,7 @@ class _StateStore(Store[dict[str, object]]):
         old_data: dict[str, object],
     ) -> dict[str, object]:
         """Add fields introduced by additive 1.x schema revisions."""
-        if old_major_version == 1 and old_minor_version in {1, 2, 3, 4, 5, 6}:
+        if old_major_version == 1 and old_minor_version in {1, 2, 3, 4, 5, 6, 7, 8}:
             migrated = dict(old_data)
             if old_minor_version == 1:
                 migrated["active_execution"] = None
@@ -49,6 +49,25 @@ class _StateStore(Store[dict[str, object]]):
                     raw_active["fallback_checkpoint_at"] = None
                     raw_active["delivered_liters_at_fallback"] = 0.0
                     migrated["active_execution"] = raw_active
+            if old_minor_version < 8:
+                migrated["manual_requests"] = []
+                migrated["irrigation_executions"] = []
+                migrated["next_request_sequence"] = 1
+                raw_active = migrated.get("active_execution")
+                if isinstance(raw_active, dict):
+                    raw_active = dict(raw_active)
+                    raw_active["request_id"] = None
+                    raw_active["execution_id"] = None
+                    raw_active["dose_number"] = 1
+                    raw_active["dose_target_value"] = None
+                    migrated["active_execution"] = raw_active
+            if old_minor_version < 9:
+                raw_requests = migrated.get("manual_requests", [])
+                if isinstance(raw_requests, list):
+                    migrated["manual_requests"] = [
+                        {**request, "revision": 1} if isinstance(request, dict) else request
+                        for request in raw_requests
+                    ]
             return migrated
         raise NotImplementedError
 

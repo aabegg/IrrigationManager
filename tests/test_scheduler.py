@@ -1,11 +1,18 @@
 """Behavior tests for deterministic irrigation scheduling."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from custom_components.irrigation_manager.models import (
+    IrrigationExecutionState,
+    ManualIrrigationRequest,
+)
 from custom_components.irrigation_manager.scheduler import (
     WateringMode,
     ZonePlanningInput,
+    dose_target,
     plan_orders,
+    select_manual_request,
 )
 
 
@@ -91,3 +98,79 @@ def test_plan_orders_creates_partial_only_when_minimum_effective_dose_fits() -> 
     assert orders[0].zone_id == "pots"
     assert orders[0].target_liters == 10
     assert orders[0].is_partial is True
+
+
+def _manual_request(
+    *, sequence: int, status: str = "pending", soak_until: datetime | None = None
+) -> ManualIrrigationRequest:
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    return ManualIrrigationRequest(
+        request_id=f"request-{sequence}",
+        sequence=sequence,
+        zone_id=f"zone-{sequence}",
+        zone_subentry_id=f"subentry-{sequence}",
+        zone_name=f"Zone {sequence}",
+        zone_valve=f"switch.zone_{sequence}",
+        main_valve=None,
+        target_type="duration",
+        target_value=30,
+        remaining_value=25,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(hours=1)).isoformat(),
+        status=status,
+        max_dose_value=10,
+        soak_until=soak_until.isoformat() if soak_until else None,
+    )
+
+
+def test_manual_scheduler_splits_target_and_skips_a_soaking_fifo_head() -> None:
+    """Keep FIFO stable while allowing another zone to use a hydraulic gap."""
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    soaking = _manual_request(
+        sequence=1,
+        status="soaking",
+        soak_until=now + timedelta(minutes=5),
+    )
+    ready = _manual_request(sequence=2)
+
+    assert dose_target(soaking) == 10
+    assert select_manual_request(now=now, requests=[ready, soaking]) == ready
+
+
+def test_manual_scheduler_blocks_every_request_for_a_zone_that_is_still_soaking() -> None:
+    """Never start a second execution for a zone during its first execution's soak."""
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    soaking = _manual_request(
+        sequence=1,
+        status="soaking",
+        soak_until=now + timedelta(minutes=5),
+    )
+    same_zone = replace(_manual_request(sequence=2), zone_id=soaking.zone_id)
+    other_zone = _manual_request(sequence=3)
+    soaking_execution = IrrigationExecutionState(
+        execution_id="execution-soaking",
+        request_id=soaking.request_id,
+        zone_id=soaking.zone_id,
+        target_type="duration",
+        target_value=30,
+        remaining_value=25,
+        status="soaking",
+        created_at=soaking.created_at,
+    )
+
+    assert (
+        select_manual_request(
+            now=now,
+            requests=[replace(soaking, status="pending"), same_zone],
+            executions=[soaking_execution],
+        )
+        is None
+    )
+    assert (
+        select_manual_request(
+            now=now,
+            requests=[soaking, same_zone, other_zone],
+            executions=[soaking_execution],
+        )
+        == other_zone
+    )
