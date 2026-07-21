@@ -17,6 +17,8 @@ ATTR_AMOUNT = "amount"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_STOP = "stop"
+SERVICE_EMERGENCY_STOP = "emergency_stop"
+SERVICE_RESET_EMERGENCY_STOP = "reset_emergency_stop"
 SERVICE_ASSIGN_WATER = "assign_water"
 
 START_MANUAL_SCHEMA = vol.Schema(
@@ -54,6 +56,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
     async def stop(call: ServiceCall) -> None:
         await manager_for(call).async_stop()
 
+    async def emergency_stop(call: ServiceCall) -> None:
+        await manager_for(call).async_emergency_stop()
+
+    async def reset_emergency_stop(call: ServiceCall) -> None:
+        await manager_for(call).async_reset_emergency_stop()
+
     async def assign_water(call: ServiceCall) -> None:
         await manager_for(call).async_assign_water(
             zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
@@ -67,6 +75,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=START_MANUAL_SCHEMA,
     )
     hass.services.async_register(DOMAIN, SERVICE_STOP, stop, schema=STOP_SCHEMA)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EMERGENCY_STOP,
+        emergency_stop,
+        schema=STOP_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESET_EMERGENCY_STOP,
+        reset_emergency_stop,
+        schema=STOP_SCHEMA,
+    )
     hass.services.async_register(
         DOMAIN,
         SERVICE_ASSIGN_WATER,

@@ -294,6 +294,47 @@ class IrrigationManager:
         except asyncio.CancelledError:
             await self._async_recover_interrupted_execution(could_have_flowed=False)
 
+    async def async_emergency_stop(self) -> None:
+        """Stop all water delivery and persist the non-overridable safety lock."""
+        async with self._command_lock:
+            active = self._stored_state.active_execution
+            self._stored_state = replace(self._stored_state, emergency_stop=True)
+            await self._store.async_save(self._stored_state)
+            self._publish(status="emergency_stop", active_zone_id=None)
+            task = self._active_task
+            if task is not None and not task.done():
+                task.cancel()
+            try:
+                if task is not None:
+                    await task
+            except asyncio.CancelledError:
+                await self._async_recover_interrupted_execution(could_have_flowed=False)
+            finally:
+                entity_ids = self._zone_valves()
+                if active is not None:
+                    entity_ids.append(active.zone_valve)
+                    if active.main_valve is not None:
+                        entity_ids.append(active.main_valve)
+                if main_valve := self._entry.data.get(CONF_MAIN_VALVE):
+                    entity_ids.append(main_valve)
+                await self._async_close_entities(list(dict.fromkeys(entity_ids)))
+                self._publish(status="emergency_stop", active_zone_id=None)
+
+    async def async_reset_emergency_stop(self) -> None:
+        """Clear the safety lock only while idle with all valves proven closed."""
+        async with self._command_lock:
+            if self._active_task is not None and not self._active_task.done():
+                raise HomeAssistantError("The irrigation installation is busy")
+            if self._stored_state.active_execution is not None:
+                raise HomeAssistantError("An interrupted irrigation execution needs recovery")
+            await self._async_preflight()
+            self._stored_state = replace(
+                self._stored_state,
+                emergency_stop=False,
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status="idle", active_zone_id=None)
+
     async def async_assign_water(self, *, zone_subentry_id: str, amount_liters: float) -> None:
         """Move measured unassigned consumption to one irrigation zone."""
         async with self._command_lock:

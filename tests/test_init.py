@@ -221,10 +221,14 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
     assert persisted_zone_at_open == ["zone-1"]
 
 
-async def test_stop_action_closes_active_valves_and_accounts_partial_water(
-    hass: HomeAssistant,
+@pytest.mark.parametrize(
+    ("stop_service", "emergency_stop"),
+    [("stop", False), ("emergency_stop", True)],
+)
+async def test_stop_actions_close_active_valves_and_account_partial_water(
+    hass: HomeAssistant, stop_service: str, emergency_stop: bool
 ) -> None:
-    """Stop an active manual dose without leaving a valve open."""
+    """Stop an active dose safely and persist an emergency lock when requested."""
     zone_opened = asyncio.Event()
     operations: list[tuple[str, str]] = []
 
@@ -297,7 +301,7 @@ async def test_stop_action_closes_active_valves_and_accounts_partial_water(
     await zone_opened.wait()
     await hass.services.async_call(
         DOMAIN,
-        "stop",
+        stop_service,
         {"config_entry_id": entry.entry_id},
         blocking=True,
     )
@@ -307,12 +311,23 @@ async def test_stop_action_closes_active_valves_and_accounts_partial_water(
     zone_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_water_total")
     assert zone_entity_id is not None
     assert hass.states.get(zone_entity_id).state == "25.0"
-    assert operations == [
+    expected_operations = [
         ("turn_on", "switch.main"),
         ("turn_on", "switch.zone_lawn"),
         ("turn_off", "switch.zone_lawn"),
         ("turn_off", "switch.main"),
     ]
+    if emergency_stop:
+        expected_operations.extend(
+            [
+                ("turn_off", "switch.zone_lawn"),
+                ("turn_off", "switch.main"),
+            ]
+        )
+    assert operations == expected_operations
+    assert (
+        await IrrigationStore(hass, entry.entry_id).async_load()
+    ).emergency_stop is emergency_stop
 
 
 async def test_assign_water_moves_unassigned_consumption_to_zone(
@@ -419,6 +434,15 @@ async def test_emergency_stop_blocks_manual_watering(hass: HomeAssistant) -> Non
             },
             blocking=True,
         )
+
+    await hass.services.async_call(
+        DOMAIN,
+        "reset_emergency_stop",
+        {"config_entry_id": entry.entry_id},
+        blocking=True,
+    )
+
+    assert not (await IrrigationStore(hass, entry.entry_id).async_load()).emergency_stop
 
 
 async def test_setup_recovers_interrupted_execution_from_meter_baseline(

@@ -25,6 +25,20 @@ stop:
       selector:
         config_entry:
           integration: irrigation_manager
+emergency_stop:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+reset_emergency_stop:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
 assign_water:
   fields:
     config_entry_id:
