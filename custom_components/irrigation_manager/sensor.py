@@ -156,6 +156,17 @@ class InstallationWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEn
         """Return the normalized cumulative total."""
         return Decimal(str(self._value_fn(self.coordinator.data)))
 
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str] | None:
+        """Expose the origin and quality of unassigned consumption."""
+        if self.entity_description.key != "unassigned_water_total":
+            return None
+        return {
+            "measurement_quality": self.coordinator.data.unassigned_measurement_quality,
+            "measurement_origin": self.coordinator.data.unassigned_measurement_origin,
+        }
+
 
 class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
     """Current operating state of one irrigation installation."""

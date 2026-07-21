@@ -46,7 +46,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             zone_last_duration_seconds=stored_state.zone_last_duration_seconds,
             zone_safety_locks=stored_state.zone_safety_locks,
             unassigned_total_liters=stored_state.unassigned_total_liters,
-            status="emergency_stop" if stored_state.emergency_stop else "idle",
+            unassigned_measurement_quality=stored_state.unassigned_measurement_quality,
+            unassigned_measurement_origin=stored_state.unassigned_measurement_origin,
+            status=(
+                "emergency_stop"
+                if stored_state.emergency_stop
+                else "safety_lock"
+                if stored_state.installation_safety_lock is not None
+                else "idle"
+            ),
             emergency_stop=stored_state.emergency_stop,
             installation_safety_lock=stored_state.installation_safety_lock,
         )
@@ -72,7 +80,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
 
 async def async_unload_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -> bool:
     """Unload one irrigation installation."""
-    await entry.runtime_data.manager.async_stop()
+    await entry.runtime_data.manager.async_shutdown()
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)

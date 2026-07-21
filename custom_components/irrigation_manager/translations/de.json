@@ -58,13 +58,19 @@
           "main_valve": "Hauptventil",
           "water_meter": "Kumulativer Wasserzähler",
           "flow_sensor": "Durchflusssensor",
+          "leak_monitoring": "Leckage im Leerlauf überwachen",
+          "leak_flow_threshold": "Durchflussgrenze für Leckage",
+          "leak_duration_seconds": "Bestätigungsdauer für Leckage",
           "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity"
         },
         "data_description": {
           "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
           "water_meter": "Optionaler kumulativer Wassersensor. Ohne ihn ist nur Zeitsteuerung möglich.",
-          "flow_sensor": "Optionale Durchflussrate für schnellere Sicherheitsprüfungen.",
+          "flow_sensor": "Optionale Durchflussrate für schnellere Sicherheitsprüfungen und Leckageüberwachung.",
+          "leak_monitoring": "Bei konfiguriertem Durchflusssensor standardmäßig aktiv.",
+          "leak_flow_threshold": "Ein dauerhaft höherer Durchfluss im Leerlauf gilt als Gefahr.",
+          "leak_duration_seconds": "Kürzere Messartefakte und Nachlauf nach einer Bewässerung werden toleriert.",
           "weather_entity": "Optionale Quelle für Wettermessungen und Prognosen."
         }
       }

@@ -9,6 +9,9 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager.const import (
     CONF_FLOW_SENSOR,
+    CONF_LEAK_DURATION_SECONDS,
+    CONF_LEAK_FLOW_THRESHOLD,
+    CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
     CONF_WATER_METER,
     CONF_WEATHER_ENTITY,
@@ -48,6 +51,9 @@ async def test_user_can_create_an_irrigation_installation(
     assert result["title"] == "Gartenbewässerung"
     assert result["result"].unique_id == "installation-1"
     assert result["data"][CONF_MAIN_VALVE] == "switch.relais_09"
+    assert result["data"][CONF_LEAK_MONITORING] is True
+    assert result["data"][CONF_LEAK_FLOW_THRESHOLD] == 0.5
+    assert result["data"][CONF_LEAK_DURATION_SECONDS] == 30
 
 
 async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:

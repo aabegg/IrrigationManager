@@ -14,6 +14,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_NAME, Platform, UnitOfTime, UnitOfVolumeFlowRate
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -27,6 +28,9 @@ from .const import (
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
+    CONF_LEAK_DURATION_SECONDS,
+    CONF_LEAK_FLOW_THRESHOLD,
+    CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
     CONF_MAX_FLOW,
     CONF_MIN_FLOW,
@@ -48,6 +52,25 @@ INSTALLATION_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_FLOW_SENSOR): EntitySelector(
             EntitySelectorConfig(domain=Platform.SENSOR)
+        ),
+        vol.Optional(CONF_LEAK_MONITORING, default=True): BooleanSelector(),
+        vol.Optional(CONF_LEAK_FLOW_THRESHOLD, default=0.5): NumberSelector(
+            NumberSelectorConfig(
+                min=0.1,
+                max=10_000,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfVolumeFlowRate.LITERS_PER_MINUTE,
+            )
+        ),
+        vol.Optional(CONF_LEAK_DURATION_SECONDS, default=30): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=3600,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
         ),
         vol.Optional(CONF_FLOW_MAX_AGE_SECONDS, default=30): NumberSelector(
             NumberSelectorConfig(

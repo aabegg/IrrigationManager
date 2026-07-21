@@ -14,6 +14,8 @@ class InstallationSnapshot:
     zone_last_duration_seconds: dict[str, float] = field(default_factory=dict)
     zone_safety_locks: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
+    unassigned_measurement_quality: str = "unknown"
+    unassigned_measurement_origin: str = "unknown"
     status: str = "idle"
     active_zone_id: str | None = None
     emergency_stop: bool = False
@@ -93,6 +95,9 @@ class StoredInstallationState:
     zone_last_duration_seconds: dict[str, float] = field(default_factory=dict)
     zone_safety_locks: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
+    unassigned_measurement_quality: str = "unknown"
+    unassigned_measurement_origin: str = "unknown"
+    idle_meter_raw_baseline_liters: float | None = None
     emergency_stop: bool = False
     installation_safety_lock: str | None = None
     active_execution: ActiveExecutionState | None = None
@@ -140,6 +145,12 @@ class StoredInstallationState:
         raw_active_execution = data.get("active_execution")
         if raw_active_execution is not None and not isinstance(raw_active_execution, dict):
             raise ValueError("Stored active execution is malformed")
+        unassigned_quality = data.get("unassigned_measurement_quality", "unknown")
+        unassigned_origin = data.get("unassigned_measurement_origin", "unknown")
+        if not isinstance(unassigned_quality, str) or not isinstance(unassigned_origin, str):
+            raise ValueError("Stored unassigned measurement metadata is malformed")
+        raw_idle_baseline = data.get("idle_meter_raw_baseline_liters")
+        idle_baseline = None if raw_idle_baseline is None else cls._float(raw_idle_baseline)
         return cls(
             installation_total_liters=cls._float(data.get("installation_total_liters", 0.0)),
             zone_totals_liters=zone_totals,
@@ -148,6 +159,9 @@ class StoredInstallationState:
             zone_last_duration_seconds=last_duration,
             zone_safety_locks=dict(raw_zone_locks),
             unassigned_total_liters=cls._float(data.get("unassigned_total_liters", 0.0)),
+            unassigned_measurement_quality=unassigned_quality,
+            unassigned_measurement_origin=unassigned_origin,
+            idle_meter_raw_baseline_liters=idle_baseline,
             emergency_stop=emergency_stop,
             installation_safety_lock=installation_lock,
             active_execution=(
@@ -167,6 +181,9 @@ class StoredInstallationState:
             "zone_last_duration_seconds": self.zone_last_duration_seconds,
             "zone_safety_locks": self.zone_safety_locks,
             "unassigned_total_liters": self.unassigned_total_liters,
+            "unassigned_measurement_quality": self.unassigned_measurement_quality,
+            "unassigned_measurement_origin": self.unassigned_measurement_origin,
+            "idle_meter_raw_baseline_liters": self.idle_meter_raw_baseline_liters,
             "emergency_stop": self.emergency_stop,
             "installation_safety_lock": self.installation_safety_lock,
             "active_execution": (

@@ -14,7 +14,7 @@ from homeassistant.const import (
     UnitOfVolume,
     UnitOfVolumeFlowRate,
 )
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.unit_conversion import VolumeConverter, VolumeFlowRateConverter
@@ -124,7 +124,10 @@ class HomeAssistantFlow:
 
     async def read_l_min(self) -> float:
         """Return the current flow converted to liters per minute."""
-        state = self._hass.states.get(self._entity_id)
+        return self.read_state_l_min(self._hass.states.get(self._entity_id))
+
+    def read_state_l_min(self, state: State | None) -> float:
+        """Normalize one immutable HA event sample to liters per minute."""
         if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
             raise HomeAssistantError(f"Flow sensor {self._entity_id} is not available")
         age_seconds = (datetime.now(UTC) - state.last_reported).total_seconds()

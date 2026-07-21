@@ -58,13 +58,19 @@
           "main_valve": "Main valve",
           "water_meter": "Cumulative water meter",
           "flow_sensor": "Flow sensor",
+          "leak_monitoring": "Monitor for leaks while idle",
+          "leak_flow_threshold": "Idle leak flow threshold",
+          "leak_duration_seconds": "Leak confirmation duration",
           "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity"
         },
         "data_description": {
           "main_valve": "Optional switch or valve that isolates the complete installation.",
           "water_meter": "Optional cumulative water sensor. Without it only time control is available.",
-          "flow_sensor": "Optional rate sensor for faster flow safety checks.",
+          "flow_sensor": "Optional rate sensor for faster flow safety checks and idle leak monitoring.",
+          "leak_monitoring": "Enabled by default when a flow sensor is configured.",
+          "leak_flow_threshold": "Continuous idle flow above this rate is hazardous.",
+          "leak_duration_seconds": "Shorter flow artifacts and post-watering runoff are ignored.",
           "weather_entity": "Optional source for weather measurements and forecasts."
         }
       }

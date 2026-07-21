@@ -8,7 +8,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 5
+STORAGE_MINOR_VERSION = 6
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -22,7 +22,7 @@ class _StateStore(Store[dict[str, object]]):
         old_data: dict[str, object],
     ) -> dict[str, object]:
         """Add fields introduced by additive 1.x schema revisions."""
-        if old_major_version == 1 and old_minor_version in {1, 2, 3, 4}:
+        if old_major_version == 1 and old_minor_version in {1, 2, 3, 4, 5}:
             migrated = dict(old_data)
             if old_minor_version == 1:
                 migrated["active_execution"] = None
@@ -31,7 +31,11 @@ class _StateStore(Store[dict[str, object]]):
                 migrated["zone_last_duration_seconds"] = {}
             if old_minor_version < 4:
                 migrated["zone_safety_locks"] = {}
-            migrated["installation_safety_lock"] = None
+            if old_minor_version < 5:
+                migrated["installation_safety_lock"] = None
+            migrated["unassigned_measurement_quality"] = "unknown"
+            migrated["unassigned_measurement_origin"] = "unknown"
+            migrated["idle_meter_raw_baseline_liters"] = None
             return migrated
         raise NotImplementedError
 

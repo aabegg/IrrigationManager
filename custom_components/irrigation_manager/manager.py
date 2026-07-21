@@ -1,14 +1,15 @@
 """Runtime orchestration for one irrigation installation."""
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.event import async_track_state_change_event
 
 from .adapters import (
     HomeAssistantActuators,
@@ -20,6 +21,9 @@ from .const import (
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
+    CONF_LEAK_DURATION_SECONDS,
+    CONF_LEAK_FLOW_THRESHOLD,
+    CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
     CONF_MAX_FLOW,
     CONF_MIN_FLOW,
@@ -29,6 +33,7 @@ from .const import (
 )
 from .coordinator import IrrigationCoordinator
 from .executor import ExecutionRequest, IrrigationExecutor
+from .leak_monitor import LeakObservation
 from .models import (
     ActiveExecutionState,
     InstallationSnapshot,
@@ -77,6 +82,21 @@ class IrrigationManager:
         self._active_task: asyncio.Task[None] | None = None
         self._watering = False
         self._command_lock = asyncio.Lock()
+        self._leak_threshold_l_min = (
+            self._optional_float(entry.data, CONF_LEAK_FLOW_THRESHOLD) or 0.5
+        )
+        self._leak_duration_seconds = (
+            self._optional_float(entry.data, CONF_LEAK_DURATION_SECONDS) or 30.0
+        )
+        self._leak_monitoring = (
+            self._flow is not None and entry.data.get(CONF_LEAK_MONITORING, True) is not False
+        )
+        self._leak_observation: LeakObservation | None = None
+        self._leak_confirmation_task: asyncio.Task[None] | None = None
+        self._leak_application_task: asyncio.Task[None] | None = None
+        self._flow_event_tasks: set[asyncio.Task[None]] = set()
+        self._unsubscribe_flow: Callable[[], None] | None = None
+        self._shutting_down = False
 
     async def async_initialize(self) -> None:
         """Close configured valves left open across a restart."""
@@ -102,6 +122,271 @@ class IrrigationManager:
             entity_ids.append(main_valve)
         await self._async_close_entities(list(dict.fromkeys(entity_ids)))
         await self._async_recover_interrupted_execution(could_have_flowed=active_could_have_flowed)
+        await self._async_ensure_idle_meter_baseline()
+        if self._leak_monitoring and self._flow is not None:
+            flow_entity_id = self._entry.data[CONF_FLOW_SENSOR]
+            self._unsubscribe_flow = async_track_state_change_event(
+                self._hass,
+                flow_entity_id,
+                self._flow_state_changed,
+            )
+            await self._async_consider_current_flow()
+        self._publish(status="idle", active_zone_id=None)
+
+    async def async_shutdown(self) -> None:
+        """Stop runtime work and remove all Home Assistant listeners."""
+        self._shutting_down = True
+        if self._unsubscribe_flow is not None:
+            self._unsubscribe_flow()
+            self._unsubscribe_flow = None
+        confirmation_task = self._leak_confirmation_task
+        application_task = self._leak_application_task
+        self._cancel_leak_observation()
+        if application_task is not None:
+            await asyncio.gather(application_task, return_exceptions=True)
+        if confirmation_task is not None:
+            await asyncio.gather(confirmation_task, return_exceptions=True)
+        await self.async_stop()
+        tasks = tuple(self._flow_event_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    @callback
+    def _flow_state_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Schedule event-driven idle-flow evaluation."""
+        if self._shutting_down:
+            return
+        task = self._hass.async_create_task(
+            self._async_consider_flow_sample(event.data["new_state"]),
+            "Irrigation Manager idle-flow observation",
+        )
+        self._flow_event_tasks.add(task)
+        task.add_done_callback(self._flow_event_tasks.discard)
+
+    async def _async_consider_current_flow(self) -> None:
+        """Apply the current flow sample to the idle leak observer."""
+        if self._flow is None or self._shutting_down:
+            return
+        await self._async_consider_flow_sample(
+            self._hass.states.get(self._entry.data[CONF_FLOW_SENSOR])
+        )
+
+    async def _async_consider_flow_sample(self, state: State | None) -> None:
+        """Apply one specific event sample without collapsing intervening states."""
+        if self._flow is None or self._shutting_down:
+            return
+        try:
+            flow_l_min = self._flow.read_state_l_min(state)
+        except HomeAssistantError:
+            async with self._command_lock:
+                self._cancel_leak_observation()
+            return
+        async with self._command_lock:
+            if not self._is_idle_for_leak_monitoring():
+                self._cancel_leak_observation()
+                return
+            now = asyncio.get_running_loop().time()
+            if flow_l_min <= self._leak_threshold_l_min:
+                self._cancel_leak_observation()
+                return
+            if self._stored_state.installation_safety_lock is not None:
+                return
+            if self._leak_observation is None:
+                self._leak_observation = LeakObservation.start(
+                    at=now,
+                    flow_l_min=flow_l_min,
+                )
+                self._leak_confirmation_task = self._hass.async_create_task(
+                    self._async_confirm_idle_flow_after_delay(),
+                    "Irrigation Manager leak confirmation",
+                )
+            else:
+                self._leak_observation = self._leak_observation.observe(
+                    at=now,
+                    flow_l_min=flow_l_min,
+                )
+
+    async def _async_confirm_idle_flow_after_delay(self) -> None:
+        """Confirm a continuous idle-flow observation after its minimum duration."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._leak_duration_seconds)
+            if self._flow is None:
+                return
+            try:
+                flow_l_min = await self._flow.read_l_min()
+            except HomeAssistantError:
+                return
+            async with self._command_lock:
+                if (
+                    self._leak_confirmation_task is not current_task
+                    or not self._is_idle_for_leak_monitoring()
+                    or flow_l_min <= self._leak_threshold_l_min
+                    or self._leak_observation is None
+                ):
+                    return
+                now = asyncio.get_running_loop().time()
+                observation = self._leak_observation.observe(
+                    at=now,
+                    flow_l_min=flow_l_min,
+                )
+                confirmed = observation.confirm(
+                    at=now,
+                    minimum_duration_seconds=self._leak_duration_seconds,
+                )
+                if confirmed is not None:
+                    application_task = self._hass.async_create_task(
+                        self._async_apply_idle_flow_lock(
+                            flow_l_min=flow_l_min,
+                            integrated_liters=confirmed.integrated_liters,
+                        ),
+                        "Irrigation Manager confirmed leak safety application",
+                    )
+                    self._leak_application_task = application_task
+                    try:
+                        await asyncio.shield(application_task)
+                    except asyncio.CancelledError:
+                        await application_task
+                        raise
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._leak_confirmation_task is current_task:
+                self._leak_confirmation_task = None
+                self._leak_observation = None
+            if self._leak_application_task is not None and self._leak_application_task.done():
+                self._leak_application_task = None
+
+    async def _async_apply_idle_flow_lock(
+        self, *, flow_l_min: float, integrated_liters: float
+    ) -> None:
+        """Close every known valve, account water, and persist the safety lock."""
+        reason = (
+            f"Leak detected: idle flow {flow_l_min:g} L/min exceeded "
+            f"{self._leak_threshold_l_min:g} L/min for "
+            f"{self._leak_duration_seconds:g} seconds"
+        )
+        self._stored_state = replace(
+            self._stored_state,
+            installation_safety_lock=reason,
+        )
+        persistence_errors: list[Exception] = []
+        try:
+            await self._store.async_save(self._stored_state)
+        except Exception as err:  # noqa: BLE001
+            persistence_errors.append(err)
+        self._publish(status="safety_lock", active_zone_id=None)
+
+        close_error: Exception | None = None
+        try:
+            await self._async_close_entities(self._all_known_valves())
+        except Exception as err:  # noqa: BLE001
+            close_error = err
+
+        amount_liters = integrated_liters
+        quality = "integrated"
+        origin = "flow_sensor"
+        new_baseline = self._stored_state.idle_meter_raw_baseline_liters
+        if self._has_meter and new_baseline is not None:
+            try:
+                current_raw_liters = await self._meter.read_raw_liters()
+            except HomeAssistantError:
+                pass
+            else:
+                amount_liters = (
+                    current_raw_liters - new_baseline
+                    if current_raw_liters >= new_baseline
+                    else current_raw_liters
+                )
+                new_baseline = current_raw_liters
+                quality = "measured"
+                origin = "cumulative_meter"
+
+        if close_error is not None:
+            reason = f"{reason}; not all valves could be closed: {close_error}"
+        self._stored_state = replace(
+            self._stored_state,
+            installation_total_liters=(
+                self._stored_state.installation_total_liters + amount_liters
+            ),
+            unassigned_total_liters=(self._stored_state.unassigned_total_liters + amount_liters),
+            unassigned_measurement_quality=quality,
+            unassigned_measurement_origin=origin,
+            idle_meter_raw_baseline_liters=new_baseline,
+            installation_safety_lock=reason,
+        )
+        try:
+            await self._store.async_save(self._stored_state)
+        except Exception as err:  # noqa: BLE001
+            persistence_errors.append(err)
+        self._publish(status="safety_lock", active_zone_id=None)
+        if len(persistence_errors) == 1:
+            raise persistence_errors[0]
+        if persistence_errors:
+            raise ExceptionGroup(
+                "Could not persist confirmed leak safety state", persistence_errors
+            )
+
+    def _is_idle_for_leak_monitoring(self) -> bool:
+        """Return whether flow cannot belong to an active or settling dose."""
+        return (
+            not self._watering
+            and self._stored_state.active_execution is None
+            and (self._active_task is None or self._active_task.done())
+        )
+
+    def _cancel_leak_observation(self) -> None:
+        """Discard a short artifact or an observation claimed by watering."""
+        task = self._leak_confirmation_task
+        if (
+            self._leak_application_task is None
+            and task is not None
+            and task is not asyncio.current_task()
+        ):
+            task.cancel()
+            self._leak_confirmation_task = None
+        self._leak_observation = None
+
+    def _all_known_valves(self) -> list[str]:
+        """Return configured valves plus any valve persisted by an execution."""
+        entity_ids = self._zone_valves()
+        if main_valve := self._entry.data.get(CONF_MAIN_VALVE):
+            entity_ids.append(main_valve)
+        if active := self._stored_state.active_execution:
+            entity_ids.append(active.zone_valve)
+            if active.main_valve is not None:
+                entity_ids.append(active.main_valve)
+        return list(dict.fromkeys(entity_ids))
+
+    async def _async_ensure_idle_meter_baseline(self) -> None:
+        """Persist a raw idle baseline without treating an existing total as use."""
+        if not self._has_meter or self._stored_state.idle_meter_raw_baseline_liters is not None:
+            return
+        try:
+            baseline = await self._meter.read_raw_liters()
+        except HomeAssistantError:
+            return
+        self._stored_state = replace(
+            self._stored_state,
+            idle_meter_raw_baseline_liters=baseline,
+        )
+        await self._store.async_save(self._stored_state)
+
+    async def _async_refresh_idle_meter_baseline(self) -> None:
+        """Exclude the just-finished watering and its settling water from idle use."""
+        if not self._has_meter:
+            return
+        try:
+            baseline = await self._meter.read_raw_liters()
+        except HomeAssistantError:
+            return
+        self._stored_state = replace(
+            self._stored_state,
+            idle_meter_raw_baseline_liters=baseline,
+        )
+        await self._store.async_save(self._stored_state)
 
     async def _async_recover_interrupted_execution(self, *, could_have_flowed: bool = True) -> None:
         """Account for a durable active dose after all valves are closed."""
@@ -165,6 +450,7 @@ class IrrigationManager:
             active_execution=None,
         )
         await self._store.async_save(self._stored_state)
+        await self._async_refresh_idle_meter_baseline()
         self._publish(status="idle", active_zone_id=None)
 
     async def _async_close_entities(self, entity_ids: list[str]) -> None:
@@ -252,6 +538,8 @@ class IrrigationManager:
             self._watering = False
             if self._active_task is task:
                 self._active_task = None
+            if not self._shutting_down:
+                await self._async_consider_current_flow()
 
     async def _async_prepare_manual(
         self, *, zone_subentry_id: str, duration_seconds: float
@@ -268,6 +556,7 @@ class IrrigationManager:
             raise HomeAssistantError("The irrigation zone does not exist")
         zone_id = subentry.unique_id or subentry.subentry_id
         await self._async_preflight(target_zone_id=zone_id)
+        self._cancel_leak_observation()
 
         estimated_flow_l_min = self._estimated_flow(subentry.data)
         minimum_flow_l_min = self._optional_float(subentry.data, CONF_MIN_FLOW)
@@ -412,6 +701,8 @@ class IrrigationManager:
             await self._async_preflight(ignore_installation_lock=True)
             if self._flow is not None:
                 flow_l_min = await self._flow.read_l_min()
+                if flow_l_min > self._leak_threshold_l_min:
+                    raise HomeAssistantError("Hazardous idle flow is still present")
                 maximums = [
                     value
                     for subentry in self._entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
@@ -424,6 +715,7 @@ class IrrigationManager:
                 installation_safety_lock=None,
             )
             await self._store.async_save(self._stored_state)
+            await self._async_refresh_idle_meter_baseline()
             self._publish(status="idle", active_zone_id=None)
 
     async def async_assign_water(self, *, zone_subentry_id: str, amount_liters: float) -> None:
@@ -505,6 +797,7 @@ class IrrigationManager:
                 active_execution=None,
             )
             await self._store.async_save(self._stored_state)
+            await self._async_refresh_idle_meter_baseline()
             if result.safety_violation is not None:
                 raise HomeAssistantError(result.safety_violation)
         except Exception:
@@ -529,6 +822,8 @@ class IrrigationManager:
                 zone_last_duration_seconds=dict(self._stored_state.zone_last_duration_seconds),
                 zone_safety_locks=dict(self._stored_state.zone_safety_locks),
                 unassigned_total_liters=self._stored_state.unassigned_total_liters,
+                unassigned_measurement_quality=(self._stored_state.unassigned_measurement_quality),
+                unassigned_measurement_origin=(self._stored_state.unassigned_measurement_origin),
                 status=status,
                 active_zone_id=active_zone_id,
                 emergency_stop=self._stored_state.emergency_stop,
