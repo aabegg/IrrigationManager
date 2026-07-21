@@ -1,5 +1,26 @@
 {
   "title": "Irrigation Manager",
+  "services": {
+    "start_manual": {
+      "name": "Manuelle Bewässerung starten",
+      "description": "Startet eine Zone mit genau einem Dauer- oder Mengenziel.",
+      "fields": {
+        "config_entry_id": {"name": "Bewässerungsanlage"},
+        "zone_subentry_id": {"name": "Bewässerungszone"},
+        "duration": {"name": "Dauer", "description": "Zeitziel in Sekunden."},
+        "amount": {"name": "Menge", "description": "Mengenziel in Litern."},
+        "hard_time_limit": {"name": "Hartes Zeitlimit", "description": "Erforderliches Sicherheitslimit in Sekunden für ein Mengenziel."}
+      }
+    }
+  },
+  "selector": {
+    "meter_failure_strategy": {
+      "options": {
+        "abort": "Abbrechen",
+        "estimated_time_fallback": "Geschätzter Zeitersatz"
+      }
+    }
+  },
   "entity": {
     "binary_sensor": {
       "emergency_stop": {
@@ -92,7 +113,11 @@
             "default_duration": "Standarddauer für manuelle Bewässerung",
             "min_flow": "Minimal erwarteter Durchfluss",
             "max_flow": "Maximal erwarteter Durchfluss",
-            "flow_grace_seconds": "Durchfluss-Stabilisierungszeit"
+            "flow_grace_seconds": "Durchfluss-Stabilisierungszeit",
+            "meter_failure_strategy": "Zählerausfallstrategie"
+          },
+          "data_description": {
+            "meter_failure_strategy": "Gilt nur beim Ausfall eines konfigurierten kumulativen Zählers. Der geschätzte Ersatz setzt zeitgesteuert mit dem Durchflussprofil der Zone fort. Ohne kumulativen Zähler sind Mengenziele nicht verfügbar."
           }
         },
         "reconfigure": {
@@ -103,7 +128,11 @@
             "default_duration": "Standarddauer für manuelle Bewässerung",
             "min_flow": "Minimal erwarteter Durchfluss",
             "max_flow": "Maximal erwarteter Durchfluss",
-            "flow_grace_seconds": "Durchfluss-Stabilisierungszeit"
+            "flow_grace_seconds": "Durchfluss-Stabilisierungszeit",
+            "meter_failure_strategy": "Zählerausfallstrategie"
+          },
+          "data_description": {
+            "meter_failure_strategy": "Gilt nur beim Ausfall eines konfigurierten kumulativen Zählers. Der geschätzte Ersatz setzt zeitgesteuert mit dem Durchflussprofil der Zone fort. Ohne kumulativen Zähler sind Mengenziele nicht verfügbar."
           }
         }
       },

@@ -26,9 +26,12 @@ from .const import (
     CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
     CONF_MAX_FLOW,
+    CONF_METER_FAILURE_STRATEGY,
     CONF_MIN_FLOW,
     CONF_WATER_METER,
     CONF_ZONE_VALVE,
+    METER_FAILURE_ABORT,
+    METER_FAILURE_ESTIMATED_TIME_FALLBACK,
     SUBENTRY_TYPE_ZONE,
 )
 from .coordinator import IrrigationCoordinator
@@ -97,6 +100,10 @@ class IrrigationManager:
         self._flow_event_tasks: set[asyncio.Task[None]] = set()
         self._unsubscribe_flow: Callable[[], None] | None = None
         self._shutting_down = False
+        self._active_target_type: str | None = None
+        self._active_target_value: float | None = None
+        self._active_remaining_value: float | None = None
+        self._active_measurement_quality: str | None = None
 
     async def async_initialize(self) -> None:
         """Close configured valves left open across a restart."""
@@ -397,8 +404,11 @@ class IrrigationManager:
         delivered_liters = 0.0
         delivered_duration_seconds = 0.0
         quality = "unknown"
-        if active.watering_started_at is not None:
-            started_at = datetime.fromisoformat(active.watering_started_at)
+        recovery_started_at = active.watering_started_at
+        if recovery_started_at is None and active.zone_opening_at is not None and could_have_flowed:
+            recovery_started_at = active.zone_opening_at
+        if recovery_started_at is not None:
+            started_at = datetime.fromisoformat(recovery_started_at)
             delivered_duration_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
             if not could_have_flowed:
                 delivered_duration_seconds = min(
@@ -407,6 +417,40 @@ class IrrigationManager:
                 )
         if (
             active.watering_started_at is not None
+            and active.fallback_started_at is not None
+            and active.estimated_flow_l_min is not None
+        ):
+            delivered_liters = active.delivered_liters_at_fallback
+            if could_have_flowed:
+                checkpoint_at = datetime.fromisoformat(
+                    active.fallback_checkpoint_at or active.fallback_started_at
+                )
+                hard_runtime_started_at = datetime.fromisoformat(active.prepared_at)
+                elapsed_before_checkpoint = max(
+                    0.0,
+                    (checkpoint_at - hard_runtime_started_at).total_seconds(),
+                )
+                hard_limit = active.hard_time_limit_seconds or active.requested_duration_seconds
+                fallback_duration_limit = max(0.0, hard_limit - elapsed_before_checkpoint)
+                if active.requested_amount_liters is not None:
+                    remaining_liters = max(
+                        0.0,
+                        active.requested_amount_liters - active.delivered_liters_at_fallback,
+                    )
+                    fallback_duration_limit = min(
+                        fallback_duration_limit,
+                        remaining_liters * 60 / active.estimated_flow_l_min,
+                    )
+                fallback_duration = min(
+                    max(0.0, (datetime.now(UTC) - checkpoint_at).total_seconds()),
+                    fallback_duration_limit,
+                )
+                delivered_liters += fallback_duration * active.estimated_flow_l_min / 60
+            quality = "estimated"
+        if (
+            quality == "unknown"
+            and active.fallback_started_at is None
+            and recovery_started_at is not None
             and active.meter_raw_baseline_liters is not None
             and self._has_meter
         ):
@@ -434,7 +478,7 @@ class IrrigationManager:
         measurement_quality = dict(self._stored_state.zone_measurement_quality)
         last_delivered = dict(self._stored_state.zone_last_delivered_liters)
         last_duration = dict(self._stored_state.zone_last_duration_seconds)
-        if active.watering_started_at is not None:
+        if recovery_started_at is not None:
             measurement_quality[active.zone_id] = quality
             last_delivered[active.zone_id] = delivered_liters
             last_duration[active.zone_id] = delivered_duration_seconds
@@ -519,13 +563,22 @@ class IrrigationManager:
             raise error from close_error
         raise error
 
-    async def async_start_manual(self, *, zone_subentry_id: str, duration_seconds: float) -> None:
-        """Run one manually requested, time-controlled irrigation dose."""
+    async def async_start_manual(
+        self,
+        *,
+        zone_subentry_id: str,
+        duration_seconds: float | None,
+        amount_liters: float | None,
+        hard_time_limit_seconds: float | None,
+    ) -> None:
+        """Run one manually requested duration- or volume-controlled dose."""
         try:
             async with self._command_lock:
                 task = await self._async_prepare_manual(
                     zone_subentry_id=zone_subentry_id,
                     duration_seconds=duration_seconds,
+                    amount_liters=amount_liters,
+                    hard_time_limit_seconds=hard_time_limit_seconds,
                 )
         except asyncio.CancelledError:
             await self._async_recover_interrupted_execution(could_have_flowed=False)
@@ -538,11 +591,18 @@ class IrrigationManager:
             self._watering = False
             if self._active_task is task:
                 self._active_task = None
+            self._clear_active_target()
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
             if not self._shutting_down:
                 await self._async_consider_current_flow()
 
     async def _async_prepare_manual(
-        self, *, zone_subentry_id: str, duration_seconds: float
+        self,
+        *,
+        zone_subentry_id: str,
+        duration_seconds: float | None,
+        amount_liters: float | None,
+        hard_time_limit_seconds: float | None,
     ) -> asyncio.Task[None]:
         """Validate and durably claim one manual execution before opening valves."""
         if self._stored_state.emergency_stop:
@@ -559,6 +619,9 @@ class IrrigationManager:
         self._cancel_leak_observation()
 
         estimated_flow_l_min = self._estimated_flow(subentry.data)
+        meter_failure_strategy = str(
+            subentry.data.get(CONF_METER_FAILURE_STRATEGY, METER_FAILURE_ABORT)
+        )
         minimum_flow_l_min = self._optional_float(subentry.data, CONF_MIN_FLOW)
         maximum_flow_l_min = self._optional_float(subentry.data, CONF_MAX_FLOW)
         if self._flow is not None and (
@@ -568,7 +631,26 @@ class IrrigationManager:
         flow_grace_seconds = self._optional_float(subentry.data, CONF_FLOW_GRACE_SECONDS)
         if flow_grace_seconds is None:
             flow_grace_seconds = 5.0
-        meter_raw_baseline_liters = await self._meter.read_raw_liters() if self._has_meter else None
+        start_in_estimated_fallback = False
+        meter_raw_baseline_liters: float | None = None
+        if amount_liters is not None and not self._has_meter:
+            raise HomeAssistantError("Volume irrigation requires a configured cumulative meter")
+        if self._has_meter:
+            try:
+                meter_raw_baseline_liters = await self._meter.read_raw_liters()
+            except HomeAssistantError:
+                if amount_liters is None or meter_failure_strategy == METER_FAILURE_ABORT:
+                    raise
+                start_in_estimated_fallback = True
+        if start_in_estimated_fallback and (
+            estimated_flow_l_min is None or estimated_flow_l_min <= 0
+        ):
+            raise HomeAssistantError(
+                "Estimated meter fallback requires a configured zone flow profile"
+            )
+        execution_time_limit = duration_seconds or hard_time_limit_seconds
+        if execution_time_limit is None:
+            raise HomeAssistantError("A hard irrigation time limit is required")
         self._stored_state = replace(
             self._stored_state,
             active_execution=ActiveExecutionState(
@@ -578,11 +660,24 @@ class IrrigationManager:
                 meter_raw_baseline_liters=meter_raw_baseline_liters,
                 prepared_at=datetime.now(UTC).isoformat(),
                 watering_started_at=None,
-                requested_duration_seconds=duration_seconds,
+                requested_duration_seconds=execution_time_limit,
                 estimated_flow_l_min=estimated_flow_l_min,
+                requested_amount_liters=amount_liters,
+                hard_time_limit_seconds=hard_time_limit_seconds,
+                meter_failure_strategy=meter_failure_strategy,
             ),
         )
         await self._store.async_save(self._stored_state)
+        self._active_target_type = "volume" if amount_liters is not None else "duration"
+        self._active_target_value = amount_liters or duration_seconds
+        self._active_remaining_value = self._active_target_value
+        self._active_measurement_quality = (
+            "estimated"
+            if start_in_estimated_fallback or (not self._has_meter and estimated_flow_l_min)
+            else "unknown"
+            if not self._has_meter
+            else "measured"
+        )
         self._watering = True
         task = self._hass.async_create_task(
             self._async_execute(
@@ -591,12 +686,19 @@ class IrrigationManager:
                     zone_valve=subentry.data[CONF_ZONE_VALVE],
                     main_valve=self._entry.data.get(CONF_MAIN_VALVE),
                     duration_seconds=duration_seconds,
+                    amount_liters=amount_liters,
+                    hard_time_limit_seconds=hard_time_limit_seconds,
+                    meter_failure_strategy=meter_failure_strategy,
+                    estimated_flow_l_min=estimated_flow_l_min,
+                    start_in_estimated_fallback=start_in_estimated_fallback,
                     managed_zone_valves=tuple(self._zone_valves()),
                     monitor_interval_seconds=1,
                     minimum_flow_l_min=minimum_flow_l_min,
                     maximum_flow_l_min=maximum_flow_l_min,
                     flow_grace_seconds=flow_grace_seconds,
                     on_zone_opening=self._async_mark_zone_opening,
+                    on_zone_opened=self._async_mark_zone_opened,
+                    on_progress=self._async_update_progress,
                 ),
                 estimated_flow_l_min=estimated_flow_l_min,
             ),
@@ -614,10 +716,59 @@ class IrrigationManager:
             self._stored_state,
             active_execution=replace(
                 active,
-                watering_started_at=datetime.now(UTC).isoformat(),
+                zone_opening_at=datetime.now(UTC).isoformat(),
             ),
         )
         await self._store.async_save(self._stored_state)
+
+    async def _async_mark_zone_opened(self) -> None:
+        """Durably mark confirmed water delivery after valve feedback succeeds."""
+        active = self._stored_state.active_execution
+        if active is None:
+            raise HomeAssistantError("The durable irrigation execution is missing")
+        now = datetime.now(UTC).isoformat()
+        self._stored_state = replace(
+            self._stored_state,
+            active_execution=replace(
+                active,
+                watering_started_at=now,
+                fallback_started_at=(
+                    now
+                    if active.requested_amount_liters is not None
+                    and active.meter_raw_baseline_liters is None
+                    and active.meter_failure_strategy == METER_FAILURE_ESTIMATED_TIME_FALLBACK
+                    else active.fallback_started_at
+                ),
+                fallback_checkpoint_at=(
+                    now
+                    if active.requested_amount_liters is not None
+                    and active.meter_raw_baseline_liters is None
+                    and active.meter_failure_strategy == METER_FAILURE_ESTIMATED_TIME_FALLBACK
+                    else active.fallback_checkpoint_at
+                ),
+            ),
+        )
+        await self._store.async_save(self._stored_state)
+
+    async def _async_update_progress(self, remaining: float, quality: str) -> None:
+        """Publish volume progress and durably record a meter fallback transition."""
+        self._active_remaining_value = remaining
+        self._active_measurement_quality = quality
+        active = self._stored_state.active_execution
+        if active is not None and quality == "estimated":
+            delivered = max(0.0, (active.requested_amount_liters or 0.0) - remaining)
+            now = datetime.now(UTC).isoformat()
+            self._stored_state = replace(
+                self._stored_state,
+                active_execution=replace(
+                    active,
+                    fallback_started_at=active.fallback_started_at or now,
+                    fallback_checkpoint_at=now,
+                    delivered_liters_at_fallback=delivered,
+                ),
+            )
+            await self._store.async_save(self._stored_state)
+        self._publish(status="watering", active_zone_id=active.zone_id if active else None)
 
     async def async_stop(self) -> None:
         """Stop the active dose; the executor closes and meters it safely."""
@@ -761,18 +912,17 @@ class IrrigationManager:
             finally:
                 self._watering = False
             delivered_liters = result.delivered_liters
-            if not self._has_meter and estimated_flow_l_min is not None:
-                delivered_liters = result.duration_seconds * estimated_flow_l_min / 60
+            measurement_result_quality = result.measurement_quality
+            if request.amount_liters is None and not self._has_meter:
+                if estimated_flow_l_min is not None:
+                    delivered_liters = result.duration_seconds * estimated_flow_l_min / 60
+                    measurement_result_quality = "estimated"
+                else:
+                    measurement_result_quality = "unknown"
             zone_totals = dict(self._stored_state.zone_totals_liters)
             zone_totals[request.zone_id] = zone_totals.get(request.zone_id, 0.0) + delivered_liters
             measurement_quality = dict(self._stored_state.zone_measurement_quality)
-            measurement_quality[request.zone_id] = (
-                "measured"
-                if self._has_meter
-                else "estimated"
-                if estimated_flow_l_min is not None
-                else "unknown"
-            )
+            measurement_quality[request.zone_id] = measurement_result_quality
             last_delivered = dict(self._stored_state.zone_last_delivered_liters)
             last_delivered[request.zone_id] = delivered_liters
             last_duration = dict(self._stored_state.zone_last_duration_seconds)
@@ -828,8 +978,19 @@ class IrrigationManager:
                 active_zone_id=active_zone_id,
                 emergency_stop=self._stored_state.emergency_stop,
                 installation_safety_lock=(self._stored_state.installation_safety_lock),
+                active_target_type=self._active_target_type,
+                active_target_value=self._active_target_value,
+                active_remaining_value=self._active_remaining_value,
+                active_measurement_quality=self._active_measurement_quality,
             )
         )
+
+    def _clear_active_target(self) -> None:
+        """Clear transient target progress after an execution finishes."""
+        self._active_target_type = None
+        self._active_target_value = None
+        self._active_remaining_value = None
+        self._active_measurement_quality = None
 
     @staticmethod
     def _estimated_flow(data: Mapping[str, object]) -> float | None:

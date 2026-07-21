@@ -238,6 +238,22 @@ class ActiveZoneSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
         active_zone_id = self.coordinator.data.active_zone_id
         return self._zone_names.get(active_zone_id) if active_zone_id else None
 
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str | float] | None:
+        """Expose the active target, remaining value, and current quality."""
+        snapshot = self.coordinator.data
+        if snapshot.active_target_type is None:
+            return None
+        attributes: dict[str, str | float] = {
+            "target_type": snapshot.active_target_type,
+            "target_value": snapshot.active_target_value or 0.0,
+            "remaining_value": snapshot.active_remaining_value or 0.0,
+        }
+        if snapshot.active_measurement_quality is not None:
+            attributes["measurement_quality"] = snapshot.active_measurement_quality
+        return attributes
+
 
 class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
     """Cumulative water consumption attributed to one zone."""

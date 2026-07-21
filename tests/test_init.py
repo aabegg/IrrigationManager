@@ -1,9 +1,11 @@
 """Home Assistant lifecycle tests for Irrigation Manager."""
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 
 import pytest
+import voluptuous as vol
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
@@ -24,6 +26,7 @@ from custom_components.irrigation_manager.models import (
     ActiveExecutionState,
     StoredInstallationState,
 )
+from custom_components.irrigation_manager.services import START_MANUAL_SCHEMA
 from custom_components.irrigation_manager.storage import IrrigationStore
 
 
@@ -36,6 +39,29 @@ def prepare_closed_switches(hass: HomeAssistant, *entity_ids: str) -> None:
     hass.services.async_register("switch", "turn_off", turn_off)
     for entity_id in entity_ids:
         hass.states.async_set(entity_id, STATE_OFF)
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        {},
+        {"duration": 1, "amount": 1},
+        {"amount": 1},
+        {"duration": 1, "hard_time_limit": 2},
+    ],
+)
+def test_manual_action_requires_exactly_one_complete_target(
+    targets: dict[str, float],
+) -> None:
+    """Reject missing, ambiguous, and incomplete native action targets."""
+    with pytest.raises(vol.Invalid):
+        START_MANUAL_SCHEMA(
+            {
+                "config_entry_id": "installation-1",
+                "zone_subentry_id": "zone-1",
+                **targets,
+            }
+        )
 
 
 async def test_storage_migrates_legacy_state(hass: HomeAssistant) -> None:
@@ -60,6 +86,54 @@ async def test_storage_migrates_legacy_state(hass: HomeAssistant) -> None:
     assert state.idle_meter_raw_baseline_liters is None
     assert state.unassigned_measurement_quality == "unknown"
     assert state.unassigned_measurement_origin == "unknown"
+
+
+async def test_storage_migrates_active_execution_without_resetting_minor_six_state(
+    hass: HomeAssistant,
+) -> None:
+    """Add volume fields while preserving metadata already stored by schema 1.6."""
+    await Store[dict[str, object]](
+        hass,
+        1,
+        "irrigation_manager.minor-six",
+        atomic_writes=True,
+        minor_version=6,
+    ).async_save(
+        {
+            "installation_total_liters": 12.0,
+            "zone_totals_liters": {},
+            "zone_measurement_quality": {},
+            "zone_last_delivered_liters": {},
+            "zone_last_duration_seconds": {},
+            "zone_safety_locks": {},
+            "unassigned_total_liters": 2.0,
+            "unassigned_measurement_quality": "measured",
+            "unassigned_measurement_origin": "cumulative_meter",
+            "idle_meter_raw_baseline_liters": 50.0,
+            "emergency_stop": False,
+            "installation_safety_lock": None,
+            "active_execution": {
+                "zone_id": "zone-1",
+                "zone_valve": "switch.zone_lawn",
+                "main_valve": None,
+                "meter_raw_baseline_liters": 50.0,
+                "prepared_at": "2026-07-21T10:00:00+00:00",
+                "watering_started_at": None,
+                "requested_duration_seconds": 60.0,
+                "estimated_flow_l_min": None,
+            },
+        }
+    )
+
+    state = await IrrigationStore(hass, "minor-six").async_load()
+
+    assert state.unassigned_measurement_quality == "measured"
+    assert state.unassigned_measurement_origin == "cumulative_meter"
+    assert state.idle_meter_raw_baseline_liters == 50
+    assert state.active_execution is not None
+    assert state.active_execution.requested_amount_liters is None
+    assert state.active_execution.meter_failure_strategy == "abort"
+    assert state.active_execution.fallback_checkpoint_at is None
 
 
 async def test_setup_closes_an_open_main_valve(hass: HomeAssistant) -> None:
@@ -248,6 +322,162 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
         ("turn_off", "switch.main"),
     ]
     assert persisted_zone_at_open == ["zone-1"]
+
+
+async def test_manual_volume_action_aborts_preflight_without_meter(
+    hass: HomeAssistant,
+) -> None:
+    """Use the safe zone default when a cumulative meter is unavailable."""
+    prepare_closed_switches(hass, "switch.zone_lawn")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Gartenbewässerung",
+        data={"name": "Gartenbewässerung"},
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    subentry = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                "name": "Rasen",
+                "zone_valve": "switch.zone_lawn",
+                "default_duration": 600,
+                "min_flow": 60,
+                "max_flow": 60,
+                "meter_failure_strategy": "estimated_time_fallback",
+            }
+        ),
+        subentry_id="subentry-1",
+        subentry_type="zone",
+        title="Rasen",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, subentry)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    with pytest.raises(HomeAssistantError, match="cumulative meter"):
+        await hass.services.async_call(
+            DOMAIN,
+            "start_manual",
+            {
+                "config_entry_id": entry.entry_id,
+                "zone_subentry_id": subentry.subentry_id,
+                "amount": 1,
+                "hard_time_limit": 60,
+            },
+            blocking=True,
+        )
+
+    assert hass.states.get("switch.zone_lawn").state == STATE_OFF
+
+
+async def test_manual_volume_action_uses_marked_estimated_fallback(
+    hass: HomeAssistant,
+) -> None:
+    """Use estimated continuation only when a configured meter fails preflight."""
+
+    async def turn_on(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_ON)
+
+    async def turn_off(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_OFF)
+
+    hass.services.async_register("switch", "turn_on", turn_on)
+    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.states.async_set("switch.zone_lawn", STATE_OFF)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Gartenbewässerung",
+        data={
+            "name": "Gartenbewässerung",
+            "water_meter": "sensor.unavailable_water_meter",
+        },
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    subentry = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                "name": "Rasen",
+                "zone_valve": "switch.zone_lawn",
+                "default_duration": 600,
+                "min_flow": 60,
+                "max_flow": 60,
+                "meter_failure_strategy": "estimated_time_fallback",
+            }
+        ),
+        subentry_id="subentry-1",
+        subentry_type="zone",
+        title="Rasen",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, subentry)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN,
+        "start_manual",
+        {
+            "config_entry_id": entry.entry_id,
+            "zone_subentry_id": subentry.subentry_id,
+            "amount": 0.01,
+            "hard_time_limit": 1,
+        },
+        blocking=True,
+    )
+
+    registry = er.async_get(hass)
+    quality_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_measurement_quality")
+    delivered_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_last_delivered")
+    assert quality_entity_id is not None
+    assert delivered_entity_id is not None
+    assert hass.states.get(quality_entity_id).state == "estimated"
+    assert float(hass.states.get(delivered_entity_id).state) == pytest.approx(0.01, abs=0.01)
+
+
+async def test_estimated_fallback_progress_is_persisted_at_every_tick(
+    hass: HomeAssistant,
+) -> None:
+    """Checkpoint each estimated amount so restart never loses completed ticks."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Gartenbewässerung",
+        data={"name": "Gartenbewässerung"},
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    manager = hass.data[DOMAIN][entry.entry_id]
+    now = datetime.now(UTC)
+    active = ActiveExecutionState(
+        zone_id="zone-1",
+        zone_valve="switch.zone_lawn",
+        main_valve=None,
+        meter_raw_baseline_liters=100,
+        prepared_at=(now - timedelta(seconds=10)).isoformat(),
+        watering_started_at=(now - timedelta(seconds=9)).isoformat(),
+        requested_duration_seconds=60,
+        estimated_flow_l_min=60,
+        requested_amount_liters=100,
+        hard_time_limit_seconds=60,
+        meter_failure_strategy="estimated_time_fallback",
+        fallback_started_at=(now - timedelta(seconds=5)).isoformat(),
+        delivered_liters_at_fallback=5,
+    )
+    manager._stored_state = StoredInstallationState(active_execution=active)
+
+    await manager._async_update_progress(remaining=90, quality="estimated")
+    first = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert first.active_execution is not None
+    assert first.active_execution.delivered_liters_at_fallback == 10
+    assert first.active_execution.fallback_checkpoint_at is not None
+
+    await manager._async_update_progress(remaining=85, quality="estimated")
+    second = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert second.active_execution is not None
+    assert second.active_execution.delivered_liters_at_fallback == 15
+    assert second.active_execution.fallback_checkpoint_at is not None
 
 
 @pytest.mark.parametrize(
@@ -683,6 +913,230 @@ async def test_setup_recovers_interrupted_execution_from_meter_baseline(
     assert hass.states.get(installation_entity_id).state == "25.0"
     assert operations == ["switch.zone_new", "switch.zone_lawn", "switch.main"]
     assert (await IrrigationStore(hass, entry.entry_id).async_load()).active_execution is None
+
+
+@pytest.mark.parametrize(("zone_state", "expected_liters"), [(STATE_ON, 25.0), (STATE_OFF, 0.0)])
+async def test_setup_recovers_opening_phase_only_when_valve_was_observed_open(
+    hass: HomeAssistant,
+    zone_state: str,
+    expected_liters: float,
+) -> None:
+    """Use raw meter delta after an unconfirmed open only when hardware could flow."""
+
+    async def turn_off(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_OFF)
+
+    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.states.async_set("switch.zone_lawn", zone_state)
+    hass.states.async_set(
+        "sensor.water_meter",
+        "125",
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolume.LITERS},
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Gartenbewässerung",
+        data={
+            "name": "Gartenbewässerung",
+            "water_meter": "sensor.water_meter",
+        },
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    subentry = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                "name": "Rasen",
+                "zone_valve": "switch.zone_lawn",
+                "default_duration": 600,
+            }
+        ),
+        subentry_id="subentry-1",
+        subentry_type="zone",
+        title="Rasen",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, subentry)
+    opening_at = datetime.now(UTC) - timedelta(seconds=2)
+    await IrrigationStore(hass, entry.entry_id).async_save(
+        StoredInstallationState(
+            active_execution=ActiveExecutionState(
+                zone_id="zone-1",
+                zone_valve="switch.zone_lawn",
+                main_valve=None,
+                meter_raw_baseline_liters=100,
+                prepared_at=(opening_at - timedelta(seconds=1)).isoformat(),
+                watering_started_at=None,
+                requested_duration_seconds=60,
+                estimated_flow_l_min=None,
+                requested_amount_liters=50,
+                hard_time_limit_seconds=60,
+                zone_opening_at=opening_at.isoformat(),
+            )
+        )
+    )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.active_execution is None
+    assert stored.installation_total_liters == expected_liters
+    if zone_state == STATE_ON:
+        assert stored.zone_last_delivered_liters["zone-1"] == 25
+        assert stored.zone_measurement_quality["zone-1"] == "measured"
+    else:
+        assert "zone-1" not in stored.zone_last_delivered_liters
+        assert "zone-1" not in stored.zone_measurement_quality
+
+
+@pytest.mark.parametrize(
+    ("requested_amount", "checkpoint_age_seconds", "hard_limit", "expected_liters"),
+    [
+        (20.0, None, 10.0, 13.0),
+        (9.0, None, 10.0, 9.0),
+        (20.0, 2.0, 200.0, 6.0),
+    ],
+)
+async def test_setup_caps_durable_fallback_recovery_after_long_downtime(
+    hass: HomeAssistant,
+    requested_amount: float,
+    checkpoint_age_seconds: float | None,
+    hard_limit: float,
+    expected_liters: float,
+) -> None:
+    """Cap downtime estimation by hard runtime and remaining target duration."""
+
+    async def turn_off(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_OFF)
+
+    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.states.async_set("switch.zone_lawn", STATE_ON)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Gartenbewässerung",
+        data={"name": "Gartenbewässerung"},
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    subentry = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                "name": "Rasen",
+                "zone_valve": "switch.zone_lawn",
+                "default_duration": 600,
+            }
+        ),
+        subentry_id="subentry-1",
+        subentry_type="zone",
+        title="Rasen",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, subentry)
+    fallback_started = datetime.now(UTC) - timedelta(seconds=100)
+    await IrrigationStore(hass, entry.entry_id).async_save(
+        StoredInstallationState(
+            active_execution=ActiveExecutionState(
+                zone_id="zone-1",
+                zone_valve="switch.zone_lawn",
+                main_valve=None,
+                meter_raw_baseline_liters=100,
+                prepared_at=(fallback_started - timedelta(seconds=1)).isoformat(),
+                watering_started_at=(fallback_started - timedelta(seconds=1)).isoformat(),
+                requested_duration_seconds=60,
+                estimated_flow_l_min=60,
+                requested_amount_liters=requested_amount,
+                hard_time_limit_seconds=hard_limit,
+                meter_failure_strategy="estimated_time_fallback",
+                fallback_started_at=fallback_started.isoformat(),
+                fallback_checkpoint_at=(
+                    (datetime.now(UTC) - timedelta(seconds=checkpoint_age_seconds)).isoformat()
+                    if checkpoint_age_seconds is not None
+                    else None
+                ),
+                delivered_liters_at_fallback=4,
+            )
+        )
+    )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.active_execution is None
+    assert stored.zone_measurement_quality["zone-1"] == "estimated"
+    assert stored.zone_last_delivered_liters["zone-1"] == pytest.approx(expected_liters, abs=0.1)
+
+
+@pytest.mark.parametrize(("confirmed", "expected_liters"), [(False, 0.0), (True, 4.0)])
+async def test_setup_does_not_estimate_elapsed_closed_fallback_phase(
+    hass: HomeAssistant,
+    confirmed: bool,
+    expected_liters: float,
+) -> None:
+    """Require confirmation and possible flow before estimating fallback elapsed time."""
+
+    async def turn_off(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_OFF)
+
+    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.states.async_set("switch.zone_lawn", STATE_OFF)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Gartenbewässerung",
+        data={"name": "Gartenbewässerung"},
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    subentry = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                "name": "Rasen",
+                "zone_valve": "switch.zone_lawn",
+                "default_duration": 600,
+            }
+        ),
+        subentry_id="subentry-1",
+        subentry_type="zone",
+        title="Rasen",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, subentry)
+    opening_at = datetime.now(UTC) - timedelta(seconds=30)
+    await IrrigationStore(hass, entry.entry_id).async_save(
+        StoredInstallationState(
+            active_execution=ActiveExecutionState(
+                zone_id="zone-1",
+                zone_valve="switch.zone_lawn",
+                main_valve=None,
+                meter_raw_baseline_liters=None,
+                prepared_at=(opening_at - timedelta(seconds=1)).isoformat(),
+                watering_started_at=opening_at.isoformat() if confirmed else None,
+                requested_duration_seconds=60,
+                estimated_flow_l_min=60,
+                requested_amount_liters=20,
+                hard_time_limit_seconds=60,
+                meter_failure_strategy="estimated_time_fallback",
+                zone_opening_at=opening_at.isoformat(),
+                fallback_started_at=opening_at.isoformat(),
+                fallback_checkpoint_at=(opening_at + timedelta(seconds=25)).isoformat(),
+                delivered_liters_at_fallback=4 if confirmed else 0,
+            )
+        )
+    )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.active_execution is None
+    assert stored.installation_total_liters == expected_liters
+    if confirmed:
+        assert stored.zone_last_delivered_liters["zone-1"] == 4
+        assert stored.zone_measurement_quality["zone-1"] == "estimated"
+    else:
+        assert "zone-1" not in stored.zone_last_delivered_liters
+        assert "zone-1" not in stored.zone_measurement_quality
 
 
 async def test_persistent_idle_flow_closes_valves_and_sets_installation_lock(

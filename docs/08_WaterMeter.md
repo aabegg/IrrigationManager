@@ -70,7 +70,7 @@ Jede Menge trägt eine Herkunft:
 - aus kalibriertem Durchfluss und Laufzeit geschätzt
 - unbekannt
 
-Bei Ausfall des kumulativen Zählers darf eine gültige Durchflussrate integriert werden. Danach gilt die zonenspezifische Zählerausfallstrategie: Vorgang abbrechen oder auf Zeitsteuerung mit Schätzung wechseln.
+Bei Ausfall eines konfigurierten kumulativen Zählers darf eine gültige Durchflussrate integriert werden. Danach gilt die zonenspezifische Zählerausfallstrategie: Vorgang abbrechen oder auf Zeitsteuerung mit Schätzung wechseln. Ohne konfigurierten kumulativen Zähler sind Mengenziele unabhängig von der Zählerausfallstrategie unzulässig.
 
 ## Messauflösung
 

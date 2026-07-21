@@ -138,6 +138,8 @@ Das Hauptventil wird zwischen Zonen und Teilgaben geschlossen.
 
 - ohne plausible Mengenquelle gilt die zonenspezifische Zählerausfallstrategie
 - harter Zeit-Timeout bleibt immer aktiv
+- das harte Laufzeitlimit bestimmt den Zeitpunkt, an dem die Schließbefehle ausgelöst werden; die anschließende Rückmeldeprüfung aller Schließbefehle verwendet ein gemeinsames, separat begrenztes Bestätigungsbudget und verlängert keine Wasserabgabe absichtlich
+- das gemeinsame Bestätigungsbudget ist eine feste Sicherheitsgrenze und wird nicht durch ein kurzes Bewässerungslimit verkürzt; alle erforderlichen Schließbefehle werden zu Beginn dieses Budgets parallel ausgelöst
 - kalibrierte Vorabschaltung darf das Ziel nicht über Sicherheitsgrenzen hinaus verlängern
 - tatsächliche Endmenge ist maßgeblich, nicht das Soll
 
@@ -156,6 +158,7 @@ Das Hauptventil wird zwischen Zonen und Teilgaben geschlossen.
 - beim Start unabhängig vom gespeicherten Zustand alle zugeordneten Ventile schließen
 - alle offenen Vorgänge einschließlich Sickerpausen als unterbrochen markieren
 - noch erfassbare Menge der zuletzt aktiven Teilgabe verbuchen
+- bei geschätztem Zählerfallback den zuletzt persistent bestätigten Mengenfortschritt verwenden; nur bei beobachtetem möglichen Durchfluss darf ab diesem Checkpoint begrenzt weitergeschätzt werden
 - automatische Aufträge neu planen
 - manuelle Aufträge laden und auf Ablauf prüfen
 - persistente Sperren beibehalten

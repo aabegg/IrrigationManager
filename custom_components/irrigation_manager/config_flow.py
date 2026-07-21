@@ -20,6 +20,8 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
     TextSelector,
 )
 
@@ -33,11 +35,14 @@ from .const import (
     CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
     CONF_MAX_FLOW,
+    CONF_METER_FAILURE_STRATEGY,
     CONF_MIN_FLOW,
     CONF_WATER_METER,
     CONF_WEATHER_ENTITY,
     CONF_ZONE_VALVE,
     DOMAIN,
+    METER_FAILURE_ABORT,
+    METER_FAILURE_ESTIMATED_TIME_FALLBACK,
     SUBENTRY_TYPE_ZONE,
 )
 
@@ -127,6 +132,12 @@ ZONE_SCHEMA = vol.Schema(
                 step=1,
                 mode=NumberSelectorMode.BOX,
                 unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_METER_FAILURE_STRATEGY, default=METER_FAILURE_ABORT): SelectSelector(
+            SelectSelectorConfig(
+                options=[METER_FAILURE_ABORT, METER_FAILURE_ESTIMATED_TIME_FALLBACK],
+                translation_key=CONF_METER_FAILURE_STRATEGY,
             )
         ),
     }

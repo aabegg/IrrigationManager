@@ -18,5 +18,9 @@ CONF_DEFAULT_DURATION: Final = "default_duration"
 CONF_MIN_FLOW: Final = "min_flow"
 CONF_MAX_FLOW: Final = "max_flow"
 CONF_FLOW_GRACE_SECONDS: Final = "flow_grace_seconds"
+CONF_METER_FAILURE_STRATEGY: Final = "meter_failure_strategy"
+
+METER_FAILURE_ABORT: Final = "abort"
+METER_FAILURE_ESTIMATED_TIME_FALLBACK: Final = "estimated_time_fallback"
 
 SUBENTRY_TYPE_ZONE: Final = "zone"

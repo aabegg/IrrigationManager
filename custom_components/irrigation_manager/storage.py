@@ -8,7 +8,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 6
+STORAGE_MINOR_VERSION = 7
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -22,7 +22,7 @@ class _StateStore(Store[dict[str, object]]):
         old_data: dict[str, object],
     ) -> dict[str, object]:
         """Add fields introduced by additive 1.x schema revisions."""
-        if old_major_version == 1 and old_minor_version in {1, 2, 3, 4, 5}:
+        if old_major_version == 1 and old_minor_version in {1, 2, 3, 4, 5, 6}:
             migrated = dict(old_data)
             if old_minor_version == 1:
                 migrated["active_execution"] = None
@@ -33,9 +33,22 @@ class _StateStore(Store[dict[str, object]]):
                 migrated["zone_safety_locks"] = {}
             if old_minor_version < 5:
                 migrated["installation_safety_lock"] = None
-            migrated["unassigned_measurement_quality"] = "unknown"
-            migrated["unassigned_measurement_origin"] = "unknown"
-            migrated["idle_meter_raw_baseline_liters"] = None
+            if old_minor_version < 6:
+                migrated["unassigned_measurement_quality"] = "unknown"
+                migrated["unassigned_measurement_origin"] = "unknown"
+                migrated["idle_meter_raw_baseline_liters"] = None
+            if old_minor_version == 6:
+                raw_active = migrated.get("active_execution")
+                if isinstance(raw_active, dict):
+                    raw_active = dict(raw_active)
+                    raw_active["requested_amount_liters"] = None
+                    raw_active["hard_time_limit_seconds"] = None
+                    raw_active["meter_failure_strategy"] = "abort"
+                    raw_active["zone_opening_at"] = None
+                    raw_active["fallback_started_at"] = None
+                    raw_active["fallback_checkpoint_at"] = None
+                    raw_active["delivered_liters_at_fallback"] = 0.0
+                    migrated["active_execution"] = raw_active
             return migrated
         raise NotImplementedError
 

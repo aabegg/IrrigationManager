@@ -20,6 +20,10 @@ class InstallationSnapshot:
     active_zone_id: str | None = None
     emergency_stop: bool = False
     installation_safety_lock: str | None = None
+    active_target_type: str | None = None
+    active_target_value: float | None = None
+    active_remaining_value: float | None = None
+    active_measurement_quality: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +38,13 @@ class ActiveExecutionState:
     watering_started_at: str | None
     requested_duration_seconds: float
     estimated_flow_l_min: float | None
+    requested_amount_liters: float | None = None
+    hard_time_limit_seconds: float | None = None
+    meter_failure_strategy: str = "abort"
+    zone_opening_at: str | None = None
+    fallback_started_at: str | None = None
+    fallback_checkpoint_at: str | None = None
+    delivered_liters_at_fallback: float = 0.0
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> ActiveExecutionState:
@@ -68,6 +79,19 @@ class ActiveExecutionState:
                 data.get("requested_duration_seconds")
             ),
             estimated_flow_l_min=optional_float("estimated_flow_l_min"),
+            requested_amount_liters=optional_float("requested_amount_liters"),
+            hard_time_limit_seconds=optional_float("hard_time_limit_seconds"),
+            meter_failure_strategy=(
+                required_string("meter_failure_strategy")
+                if "meter_failure_strategy" in data
+                else "abort"
+            ),
+            zone_opening_at=optional_string("zone_opening_at"),
+            fallback_started_at=optional_string("fallback_started_at"),
+            fallback_checkpoint_at=optional_string("fallback_checkpoint_at"),
+            delivered_liters_at_fallback=StoredInstallationState._float(
+                data.get("delivered_liters_at_fallback", 0.0)
+            ),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -81,6 +105,13 @@ class ActiveExecutionState:
             "watering_started_at": self.watering_started_at,
             "requested_duration_seconds": self.requested_duration_seconds,
             "estimated_flow_l_min": self.estimated_flow_l_min,
+            "requested_amount_liters": self.requested_amount_liters,
+            "hard_time_limit_seconds": self.hard_time_limit_seconds,
+            "meter_failure_strategy": self.meter_failure_strategy,
+            "zone_opening_at": self.zone_opening_at,
+            "fallback_started_at": self.fallback_started_at,
+            "fallback_checkpoint_at": self.fallback_checkpoint_at,
+            "delivered_liters_at_fallback": self.delivered_liters_at_fallback,
         }
 
 

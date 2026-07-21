@@ -14,6 +14,7 @@ ATTR_CONFIG_ENTRY_ID = "config_entry_id"
 ATTR_ZONE_SUBENTRY_ID = "zone_subentry_id"
 ATTR_DURATION = "duration"
 ATTR_AMOUNT = "amount"
+ATTR_HARD_TIME_LIMIT = "hard_time_limit"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_STOP = "stop"
@@ -23,12 +24,34 @@ SERVICE_RESET_ZONE_SAFETY = "reset_zone_safety"
 SERVICE_RESET_INSTALLATION_SAFETY = "reset_installation_safety"
 SERVICE_ASSIGN_WATER = "assign_water"
 
-START_MANUAL_SCHEMA = vol.Schema(
-    {
-        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
-        vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
-        vol.Required(ATTR_DURATION): vol.All(vol.Coerce(float), vol.Range(min=0.001, max=14_400)),
-    }
+
+def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
+    """Require exactly one target and a hard limit for volume control."""
+    target_count = sum(key in data for key in (ATTR_DURATION, ATTR_AMOUNT))
+    if target_count != 1:
+        raise vol.Invalid("Exactly one of duration or amount must be provided")
+    if ATTR_AMOUNT in data and ATTR_HARD_TIME_LIMIT not in data:
+        raise vol.Invalid("Amount targets require hard_time_limit")
+    if ATTR_DURATION in data and ATTR_HARD_TIME_LIMIT in data:
+        raise vol.Invalid("hard_time_limit is only valid for amount targets")
+    return data
+
+
+START_MANUAL_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+            vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+            vol.Optional(ATTR_DURATION): vol.All(
+                vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+            ),
+            vol.Optional(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+            vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(
+                vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+            ),
+        }
+    ),
+    _validate_manual_target,
 )
 STOP_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
 ASSIGN_WATER_SCHEMA = vol.Schema(
@@ -52,7 +75,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
     async def start_manual(call: ServiceCall) -> None:
         await manager_for(call).async_start_manual(
             zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
-            duration_seconds=cast(float, call.data[ATTR_DURATION]),
+            duration_seconds=cast(float | None, call.data.get(ATTR_DURATION)),
+            amount_liters=cast(float | None, call.data.get(ATTR_AMOUNT)),
+            hard_time_limit_seconds=cast(float | None, call.data.get(ATTR_HARD_TIME_LIMIT)),
         )
 
     async def stop(call: ServiceCall) -> None:

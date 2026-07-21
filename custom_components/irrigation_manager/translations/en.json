@@ -1,5 +1,26 @@
 {
   "title": "Irrigation Manager",
+  "services": {
+    "start_manual": {
+      "name": "Start manual irrigation",
+      "description": "Start one zone with exactly one duration or volume target.",
+      "fields": {
+        "config_entry_id": {"name": "Irrigation installation"},
+        "zone_subentry_id": {"name": "Irrigation zone"},
+        "duration": {"name": "Duration", "description": "Time target in seconds."},
+        "amount": {"name": "Amount", "description": "Volume target in liters."},
+        "hard_time_limit": {"name": "Hard time limit", "description": "Required safety timeout in seconds for a volume target."}
+      }
+    }
+  },
+  "selector": {
+    "meter_failure_strategy": {
+      "options": {
+        "abort": "Abort",
+        "estimated_time_fallback": "Estimated time fallback"
+      }
+    }
+  },
   "entity": {
     "binary_sensor": {
       "emergency_stop": {
@@ -92,7 +113,11 @@
             "default_duration": "Default manual duration",
             "min_flow": "Minimum expected flow",
             "max_flow": "Maximum expected flow",
-            "flow_grace_seconds": "Flow stabilization time"
+            "flow_grace_seconds": "Flow stabilization time",
+            "meter_failure_strategy": "Meter failure strategy"
+          },
+          "data_description": {
+            "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, volume targets are unavailable."
           }
         },
         "reconfigure": {
@@ -103,7 +128,11 @@
             "default_duration": "Default manual duration",
             "min_flow": "Minimum expected flow",
             "max_flow": "Maximum expected flow",
-            "flow_grace_seconds": "Flow stabilization time"
+            "flow_grace_seconds": "Flow stabilization time",
+            "meter_failure_strategy": "Meter failure strategy"
+          },
+          "data_description": {
+            "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, volume targets are unavailable."
           }
         }
       },

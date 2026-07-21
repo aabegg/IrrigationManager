@@ -51,6 +51,19 @@ class FakeMeter:
         return next(self.readings)
 
 
+class FailingMeter:
+    """Return readings until a deterministic meter failure occurs."""
+
+    def __init__(self, readings: Sequence[float | Exception]) -> None:
+        self.readings = iter(readings)
+
+    async def read_liters(self) -> float:
+        reading = next(self.readings)
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+
 class FakeFlow:
     """Return deterministic instantaneous flow readings."""
 
@@ -93,6 +106,38 @@ class BlockingClock:
         return self.elapsed
 
 
+class FallbackBlockingClock:
+    """Advance through meter fallback, then block for cancellation."""
+
+    def __init__(self) -> None:
+        self.sleeps = 0
+        self.elapsed = 0.0
+        self.blocked = asyncio.Event()
+
+    async def sleep(self, seconds: float) -> None:
+        if seconds == 0:
+            return
+        self.sleeps += 1
+        if self.sleeps <= 2:
+            self.elapsed += seconds
+            return
+        self.blocked.set()
+        await asyncio.Event().wait()
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+
+class RealClock:
+    """Use the event loop clock for absolute-deadline tests."""
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+    def monotonic(self) -> float:
+        return asyncio.get_running_loop().time()
+
+
 async def test_execute_timed_waters_one_zone_and_attributes_meter_delta() -> None:
     """Open main then zone, close safely, and assign measured consumption."""
     actuators = FakeActuators()
@@ -122,6 +167,374 @@ async def test_execute_timed_waters_one_zone_and_attributes_meter_delta() -> Non
     assert clock.sleeps == [60, 5]
     assert result.zone_id == "lawn"
     assert result.delivered_liters == 25.0
+    assert actuators.open_valves == set()
+
+
+async def test_volume_target_closes_when_cumulative_meter_reaches_target() -> None:
+    """Poll the cumulative meter and close immediately after observing the target."""
+    actuators = FakeActuators()
+    clock = FakeClock()
+    executor = IrrigationExecutor(
+        actuators=actuators,
+        meter=FakeMeter([100, 104, 110, 112]),
+        clock=clock,
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            amount_liters=10,
+            hard_time_limit_seconds=60,
+            monitor_interval_seconds=1,
+        )
+    )
+
+    assert clock.sleeps == [1, 1, 0]
+    assert result.target_reached
+    assert result.delivered_liters == 12
+    assert result.duration_seconds == 2
+    assert result.measurement_quality == "measured"
+    assert actuators.open_valves == set()
+
+
+async def test_volume_target_hard_timeout_closes_and_reports_partial_amount() -> None:
+    """Never keep watering beyond the configured volume safety timeout."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FakeMeter([100, 102, 104, 104]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            amount_liters=10,
+            hard_time_limit_seconds=2,
+            monitor_interval_seconds=1,
+        )
+    )
+
+    assert not result.target_reached
+    assert result.delivered_liters == 4
+    assert result.duration_seconds == 2
+    assert result.safety_violation == "Hard time limit reached before volume target"
+
+
+async def test_volume_meter_failure_aborts_without_losing_partial_measurement() -> None:
+    """Close on meter loss and retain the last valid cumulative delta."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FailingMeter([100, 104, RuntimeError("offline"), RuntimeError("offline")]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            amount_liters=10,
+            hard_time_limit_seconds=60,
+            monitor_interval_seconds=1,
+        )
+    )
+
+    assert result.delivered_liters == 4
+    assert result.duration_seconds == 2
+    assert "Water meter failed" in (result.safety_violation or "")
+    assert result.measurement_quality == "measured"
+
+
+async def test_volume_meter_failure_can_finish_with_explicit_estimated_fallback() -> None:
+    """Preserve measured water and estimate only the remainder from the flow profile."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FailingMeter([100, 104, RuntimeError("offline")]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            amount_liters=10,
+            hard_time_limit_seconds=20,
+            monitor_interval_seconds=1,
+            meter_failure_strategy="estimated_time_fallback",
+            estimated_flow_l_min=60,
+        )
+    )
+
+    assert result.target_reached
+    assert result.delivered_liters == 10
+    assert result.duration_seconds == 7
+    assert result.measurement_quality == "estimated"
+
+
+async def test_initial_meter_read_can_enter_explicit_estimated_fallback() -> None:
+    """Handle meter loss between manager preflight and executor baseline read."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FailingMeter([RuntimeError("offline")]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            amount_liters=2,
+            hard_time_limit_seconds=3,
+            monitor_interval_seconds=1,
+            meter_failure_strategy="estimated_time_fallback",
+            estimated_flow_l_min=60,
+        )
+    )
+
+    assert result.target_reached
+    assert result.delivered_liters == 2
+    assert result.duration_seconds == 2
+    assert result.measurement_quality == "estimated"
+
+
+async def test_cancellation_preserves_measured_and_estimated_fallback_progress() -> None:
+    """Return the latest mixed-quality amount when cancellation interrupts a wait."""
+    clock = FallbackBlockingClock()
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FailingMeter([100, 104, RuntimeError("offline")]),
+        clock=clock,
+    )
+    task = asyncio.create_task(
+        executor.execute(
+            ExecutionRequest(
+                zone_id="lawn",
+                zone_valve="switch.zone_lawn",
+                main_valve=None,
+                amount_liters=100,
+                hard_time_limit_seconds=60,
+                monitor_interval_seconds=1,
+                meter_failure_strategy="estimated_time_fallback",
+                estimated_flow_l_min=60,
+            )
+        )
+    )
+    await clock.blocked.wait()
+    clock.elapsed = 5
+
+    task.cancel()
+    result = await task
+
+    assert result.stopped
+    assert result.delivered_liters == 8
+    assert result.duration_seconds == 5
+    assert result.measurement_quality == "estimated"
+    assert not result.target_reached
+
+
+async def test_volume_deadline_includes_progress_persistence_overhead() -> None:
+    """Bound valve checks, meter reads, and progress writes by one deadline."""
+
+    class DelayedActuators(FakeActuators):
+        async def is_open(self, entity_id: str) -> bool:
+            await asyncio.sleep(0.005)
+            return await super().is_open(entity_id)
+
+    class DelayedMeter(FakeMeter):
+        async def read_liters(self) -> float:
+            await asyncio.sleep(0.005)
+            return await super().read_liters()
+
+    actuators = DelayedActuators()
+    clock = RealClock()
+    progress_started = asyncio.Event()
+    progress_completed = False
+
+    async def persist_progress(_remaining: float, _quality: str) -> None:
+        nonlocal progress_completed
+        progress_started.set()
+        await asyncio.sleep(0.2)
+        progress_completed = True
+
+    executor = IrrigationExecutor(
+        actuators=actuators,
+        meter=DelayedMeter([100, 101, 101]),
+        clock=clock,
+    )
+    started_at = clock.monotonic()
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            amount_liters=100,
+            hard_time_limit_seconds=0.03,
+            monitor_interval_seconds=0.001,
+            on_progress=persist_progress,
+        )
+    )
+    elapsed = clock.monotonic() - started_at
+
+    assert progress_started.is_set()
+    assert not progress_completed
+    assert elapsed < 0.1
+    assert result.duration_seconds == pytest.approx(0.03, abs=0.02)
+    assert result.delivered_liters == 1
+    assert result.safety_violation == "Hard time limit reached before volume target"
+    assert actuators.open_valves == set()
+
+
+async def test_volume_deadline_closes_zone_when_open_feedback_never_confirms() -> None:
+    """Start the hard deadline before open confirmation can block indefinitely."""
+
+    class UnconfirmedActuators(FakeActuators):
+        async def is_open(self, entity_id: str) -> bool:
+            if entity_id == "switch.zone_lawn":
+                await asyncio.sleep(0.2)
+            return await super().is_open(entity_id)
+
+    actuators = UnconfirmedActuators()
+    clock = RealClock()
+    confirmed = False
+
+    async def mark_confirmed() -> None:
+        nonlocal confirmed
+        confirmed = True
+
+    executor = IrrigationExecutor(
+        actuators=actuators,
+        meter=FakeMeter([100, 102]),
+        clock=clock,
+    )
+    started_at = clock.monotonic()
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            amount_liters=10,
+            hard_time_limit_seconds=0.03,
+            monitor_interval_seconds=0.001,
+            on_zone_opened=mark_confirmed,
+        )
+    )
+    elapsed = clock.monotonic() - started_at
+
+    assert not confirmed
+    assert elapsed < 0.1
+    assert result.duration_seconds == pytest.approx(0.03, abs=0.02)
+    assert result.delivered_liters == 2
+    assert result.safety_violation == "Hard time limit reached before volume target"
+    assert actuators.operations == [
+        ("open", "switch.zone_lawn"),
+        ("close", "switch.zone_lawn"),
+    ]
+    assert actuators.open_valves == set()
+
+
+async def test_volume_deadline_starts_before_main_feedback_confirmation() -> None:
+    """Bound main-valve confirmation and still attempt cleanup for every valve."""
+
+    class UnconfirmedMainActuators(FakeActuators):
+        async def is_open(self, entity_id: str) -> bool:
+            if entity_id == "switch.main":
+                await asyncio.sleep(0.2)
+            return await super().is_open(entity_id)
+
+    actuators = UnconfirmedMainActuators()
+    clock = RealClock()
+    zone_opening_marked = False
+
+    async def mark_zone_opening() -> None:
+        nonlocal zone_opening_marked
+        zone_opening_marked = True
+
+    executor = IrrigationExecutor(
+        actuators=actuators,
+        meter=FakeMeter([100, 100]),
+        clock=clock,
+    )
+    started_at = clock.monotonic()
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve="switch.main",
+            amount_liters=10,
+            hard_time_limit_seconds=0.03,
+            monitor_interval_seconds=0.001,
+            on_zone_opening=mark_zone_opening,
+        )
+    )
+    elapsed = clock.monotonic() - started_at
+
+    assert not zone_opening_marked
+    assert elapsed < 0.1
+    assert result.delivered_liters == 0
+    assert result.safety_violation == "Hard time limit reached before volume target"
+    assert actuators.operations == [
+        ("open", "switch.main"),
+        ("close", "switch.zone_lawn"),
+        ("close", "switch.main"),
+    ]
+    assert actuators.open_valves == set()
+
+
+async def test_volume_deadline_bounds_hanging_close_feedback_and_retries_cleanup() -> None:
+    """Do not hang when closure succeeds physically but feedback never returns."""
+
+    class HangingCloseActuators(FakeActuators):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed_closes: list[str] = []
+
+        async def close(self, entity_id: str) -> None:
+            self.operations.append(("close", entity_id))
+            self.open_valves.discard(entity_id)
+            await asyncio.sleep(0.2)
+            self.completed_closes.append(entity_id)
+
+    actuators = HangingCloseActuators()
+    clock = RealClock()
+    executor = IrrigationExecutor(
+        actuators=actuators,
+        meter=FakeMeter([100, 110, 110]),
+        clock=clock,
+    )
+    started_at = clock.monotonic()
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve="switch.main",
+            amount_liters=10,
+            hard_time_limit_seconds=0.05,
+            monitor_interval_seconds=0.001,
+        )
+    )
+    elapsed = clock.monotonic() - started_at
+
+    assert 0.2 < elapsed < 0.4
+    assert result.delivered_liters == 10
+    assert "Hard time limit" in (result.safety_violation or "")
+    assert actuators.operations == [
+        ("open", "switch.main"),
+        ("open", "switch.zone_lawn"),
+        ("close", "switch.zone_lawn"),
+        ("close", "switch.zone_lawn"),
+        ("close", "switch.main"),
+    ]
+    assert actuators.completed_closes == ["switch.zone_lawn", "switch.main"]
     assert actuators.open_valves == set()
 
 
