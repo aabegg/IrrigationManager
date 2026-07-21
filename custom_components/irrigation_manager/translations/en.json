@@ -1,0 +1,68 @@
+{
+  "title": "Irrigation Manager",
+  "entity": {
+    "sensor": {
+      "water_total": {
+        "name": "Water consumption"
+      },
+      "unassigned_water_total": {
+        "name": "Unassigned water consumption"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Create irrigation installation",
+        "description": "Configure the shared water supply. Irrigation zones are added afterwards.",
+        "data": {
+          "name": "Name",
+          "main_valve": "Main valve",
+          "water_meter": "Cumulative water meter",
+          "flow_sensor": "Flow sensor",
+          "weather_entity": "Weather entity"
+        },
+        "data_description": {
+          "main_valve": "Optional switch or valve that isolates the complete installation.",
+          "water_meter": "Optional cumulative water sensor. Without it only time control is available.",
+          "flow_sensor": "Optional rate sensor for faster flow safety checks.",
+          "weather_entity": "Optional source for weather measurements and forecasts."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This irrigation installation is already configured."
+    }
+  },
+  "config_subentries": {
+    "zone": {
+      "title": "Irrigation zone",
+      "step": {
+        "user": {
+          "title": "Add irrigation zone",
+          "description": "A zone is one independently switched irrigation area behind one logical valve.",
+          "data": {
+            "name": "Name",
+            "zone_valve": "Zone valve",
+            "default_duration": "Default manual duration",
+            "min_flow": "Minimum expected flow",
+            "max_flow": "Maximum expected flow"
+          }
+        },
+        "reconfigure": {
+          "title": "Update irrigation zone",
+          "data": {
+            "name": "Name",
+            "zone_valve": "Zone valve",
+            "default_duration": "Default manual duration",
+            "min_flow": "Minimum expected flow",
+            "max_flow": "Maximum expected flow"
+          }
+        }
+      },
+      "abort": {
+        "already_configured": "This zone valve is already configured."
+      }
+    }
+  }
+}

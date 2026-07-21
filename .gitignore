@@ -1,0 +1,14 @@
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+coverage.xml
+htmlcov/
+node_modules/
+frontend/dist/
+custom_components/irrigation_manager/frontend/*.js
+custom_components/irrigation_manager/frontend/*.map
+dist/

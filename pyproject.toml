@@ -1,0 +1,87 @@
+[project]
+name = "home-assistant-irrigation-manager"
+version = "0.1.0"
+description = "UI-first irrigation planning and control for Home Assistant"
+readme = "README.md"
+requires-python = ">=3.14.2,<3.15"
+license = "MIT"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy==2.3.0",
+  "pytest-homeassistant-custom-component==0.13.346",
+  "ruff==0.15.21",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_debug = true
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["custom_components.irrigation_manager"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "@overload",
+  "raise NotImplementedError",
+]
+
+[tool.ruff]
+target-version = "py314"
+required-version = ">=0.15.21"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+  "ASYNC",
+  "B",
+  "BLE",
+  "D",
+  "E",
+  "F",
+  "I",
+  "LOG",
+  "PERF",
+  "PT",
+  "RUF",
+  "SIM",
+  "UP",
+  "W",
+]
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D102", "D107"]
+
+[tool.mypy]
+python_version = "3.14"
+platform = "linux"
+files = ["custom_components/irrigation_manager"]
+strict = true
+show_error_codes = true
+warn_unreachable = true
+warn_unused_ignores = true
+enable_error_code = [
+  "deprecated",
+  "explicit-override",
+  "ignore-without-code",
+  "redundant-self",
+  "truthy-iterable",
+]
+disable_error_code = ["import-untyped"]

@@ -1,0 +1,68 @@
+{
+  "title": "Irrigation Manager",
+  "entity": {
+    "sensor": {
+      "water_total": {
+        "name": "Wasserverbrauch"
+      },
+      "unassigned_water_total": {
+        "name": "Unzugeordneter Wasserverbrauch"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Bewässerungsanlage anlegen",
+        "description": "Konfiguriere die gemeinsame Wasserzufuhr. Bewässerungszonen werden anschließend hinzugefügt.",
+        "data": {
+          "name": "Name",
+          "main_valve": "Hauptventil",
+          "water_meter": "Kumulativer Wasserzähler",
+          "flow_sensor": "Durchflusssensor",
+          "weather_entity": "Wetter-Entity"
+        },
+        "data_description": {
+          "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
+          "water_meter": "Optionaler kumulativer Wassersensor. Ohne ihn ist nur Zeitsteuerung möglich.",
+          "flow_sensor": "Optionale Durchflussrate für schnellere Sicherheitsprüfungen.",
+          "weather_entity": "Optionale Quelle für Wettermessungen und Prognosen."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Diese Bewässerungsanlage ist bereits konfiguriert."
+    }
+  },
+  "config_subentries": {
+    "zone": {
+      "title": "Bewässerungszone",
+      "step": {
+        "user": {
+          "title": "Bewässerungszone hinzufügen",
+          "description": "Eine Zone ist ein unabhängig schaltbarer Bewässerungsbereich hinter genau einem logischen Ventil.",
+          "data": {
+            "name": "Name",
+            "zone_valve": "Zonenventil",
+            "default_duration": "Standarddauer für manuelle Bewässerung",
+            "min_flow": "Minimal erwarteter Durchfluss",
+            "max_flow": "Maximal erwarteter Durchfluss"
+          }
+        },
+        "reconfigure": {
+          "title": "Bewässerungszone bearbeiten",
+          "data": {
+            "name": "Name",
+            "zone_valve": "Zonenventil",
+            "default_duration": "Standarddauer für manuelle Bewässerung",
+            "min_flow": "Minimal erwarteter Durchfluss",
+            "max_flow": "Maximal erwarteter Durchfluss"
+          }
+        }
+      },
+      "abort": {
+        "already_configured": "Dieses Zonenventil ist bereits konfiguriert."
+      }
+    }
+  }
+}
