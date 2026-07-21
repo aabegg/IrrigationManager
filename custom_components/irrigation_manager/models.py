@@ -16,6 +16,68 @@ class InstallationSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ActiveExecutionState:
+    """Minimum durable state needed to recover an interrupted dose."""
+
+    zone_id: str
+    zone_valve: str
+    main_valve: str | None
+    meter_raw_baseline_liters: float | None
+    prepared_at: str
+    watering_started_at: str | None
+    requested_duration_seconds: float
+    estimated_flow_l_min: float | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> ActiveExecutionState:
+        """Deserialize and validate an active execution record."""
+
+        def required_string(key: str) -> str:
+            value = data.get(key)
+            if not isinstance(value, str):
+                raise ValueError(f"Stored active execution {key} is malformed")
+            return value
+
+        def optional_string(key: str) -> str | None:
+            value = data.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"Stored active execution {key} is malformed")
+            return value
+
+        def optional_float(key: str) -> float | None:
+            value = data.get(key)
+            if value is None:
+                return None
+            return StoredInstallationState._float(value)
+
+        return cls(
+            zone_id=required_string("zone_id"),
+            zone_valve=required_string("zone_valve"),
+            main_valve=optional_string("main_valve"),
+            meter_raw_baseline_liters=optional_float("meter_raw_baseline_liters"),
+            prepared_at=required_string("prepared_at"),
+            watering_started_at=optional_string("watering_started_at"),
+            requested_duration_seconds=StoredInstallationState._float(
+                data.get("requested_duration_seconds")
+            ),
+            estimated_flow_l_min=optional_float("estimated_flow_l_min"),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the active execution for Home Assistant storage."""
+        return {
+            "zone_id": self.zone_id,
+            "zone_valve": self.zone_valve,
+            "main_valve": self.main_valve,
+            "meter_raw_baseline_liters": self.meter_raw_baseline_liters,
+            "prepared_at": self.prepared_at,
+            "watering_started_at": self.watering_started_at,
+            "requested_duration_seconds": self.requested_duration_seconds,
+            "estimated_flow_l_min": self.estimated_flow_l_min,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class StoredInstallationState:
     """Versioned critical state persisted independently of entities."""
 
@@ -24,6 +86,7 @@ class StoredInstallationState:
     zone_measurement_quality: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
     emergency_stop: bool = False
+    active_execution: ActiveExecutionState | None = None
 
     @staticmethod
     def _float(value: object) -> float:
@@ -49,12 +112,20 @@ class StoredInstallationState:
         emergency_stop = data.get("emergency_stop", False)
         if not isinstance(emergency_stop, bool):
             raise ValueError("Stored emergency stop is not boolean")
+        raw_active_execution = data.get("active_execution")
+        if raw_active_execution is not None and not isinstance(raw_active_execution, dict):
+            raise ValueError("Stored active execution is malformed")
         return cls(
             installation_total_liters=cls._float(data.get("installation_total_liters", 0.0)),
             zone_totals_liters=zone_totals,
             zone_measurement_quality=dict(raw_quality),
             unassigned_total_liters=cls._float(data.get("unassigned_total_liters", 0.0)),
             emergency_stop=emergency_stop,
+            active_execution=(
+                ActiveExecutionState.from_dict(raw_active_execution)
+                if raw_active_execution is not None
+                else None
+            ),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -65,4 +136,7 @@ class StoredInstallationState:
             "zone_measurement_quality": self.zone_measurement_quality,
             "unassigned_total_liters": self.unassigned_total_liters,
             "emergency_stop": self.emergency_stop,
+            "active_execution": (
+                self.active_execution.as_dict() if self.active_execution is not None else None
+            ),
         }

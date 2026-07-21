@@ -1,6 +1,7 @@
 """Safe, serialized execution of irrigation requests."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -50,6 +51,7 @@ class ExecutionRequest:
     settle_seconds: float = 0.0
     managed_zone_valves: tuple[str, ...] = ()
     monitor_interval_seconds: float = 0.0
+    on_zone_opening: Callable[[], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,9 +94,11 @@ class IrrigationExecutor:
             try:
                 if request.main_valve is not None:
                     await self._open_and_confirm(request.main_valve)
+                if request.on_zone_opening is not None:
+                    await request.on_zone_opening()
                 await self._open_and_confirm(request.zone_valve)
                 watering_started_at = self._clock.monotonic()
-                await self._water_and_monitor(request, violations)
+                await self._water_and_monitor(request, violations, request.duration_seconds)
                 if violations:
                     delivered_duration_seconds = min(
                         request.duration_seconds,
@@ -148,13 +152,18 @@ class IrrigationExecutor:
                 safety_violation="; ".join(dict.fromkeys(violations)) or None,
             )
 
-    async def _water_and_monitor(self, request: ExecutionRequest, violations: list[str]) -> None:
+    async def _water_and_monitor(
+        self,
+        request: ExecutionRequest,
+        violations: list[str],
+        duration_seconds: float,
+    ) -> None:
         """Water for the requested duration while enforcing valve exclusivity."""
         if request.monitor_interval_seconds <= 0:
-            await self._clock.sleep(request.duration_seconds)
+            await self._clock.sleep(duration_seconds)
             return
 
-        remaining = request.duration_seconds
+        remaining = duration_seconds
         while remaining > 0:
             step = min(request.monitor_interval_seconds, remaining)
             await self._clock.sleep(step)

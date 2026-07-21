@@ -85,6 +85,16 @@ class HomeAssistantMeter:
 
     async def read_liters(self) -> float:
         """Return the cumulative source value converted to liters."""
+        raw_liters = await self.read_raw_liters()
+        self._continuity = (
+            CumulativeMeter.start(raw_liters=raw_liters)
+            if self._continuity is None
+            else self._continuity.update(raw_liters=raw_liters)
+        )
+        return self._continuity.total_liters
+
+    async def read_raw_liters(self) -> float:
+        """Return the source value in liters without continuity adjustment."""
         if self._entity_id is None:
             return 0.0
         state = self._hass.states.get(self._entity_id)
@@ -97,13 +107,7 @@ class HomeAssistantMeter:
             value = float(state.state)
         except ValueError as err:
             raise HomeAssistantError(f"Water meter {self._entity_id} is not numeric") from err
-        raw_liters = VolumeConverter.convert(value, unit, UnitOfVolume.LITERS)
-        self._continuity = (
-            CumulativeMeter.start(raw_liters=raw_liters)
-            if self._continuity is None
-            else self._continuity.update(raw_liters=raw_liters)
-        )
-        return self._continuity.total_liters
+        return VolumeConverter.convert(value, unit, UnitOfVolume.LITERS)
 
 
 class HomeAssistantClock:

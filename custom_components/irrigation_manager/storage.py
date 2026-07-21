@@ -1,11 +1,30 @@
 """Versioned Home Assistant storage for critical irrigation state."""
 
+from typing import override
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
+STORAGE_MINOR_VERSION = 2
+
+
+class _StateStore(Store[dict[str, object]]):
+    """Migrate durable irrigation state between additive schema revisions."""
+
+    @override
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, object],
+    ) -> dict[str, object]:
+        """Add the durable active-execution slot introduced in schema 1.2."""
+        if old_major_version == 1 and old_minor_version == 1:
+            return {**old_data, "active_execution": None}
+        raise NotImplementedError
 
 
 class IrrigationStore:
@@ -13,11 +32,12 @@ class IrrigationStore:
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         """Initialize storage isolated by config entry ID."""
-        self._store = Store[dict[str, object]](
+        self._store = _StateStore(
             hass,
             STORAGE_VERSION,
             f"irrigation_manager.{entry_id}",
             atomic_writes=True,
+            minor_version=STORAGE_MINOR_VERSION,
         )
 
     async def async_load(self) -> StoredInstallationState:

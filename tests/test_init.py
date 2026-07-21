@@ -9,11 +9,47 @@ from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager.const import DOMAIN
-from custom_components.irrigation_manager.models import StoredInstallationState
+from custom_components.irrigation_manager.models import (
+    ActiveExecutionState,
+    StoredInstallationState,
+)
 from custom_components.irrigation_manager.storage import IrrigationStore
+
+
+def prepare_closed_switches(hass: HomeAssistant, *entity_ids: str) -> None:
+    """Register deterministic switch closure feedback for setup tests."""
+
+    async def turn_off(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_OFF)
+
+    hass.services.async_register("switch", "turn_off", turn_off)
+    for entity_id in entity_ids:
+        hass.states.async_set(entity_id, STATE_OFF)
+
+
+async def test_storage_migrates_legacy_state(hass: HomeAssistant) -> None:
+    """Preserve totals when adding durable active-execution recovery state."""
+    await Store[dict[str, object]](
+        hass, 1, "irrigation_manager.legacy", atomic_writes=True
+    ).async_save(
+        {
+            "installation_total_liters": 12.0,
+            "zone_totals_liters": {"zone-1": 12.0},
+            "zone_measurement_quality": {"zone-1": "measured"},
+            "unassigned_total_liters": 0.0,
+            "emergency_stop": False,
+        }
+    )
+
+    state = await IrrigationStore(hass, "legacy").async_load()
+
+    assert state.installation_total_liters == 12
+    assert state.zone_totals_liters == {"zone-1": 12}
+    assert state.active_execution is None
 
 
 async def test_setup_closes_an_open_main_valve(hass: HomeAssistant) -> None:
@@ -46,6 +82,7 @@ async def test_setup_creates_installation_and_zone_water_sensors(
     hass: HomeAssistant,
 ) -> None:
     """Expose cumulative water sensors with stable registry identities."""
+    prepare_closed_switches(hass, "switch.relais_11")
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Gartenbewässerung",
@@ -90,17 +127,24 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
 ) -> None:
     """Run a manual dose through HA services and publish measured consumption."""
     operations: list[tuple[str, str]] = []
+    persisted_zone_at_open: list[str | None] = []
 
     async def turn_on(call) -> None:
         entity_id = call.data["entity_id"]
         operations.append(("turn_on", entity_id))
         hass.states.async_set(entity_id, STATE_ON)
+        if entity_id == "switch.zone_lawn":
+            stored = await IrrigationStore(hass, entry.entry_id).async_load()
+            persisted_zone_at_open.append(
+                stored.active_execution.zone_id if stored.active_execution is not None else None
+            )
 
     async def turn_off(call) -> None:
         entity_id = call.data["entity_id"]
         operations.append(("turn_off", entity_id))
+        was_on = hass.states.get(entity_id).state == STATE_ON
         hass.states.async_set(entity_id, STATE_OFF)
-        if entity_id == "switch.zone_lawn":
+        if entity_id == "switch.zone_lawn" and was_on:
             hass.states.async_set(
                 "sensor.water_meter",
                 "1.025",
@@ -144,6 +188,7 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
     hass.config_entries.async_add_subentry(entry, subentry)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    operations.clear()
 
     await hass.services.async_call(
         DOMAIN,
@@ -173,6 +218,7 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
         ("turn_off", "switch.zone_lawn"),
         ("turn_off", "switch.main"),
     ]
+    assert persisted_zone_at_open == ["zone-1"]
 
 
 async def test_stop_action_closes_active_valves_and_accounts_partial_water(
@@ -192,8 +238,9 @@ async def test_stop_action_closes_active_valves_and_accounts_partial_water(
     async def turn_off(call) -> None:
         entity_id = call.data["entity_id"]
         operations.append(("turn_off", entity_id))
+        was_on = hass.states.get(entity_id).state == STATE_ON
         hass.states.async_set(entity_id, STATE_OFF)
-        if entity_id == "switch.zone_lawn":
+        if entity_id == "switch.zone_lawn" and was_on:
             hass.states.async_set(
                 "sensor.water_meter",
                 "1.025",
@@ -235,6 +282,7 @@ async def test_stop_action_closes_active_valves_and_accounts_partial_water(
     )
     hass.config_entries.async_add_subentry(entry, subentry)
     assert await hass.config_entries.async_setup(entry.entry_id)
+    operations.clear()
 
     await hass.services.async_call(
         DOMAIN,
@@ -271,6 +319,7 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
     hass: HomeAssistant,
 ) -> None:
     """Attribute measured water without changing installation consumption."""
+    prepare_closed_switches(hass, "switch.zone_lawn")
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Gartenbewässerung",
@@ -332,6 +381,7 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
 
 async def test_emergency_stop_blocks_manual_watering(hass: HomeAssistant) -> None:
     """Never allow a normal manual request to override the safety lock."""
+    prepare_closed_switches(hass, "switch.zone_lawn")
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Gartenbewässerung",
@@ -369,3 +419,79 @@ async def test_emergency_stop_blocks_manual_watering(hass: HomeAssistant) -> Non
             },
             blocking=True,
         )
+
+
+async def test_setup_recovers_interrupted_execution_from_meter_baseline(
+    hass: HomeAssistant,
+) -> None:
+    """Close valves and account measurable water from an interrupted dose."""
+    operations: list[str] = []
+
+    async def turn_off(call) -> None:
+        entity_id = call.data["entity_id"]
+        operations.append(entity_id)
+        hass.states.async_set(entity_id, STATE_OFF)
+
+    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.states.async_set("switch.main", STATE_ON)
+    hass.states.async_set("switch.zone_lawn", STATE_ON)
+    hass.states.async_set("switch.zone_new", STATE_OFF)
+    hass.states.async_set(
+        "sensor.water_meter",
+        "1.025",
+        {ATTR_UNIT_OF_MEASUREMENT: "m³"},
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Gartenbewässerung",
+        data={
+            "name": "Gartenbewässerung",
+            "main_valve": "switch.main",
+            "water_meter": "sensor.water_meter",
+        },
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    subentry = ConfigSubentry(
+        data=MappingProxyType(
+            {
+                "name": "Rasen",
+                "zone_valve": "switch.zone_new",
+                "default_duration": 600,
+            }
+        ),
+        subentry_id="subentry-1",
+        subentry_type="zone",
+        title="Rasen",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, subentry)
+    await IrrigationStore(hass, entry.entry_id).async_save(
+        StoredInstallationState(
+            active_execution=ActiveExecutionState(
+                zone_id="zone-1",
+                zone_valve="switch.zone_lawn",
+                main_valve="switch.main",
+                meter_raw_baseline_liters=1_000,
+                prepared_at="2026-07-21T09:59:59+00:00",
+                watering_started_at="2026-07-21T10:00:00+00:00",
+                requested_duration_seconds=600,
+                estimated_flow_l_min=None,
+            )
+        )
+    )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    zone_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_water_total")
+    installation_entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, "installation-1_water_total"
+    )
+    assert zone_entity_id is not None
+    assert installation_entity_id is not None
+    assert hass.states.get(zone_entity_id).state == "25.0"
+    assert hass.states.get(installation_entity_id).state == "25.0"
+    assert operations == ["switch.zone_new", "switch.zone_lawn", "switch.main"]
+    assert (await IrrigationStore(hass, entry.entry_id).async_load()).active_execution is None
