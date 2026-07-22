@@ -164,6 +164,18 @@ Jeder Vorgang verwendet seinen beim Preflight validierten Konfigurationssnapshot
 - CSV- und JSON-Export der Historie
 - kein automatischer Import konkurrierender Integrationen
 
+Der Import steht als Aktion und im Options Flow zur Verfügung. Er führt zuerst
+immer einen Trockenlauf mit Vorschau aus. Entity-IDs und Zonen müssen ausdrücklich
+neu zugeordnet werden. Das Überschreiben einer vorhandenen Anlage benötigt eine
+Bestätigung und den Hash genau der zuvor geprüften Konfiguration; bei zwischenzeitlicher
+Änderung wird abgebrochen. Der Import erzeugt oder übernimmt keine Konfiguration
+anderer Integrationen.
+
+Der Historienexport ist auf höchstens 1000 Vorgänge begrenzt. JSON und CSV enthalten
+den bereinigten Auftrag, Vorgang, persistierte Teilgaben, Berechnungssnapshot,
+Quelle, Messherkunft, Messqualität und Warnungen. Ventil-Entities und Zonennamen
+werden nicht exportiert.
+
 ## Sprache und Barrierearmut
 
 - vollständige deutsche und englische Übersetzung

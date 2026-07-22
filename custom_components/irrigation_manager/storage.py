@@ -9,7 +9,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 22
+STORAGE_MINOR_VERSION = 25
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -45,6 +45,9 @@ class _StateStore(Store[dict[str, object]]):
             19,
             20,
             21,
+            22,
+            23,
+            24,
         }:
             migrated = dict(old_data)
             if old_minor_version == 1:
@@ -242,6 +245,59 @@ class _StateStore(Store[dict[str, object]]):
                 raw_active = migrated.get("active_execution")
                 if isinstance(raw_active, dict):
                     migrated["active_execution"] = {**raw_active, "resolved_inputs": {}}
+            if old_minor_version < 23:
+                migrated["unassigned_available_liters"] = migrated.get(
+                    "unassigned_total_liters", 0.0
+                )
+                migrated["meter_accumulated_liters"] = None
+                migrated["meter_last_raw_liters"] = None
+                migrated["meter_correction_liters"] = 0.0
+                migrated["meter_reset_count"] = 0
+                executions = migrated.get("irrigation_executions", [])
+                if isinstance(executions, list):
+                    migrated["water_consumption_history"] = [
+                        {
+                            "recorded_at": execution["ended_at"],
+                            "amount_liters": execution.get("delivered_liters", 0.0),
+                            "zone_id": execution.get("zone_id"),
+                            "source": "historical_execution",
+                            "quality": execution.get("measurement_quality", "unknown"),
+                            "request_id": execution.get("request_id"),
+                            "execution_id": execution.get("execution_id"),
+                            "dose_number": execution.get("dose_number"),
+                            "warnings": [],
+                        }
+                        for execution in executions
+                        if isinstance(execution, dict)
+                        and isinstance(execution.get("ended_at"), str)
+                        and isinstance(execution.get("delivered_liters"), int | float)
+                        and execution.get("delivered_liters", 0.0) > 0
+                    ]
+                    migrated["irrigation_executions"] = [
+                        {
+                            **execution,
+                            "measurement_quality": "unknown",
+                            "measurement_origin": "unknown",
+                            "warnings": [],
+                            "doses": [],
+                        }
+                        if isinstance(execution, dict)
+                        else execution
+                        for execution in executions
+                    ]
+                else:
+                    migrated["water_consumption_history"] = []
+            if old_minor_version < 24:
+                raw_active = migrated.get("active_execution")
+                if isinstance(raw_active, dict):
+                    migrated["active_execution"] = {
+                        **raw_active,
+                        "fallback_quality": "estimated",
+                    }
+            if old_minor_version < 25:
+                migrated["meter_source_entity_id"] = None
+                migrated["meter_source_liters_per_count"] = None
+                migrated["water_history_incomplete"] = False
             return migrated
         raise NotImplementedError
 

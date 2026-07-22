@@ -47,6 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             zone_last_duration_seconds=stored_state.zone_last_duration_seconds,
             zone_safety_locks=stored_state.zone_safety_locks,
             unassigned_total_liters=stored_state.unassigned_total_liters,
+            unassigned_available_liters=stored_state.unassigned_available_liters,
             unassigned_measurement_quality=stored_state.unassigned_measurement_quality,
             unassigned_measurement_origin=stored_state.unassigned_measurement_origin,
             status=(
@@ -111,6 +112,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data={CONF_CUSTOM_PROFILES: {}, **entry.data},
             minor_version=2,
         )
+    if entry.minor_version < 3:
+        hass.config_entries.async_update_entry(entry, minor_version=3)
     return True
 
 

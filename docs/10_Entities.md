@@ -36,6 +36,11 @@ Exakte Entity IDs werden aus stabilen Unique IDs erzeugt und sind nicht Teil des
 - physischer korrigierter Zählerstand
 - optionale Kosten
 
+Gesamt-, Zonen- und unzugeordnete Verbrauchssensoren sind monotone
+`total_increasing`-Wassersensoren in Litern. `Heute`, `Woche`, `Monat` und `Jahr`
+sind abgeleitete Periodensensoren. Aktueller Durchfluss, korrigierter physischer
+Zählerstand und Messqualität werden separat veröffentlicht.
+
 ### Bedienung
 
 - globaler Stop
@@ -127,8 +132,14 @@ Mindestens:
 - Kalibrierung und Wartungstest starten
 - Winterstatus setzen und Anlagenprüflauf starten
 - Konfiguration und Historie exportieren
+- Konfigurationsimport prüfen und mit Hash ausdrücklich übernehmen
 
 Alle schreibenden Aktionen validieren Ziel, Einheiten, Grenzen und aktuellen Anlagenzustand.
+
+`correct_physical_meter` setzt ausschließlich den zukünftigen Anzeigeoffset.
+`import_config` ist standardmäßig ein Trockenlauf und benötigt für das Anwenden
+`confirm_overwrite`, den Vorschau-`config_hash` sowie explizite Entity- und
+Zonenzuordnungen.
 
 ## Ereignisse
 

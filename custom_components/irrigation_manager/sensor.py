@@ -12,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfLength, UnitOfTime, UnitOfVolume
+from homeassistant.const import UnitOfLength, UnitOfTime, UnitOfVolume, UnitOfVolumeFlowRate
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -44,7 +44,7 @@ UNASSIGNED_WATER_TOTAL_DESCRIPTION = IrrigationSensorDescription(
     key="unassigned_water_total",
     translation_key="unassigned_water_total",
     device_class=SensorDeviceClass.WATER,
-    state_class=SensorStateClass.TOTAL,
+    state_class=SensorStateClass.TOTAL_INCREASING,
     native_unit_of_measurement=UnitOfVolume.LITERS,
     suggested_display_precision=1,
     value_fn=lambda snapshot: snapshot.unassigned_total_liters,
@@ -72,6 +72,24 @@ async def async_setup_entry(
                 installation_id=installation_id,
                 description=UNASSIGNED_WATER_TOTAL_DESCRIPTION,
             ),
+            *[
+                InstallationPeriodWaterSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    period=period,
+                )
+                for period in ("today", "week", "month", "year")
+            ],
+            *[
+                InstallationMeterSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    key=key,
+                )
+                for key in ("current_flow", "physical_meter", "meter_measurement_quality")
+            ],
             InstallationStatusSensor(
                 coordinator=entry.runtime_data.coordinator,
                 entry=entry,
@@ -270,13 +288,119 @@ class InstallationWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEn
 
     @property
     @override
-    def extra_state_attributes(self) -> dict[str, str] | None:
-        """Expose the origin and quality of unassigned consumption."""
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose Energy Dashboard compatibility and unassigned provenance."""
         if self.entity_description.key != "unassigned_water_total":
-            return None
+            return {"water_energy_dashboard_compatible": True}
         return {
             "measurement_quality": self.coordinator.data.unassigned_measurement_quality,
             "measurement_origin": self.coordinator.data.unassigned_measurement_origin,
+            "available_for_assignment_liters": self.coordinator.data.unassigned_available_liters,
+            "water_energy_dashboard_compatible": True,
+        }
+
+
+class InstallationPeriodWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Period consumption derived from the persisted contribution ledger."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.WATER
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_suggested_display_precision = 1
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        period: str,
+    ) -> None:
+        """Initialize one local-calendar period sensor."""
+        super().__init__(coordinator)
+        self._period = period
+        self._attr_translation_key = f"water_{period}"
+        self._attr_unique_id = f"{installation_id}_water_{period}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> Decimal:
+        """Return the derived period sum without maintaining another total."""
+        return Decimal(str(self.coordinator.data.water_period_liters.get(self._period, 0.0)))
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Expose whether a protective record cap made this period incomplete."""
+        return {"history_quality": self.coordinator.data.water_period_quality}
+
+
+class InstallationMeterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Expose current flow, corrected physical total, or meter quality."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        key: str,
+    ) -> None:
+        """Initialize one installation metering sensor."""
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{installation_id}_{key}"
+        if key == "current_flow":
+            self._attr_device_class = SensorDeviceClass.VOLUME_FLOW_RATE
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._attr_native_unit_of_measurement = UnitOfVolumeFlowRate.LITERS_PER_MINUTE
+        elif key == "physical_meter":
+            self._attr_device_class = SensorDeviceClass.WATER
+            self._attr_state_class = SensorStateClass.TOTAL
+            self._attr_native_unit_of_measurement = UnitOfVolume.LITERS
+        else:
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = ["measured", "integrated", "estimated", "unknown"]
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> Decimal | str | None:
+        """Return the selected metering value."""
+        snapshot = self.coordinator.data
+        if self._key == "current_flow":
+            value = snapshot.current_flow_l_min
+        elif self._key == "physical_meter":
+            value = snapshot.physical_meter_liters
+        else:
+            return snapshot.meter_measurement_quality
+        return Decimal(str(value)) if value is not None else None
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Expose physical resolution and future-facing correction semantics."""
+        if self._key != "physical_meter":
+            return None
+        return {
+            "measurement_quality": self.coordinator.data.meter_measurement_quality,
+            "resolution_liters": self.coordinator.data.meter_resolution_liters,
+            "correction_is_future_facing": True,
         }
 
 
@@ -324,7 +448,7 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
 
     @property
     @override
-    def extra_state_attributes(self) -> dict[str, str]:
+    def extra_state_attributes(self) -> dict[str, object]:
         """Expose the native-action installation identifier."""
         return {"config_entry_id": self._config_entry_id}
 
@@ -549,7 +673,7 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
 
     @property
     @override
-    def extra_state_attributes(self) -> dict[str, str]:
+    def extra_state_attributes(self) -> dict[str, object]:
         """Expose quality and identifiers accepted by native actions."""
         return {
             "config_entry_id": self._config_entry_id,
@@ -557,6 +681,7 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
             "measurement_quality": self.coordinator.data.zone_measurement_quality.get(
                 self._zone_id, "unknown"
             ),
+            "water_energy_dashboard_compatible": True,
         }
 
 
@@ -631,7 +756,7 @@ class ZoneMeasurementQualitySensor(_ZoneObservationSensor):
     _attr_translation_key = "measurement_quality"
     _attr_device_class = SensorDeviceClass.ENUM
     _observation_key = "measurement_quality"
-    _enum_options = ("measured", "estimated", "unknown")
+    _enum_options = ("measured", "integrated", "estimated", "unknown")
 
     @property
     @override

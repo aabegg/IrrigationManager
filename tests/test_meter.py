@@ -5,6 +5,7 @@ import pytest
 from custom_components.irrigation_manager.meter import (
     CumulativeMeter,
     ImplausibleMeterRegressionError,
+    round_target_to_resolution,
 )
 
 
@@ -42,3 +43,12 @@ def test_meter_rejects_ambiguous_small_regression_without_advancing_baseline() -
     advanced = meter.update(raw_liters=101)
     assert advanced.total_liters == 101
     assert advanced.reset_count == 0
+
+
+def test_volume_target_rounds_up_to_observable_meter_resolution() -> None:
+    """Never present a sub-pulse target as exactly measurable."""
+    rounded = round_target_to_resolution(10.1, 0.25)
+
+    assert rounded.target_liters == 10.25
+    assert rounded.direction == "up"
+    assert rounded.error_liters == pytest.approx(0.15)

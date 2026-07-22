@@ -191,6 +191,10 @@ class IrrigationExecutionState:
     balance_maximum_deficit_mm: float | None = None
     balance_minimum_effective_liters: float | None = None
     resolved_inputs: dict[str, object] = field(default_factory=dict)
+    measurement_quality: str = "unknown"
+    measurement_origin: str = "unknown"
+    warnings: tuple[str, ...] = ()
+    doses: tuple[dict[str, object], ...] = ()
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> IrrigationExecutionState:
@@ -243,12 +247,18 @@ class IrrigationExecutionState:
                 data, "balance_minimum_effective_liters"
             ),
             resolved_inputs=_stored_object_dict(data, "resolved_inputs"),
+            measurement_quality=str(data.get("measurement_quality", "unknown")),
+            measurement_origin=str(data.get("measurement_origin", "unknown")),
+            warnings=_stored_string_tuple(data, "warnings"),
+            doses=_stored_object_tuple(data, "doses"),
         )
 
     def as_dict(self) -> dict[str, object]:
         """Serialize one irrigation execution."""
         result = {field: getattr(self, field) for field in self.__dataclass_fields__}
         result["resolved_inputs"] = deepcopy(self.resolved_inputs)
+        result["warnings"] = list(self.warnings)
+        result["doses"] = [deepcopy(dose) for dose in self.doses]
         return result
 
 
@@ -264,6 +274,79 @@ def _stored_object_dict(data: dict[str, object], key: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"Stored {key} snapshot is malformed")
     return deepcopy(value)
+
+
+def _stored_string_tuple(data: dict[str, object], key: str) -> tuple[str, ...]:
+    """Read one persisted string list."""
+    value = data.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"Stored {key} is malformed")
+    return tuple(value)
+
+
+def _stored_object_tuple(data: dict[str, object], key: str) -> tuple[dict[str, object], ...]:
+    """Read one persisted list of JSON objects."""
+    value = data.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError(f"Stored {key} is malformed")
+    return tuple(deepcopy(item) for item in value)
+
+
+@dataclass(frozen=True, slots=True)
+class WaterConsumptionRecord:
+    """One immutable contribution used to derive period consumption safely."""
+
+    recorded_at: str
+    amount_liters: float
+    zone_id: str | None
+    source: str
+    quality: str
+    request_id: str | None = None
+    execution_id: str | None = None
+    dose_number: int | None = None
+    warnings: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> WaterConsumptionRecord:
+        """Deserialize one bounded accounting-history record."""
+        recorded_at = data.get("recorded_at")
+        source = data.get("source")
+        quality = data.get("quality")
+        if not all(isinstance(value, str) for value in (recorded_at, source, quality)):
+            raise ValueError("Stored water consumption history is malformed")
+        optional_strings = (data.get("zone_id"), data.get("request_id"), data.get("execution_id"))
+        if not all(value is None or isinstance(value, str) for value in optional_strings):
+            raise ValueError("Stored water consumption links are malformed")
+        dose_number = data.get("dose_number")
+        if dose_number is not None and (
+            isinstance(dose_number, bool) or not isinstance(dose_number, int)
+        ):
+            raise ValueError("Stored dose number is malformed")
+        return cls(
+            recorded_at=cast(str, recorded_at),
+            amount_liters=StoredInstallationState._float(data.get("amount_liters")),
+            zone_id=cast(str | None, optional_strings[0]),
+            source=cast(str, source),
+            quality=cast(str, quality),
+            request_id=cast(str | None, optional_strings[1]),
+            execution_id=cast(str | None, optional_strings[2]),
+            dose_number=dose_number,
+            warnings=_stored_string_tuple(data, "warnings"),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the accounting contribution."""
+        return {
+            "recorded_at": self.recorded_at,
+            "amount_liters": self.amount_liters,
+            "zone_id": self.zone_id,
+            "source": self.source,
+            "quality": self.quality,
+            "request_id": self.request_id,
+            "execution_id": self.execution_id,
+            "dose_number": self.dose_number,
+            "warnings": list(self.warnings),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,8 +397,15 @@ class InstallationSnapshot:
     zone_last_duration_seconds: dict[str, float] = field(default_factory=dict)
     zone_safety_locks: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
+    unassigned_available_liters: float = 0.0
     unassigned_measurement_quality: str = "unknown"
     unassigned_measurement_origin: str = "unknown"
+    water_period_liters: dict[str, float] = field(default_factory=dict)
+    water_period_quality: str = "complete"
+    current_flow_l_min: float | None = None
+    physical_meter_liters: float | None = None
+    meter_measurement_quality: str = "unknown"
+    meter_resolution_liters: float | None = None
     status: str = "idle"
     active_zone_id: str | None = None
     emergency_stop: bool = False
@@ -381,6 +471,7 @@ class ActiveExecutionState:
     fallback_started_at: str | None = None
     fallback_checkpoint_at: str | None = None
     delivered_liters_at_fallback: float = 0.0
+    fallback_quality: str = "estimated"
     request_id: str | None = None
     execution_id: str | None = None
     dose_number: int = 1
@@ -439,6 +530,7 @@ class ActiveExecutionState:
             delivered_liters_at_fallback=StoredInstallationState._float(
                 data.get("delivered_liters_at_fallback", 0.0)
             ),
+            fallback_quality=str(data.get("fallback_quality", "estimated")),
             request_id=optional_string("request_id"),
             execution_id=optional_string("execution_id"),
             dose_number=int(StoredInstallationState._float(data.get("dose_number", 1))),
@@ -470,6 +562,7 @@ class ActiveExecutionState:
             "fallback_started_at": self.fallback_started_at,
             "fallback_checkpoint_at": self.fallback_checkpoint_at,
             "delivered_liters_at_fallback": self.delivered_liters_at_fallback,
+            "fallback_quality": self.fallback_quality,
             "request_id": self.request_id,
             "execution_id": self.execution_id,
             "dose_number": self.dose_number,
@@ -611,6 +704,7 @@ class StoredInstallationState:
     zone_last_duration_seconds: dict[str, float] = field(default_factory=dict)
     zone_safety_locks: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
+    unassigned_available_liters: float = 0.0
     unassigned_measurement_quality: str = "unknown"
     unassigned_measurement_origin: str = "unknown"
     idle_meter_raw_baseline_liters: float | None = None
@@ -634,6 +728,14 @@ class StoredInstallationState:
     forecast_deferral_deadlines: dict[str, str] = field(default_factory=dict)
     cancelled_forecast_deferrals: tuple[str, ...] = ()
     budget_usage_liters: dict[str, float] = field(default_factory=dict)
+    meter_accumulated_liters: float | None = None
+    meter_last_raw_liters: float | None = None
+    meter_correction_liters: float = 0.0
+    meter_reset_count: int = 0
+    meter_source_entity_id: str | None = None
+    meter_source_liters_per_count: float | None = None
+    water_consumption_history: tuple[WaterConsumptionRecord, ...] = ()
+    water_history_incomplete: bool = False
 
     @staticmethod
     def _float(value: object) -> float:
@@ -714,6 +816,7 @@ class StoredInstallationState:
         raw_forecast_deadlines = data.get("forecast_deferral_deadlines", {})
         raw_cancelled_deferrals = data.get("cancelled_forecast_deferrals", [])
         raw_budget_usage = data.get("budget_usage_liters", {})
+        raw_consumption_history = data.get("water_consumption_history", [])
         if not isinstance(raw_deficits, dict):
             raise ValueError("Stored zone water deficits are malformed")
         if not isinstance(raw_last_effective, dict) or not all(
@@ -757,6 +860,21 @@ class StoredInstallationState:
             raise ValueError("Stored cancelled forecast deferrals are malformed")
         if not isinstance(raw_budget_usage, dict):
             raise ValueError("Stored budget usage is malformed")
+        if not isinstance(raw_consumption_history, list) or not all(
+            isinstance(value, dict) for value in raw_consumption_history
+        ):
+            raise ValueError("Stored water consumption history is malformed")
+        meter_accumulated = data.get("meter_accumulated_liters")
+        meter_last_raw = data.get("meter_last_raw_liters")
+        meter_reset_count = data.get("meter_reset_count", 0)
+        if isinstance(meter_reset_count, bool) or not isinstance(meter_reset_count, int):
+            raise ValueError("Stored meter reset count is malformed")
+        meter_source_entity_id = data.get("meter_source_entity_id")
+        if meter_source_entity_id is not None and not isinstance(meter_source_entity_id, str):
+            raise ValueError("Stored meter source identity is malformed")
+        water_history_incomplete = data.get("water_history_incomplete", False)
+        if not isinstance(water_history_incomplete, bool):
+            raise ValueError("Stored water history quality is malformed")
         return cls(
             installation_total_liters=cls._float(data.get("installation_total_liters", 0.0)),
             zone_totals_liters=zone_totals,
@@ -765,6 +883,9 @@ class StoredInstallationState:
             zone_last_duration_seconds=last_duration,
             zone_safety_locks=dict(raw_zone_locks),
             unassigned_total_liters=cls._float(data.get("unassigned_total_liters", 0.0)),
+            unassigned_available_liters=cls._float(
+                data.get("unassigned_available_liters", data.get("unassigned_total_liters", 0.0))
+            ),
             unassigned_measurement_quality=unassigned_quality,
             unassigned_measurement_origin=unassigned_origin,
             idle_meter_raw_baseline_liters=idle_baseline,
@@ -810,6 +931,20 @@ class StoredInstallationState:
             budget_usage_liters={
                 str(key): cls._float(value) for key, value in raw_budget_usage.items()
             },
+            meter_accumulated_liters=(
+                None if meter_accumulated is None else cls._float(meter_accumulated)
+            ),
+            meter_last_raw_liters=None if meter_last_raw is None else cls._float(meter_last_raw),
+            meter_correction_liters=cls._float(data.get("meter_correction_liters", 0.0)),
+            meter_reset_count=meter_reset_count,
+            meter_source_entity_id=meter_source_entity_id,
+            meter_source_liters_per_count=_optional_stored_float(
+                data, "meter_source_liters_per_count"
+            ),
+            water_consumption_history=tuple(
+                WaterConsumptionRecord.from_dict(value) for value in raw_consumption_history
+            ),
+            water_history_incomplete=water_history_incomplete,
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -822,6 +957,7 @@ class StoredInstallationState:
             "zone_last_duration_seconds": self.zone_last_duration_seconds,
             "zone_safety_locks": self.zone_safety_locks,
             "unassigned_total_liters": self.unassigned_total_liters,
+            "unassigned_available_liters": self.unassigned_available_liters,
             "unassigned_measurement_quality": self.unassigned_measurement_quality,
             "unassigned_measurement_origin": self.unassigned_measurement_origin,
             "idle_meter_raw_baseline_liters": self.idle_meter_raw_baseline_liters,
@@ -857,4 +993,14 @@ class StoredInstallationState:
             "forecast_deferral_deadlines": self.forecast_deferral_deadlines,
             "cancelled_forecast_deferrals": list(self.cancelled_forecast_deferrals),
             "budget_usage_liters": self.budget_usage_liters,
+            "meter_accumulated_liters": self.meter_accumulated_liters,
+            "meter_last_raw_liters": self.meter_last_raw_liters,
+            "meter_correction_liters": self.meter_correction_liters,
+            "meter_reset_count": self.meter_reset_count,
+            "meter_source_entity_id": self.meter_source_entity_id,
+            "meter_source_liters_per_count": self.meter_source_liters_per_count,
+            "water_consumption_history": [
+                record.as_dict() for record in self.water_consumption_history
+            ],
+            "water_history_incomplete": self.water_history_incomplete,
         }

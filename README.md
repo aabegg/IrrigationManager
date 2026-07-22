@@ -36,3 +36,9 @@ dokumentiert. Das Frontend-Modul wird von der Integration automatisch registrier
 ## Projektstatus
 
 Aktive Entwicklung. Backend, Config Flow und die ersten Lovelace-Karten sind implementiert und getestet; der in den Fachdokumenten beschriebene Gesamtumfang ist noch nicht vollständig umgesetzt.
+
+Die Messschicht unterstützt kumulative Volumenzähler, explizit umgerechnete
+Impuls-/Zählwerte und direkte Durchflussraten. Portable Konfigurationen können über
+die Options Flow-Vorschau oder die Aktion `irrigation_manager.import_config`
+geprüft und mit expliziter Zuordnung übernommen werden. Der physische Zählerstand
+wird mit `irrigation_manager.correct_physical_meter` korrigiert.

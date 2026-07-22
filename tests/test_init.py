@@ -27,6 +27,7 @@ from custom_components.irrigation_manager.models import (
     IrrigationExecutionState,
     ManualIrrigationRequest,
     StoredInstallationState,
+    WaterConsumptionRecord,
 )
 from custom_components.irrigation_manager.services import START_MANUAL_SCHEMA
 from custom_components.irrigation_manager.storage import IrrigationStore
@@ -96,6 +97,140 @@ async def test_storage_migrates_legacy_state(hass: HomeAssistant) -> None:
     assert state.finalized_weather_periods == {}
     assert state.suppressed_automatic_opportunities == ()
     assert state.uncredited_balance_deliveries == ()
+
+
+async def test_physical_meter_correction_persists_without_changing_consumption(
+    hass: HomeAssistant,
+) -> None:
+    """Expose a corrected physical display while retaining accounting totals."""
+    hass.states.async_set(
+        "sensor.water_meter",
+        "100",
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolume.LITERS},
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={"name": "Garden", "water_meter": "sensor.water_meter"},
+        unique_id="installation-correction",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        "correct_physical_meter",
+        {"config_entry_id": entry.entry_id, "physical_total": 125},
+        blocking=True,
+        return_response=True,
+    )
+
+    assert response == {"physical_total_liters": 125.0, "correction_liters": 25.0}
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.installation_total_liters == 0
+    assert stored.meter_accumulated_liters == 100
+    assert stored.meter_correction_liters == 25
+    registry = er.async_get(hass)
+    physical_entity = registry.async_get_entity_id(
+        "sensor", DOMAIN, "installation-correction_physical_meter"
+    )
+    assert physical_entity is not None
+    assert hass.states.get(physical_entity).state == "125.0"
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("stored_source", "stored_factor", "configured_source", "configured_factor"),
+    [
+        ("sensor.old_pulses", 2.0, "sensor.new_pulses", 2.0),
+        ("sensor.pulses", 1.0, "sensor.pulses", 2.0),
+    ],
+)
+async def test_changed_meter_identity_or_conversion_rebases_without_consumption(
+    hass: HomeAssistant,
+    stored_source: str,
+    stored_factor: float,
+    configured_source: str,
+    configured_factor: float,
+) -> None:
+    """Preserve accumulated/corrected continuity when a meter source contract changes."""
+    hass.states.async_set(configured_source, "10")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={
+            "name": "Garden",
+            "raw_meter": configured_source,
+            "liters_per_count": configured_factor,
+        },
+        unique_id=f"meter-rebase-{stored_factor}-{configured_factor}-{stored_source}",
+    )
+    entry.add_to_hass(hass)
+    await IrrigationStore(hass, entry.entry_id).async_save(
+        StoredInstallationState(
+            installation_total_liters=50,
+            meter_accumulated_liters=100,
+            meter_last_raw_liters=100,
+            meter_correction_liters=5,
+            meter_source_entity_id=stored_source,
+            meter_source_liters_per_count=stored_factor,
+        )
+    )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.installation_total_liters == 50
+    assert stored.meter_accumulated_liters == 100
+    assert stored.meter_last_raw_liters == 20
+    assert stored.meter_correction_liters == 5
+    assert stored.meter_source_entity_id == configured_source
+    assert stored.meter_source_liters_per_count == configured_factor
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_period_history_cap_is_explicit_and_preserves_time_horizon(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prune by year horizon first and publish incomplete quality if the cap is reached."""
+    import custom_components.irrigation_manager.manager as manager_module
+
+    monkeypatch.setattr(manager_module, "WATER_HISTORY_MAX_RECORDS", 3)
+    now = datetime.now(UTC)
+    old = WaterConsumptionRecord(
+        recorded_at=now.replace(year=now.year - 2).isoformat(),
+        amount_liters=99,
+        zone_id=None,
+        source="old",
+        quality="measured",
+    )
+    current = tuple(
+        WaterConsumptionRecord(
+            recorded_at=(now - timedelta(days=index)).isoformat(),
+            amount_liters=1,
+            zone_id="zone-1",
+            source="test",
+            quality="measured",
+        )
+        for index in range(3)
+    )
+    state = StoredInstallationState(water_consumption_history=(old, *current))
+
+    retained = manager_module.IrrigationManager._with_consumption_record(
+        state,
+        amount_liters=1,
+        zone_id="zone-1",
+        source="test",
+        quality="measured",
+    )
+
+    assert len(retained.water_consumption_history) == 3
+    assert all(record.source != "old" for record in retained.water_consumption_history)
+    assert retained.water_history_incomplete is True
 
 
 async def test_storage_migrates_active_execution_without_resetting_minor_six_state(
@@ -798,6 +933,7 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
         StoredInstallationState(
             installation_total_liters=10,
             unassigned_total_liters=10,
+            unassigned_available_liters=10,
         )
     )
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -829,7 +965,8 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
     assert hass.states.get(zone_entity_id).state == "4.0"
     assert hass.states.get(zone_entity_id).attributes["measurement_quality"] == "unknown"
     assert hass.states.get(installation_entity_id).state == "10.0"
-    assert hass.states.get(unassigned_entity_id).state == "6.0"
+    assert hass.states.get(unassigned_entity_id).state == "10.0"
+    assert hass.states.get(unassigned_entity_id).attributes["available_for_assignment_liters"] == 6
 
 
 @pytest.mark.parametrize(

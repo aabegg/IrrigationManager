@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
@@ -40,6 +40,11 @@ ATTR_SOURCE_PROFILE_ID = "source_profile_id"
 ATTR_NEW_PROFILE_ID = "new_profile_id"
 ATTR_NAME = "name"
 ATTR_CONFIG_HASH = "config_hash"
+ATTR_PHYSICAL_TOTAL = "physical_total"
+ATTR_PAYLOAD = "payload"
+ATTR_ENTITY_REMAPPING = "entity_remapping"
+ATTR_ZONE_REMAPPING = "zone_remapping"
+ATTR_CONFIRM_OVERWRITE = "confirm_overwrite"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
@@ -75,6 +80,8 @@ SERVICE_RESOLVE_CALIBRATION = "resolve_calibration"
 SERVICE_LIST_PROFILES = "list_profiles"
 SERVICE_PREVIEW_PROFILE_IMPACT = "preview_profile_impact"
 SERVICE_COPY_PROFILE = "copy_profile"
+SERVICE_CORRECT_PHYSICAL_METER = "correct_physical_meter"
+SERVICE_IMPORT_CONFIG = "import_config"
 
 
 def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
@@ -248,6 +255,23 @@ COPY_PROFILE_SCHEMA = vol.Schema(
         vol.Required(ATTR_SOURCE_PROFILE_ID): cv.string,
         vol.Required(ATTR_NEW_PROFILE_ID): cv.string,
         vol.Required(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_CONFIG_HASH): cv.string,
+    }
+)
+CORRECT_PHYSICAL_METER_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_PHYSICAL_TOTAL): vol.All(vol.Coerce(float), vol.Range(min=0)),
+    }
+)
+IMPORT_CONFIG_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_PAYLOAD): dict,
+        vol.Optional(ATTR_ENTITY_REMAPPING, default={}): dict,
+        vol.Optional(ATTR_ZONE_REMAPPING, default={}): dict,
+        vol.Optional(ATTR_DRY_RUN, default=True): cv.boolean,
+        vol.Optional(ATTR_CONFIRM_OVERWRITE, default=False): cv.boolean,
         vol.Optional(ATTR_CONFIG_HASH): cv.string,
     }
 )
@@ -445,6 +469,29 @@ async def async_register_services(hass: HomeAssistant) -> None:
             expected_config_hash=cast(str | None, call.data.get(ATTR_CONFIG_HASH)),
         )
 
+    async def correct_physical_meter(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_correct_physical_meter(
+            physical_total_liters=cast(float, call.data[ATTR_PHYSICAL_TOTAL])
+        )
+
+    async def import_config(call: ServiceCall) -> dict[str, Any]:
+        user_id = call.context.user_id
+        user = await hass.auth.async_get_user(user_id) if user_id is not None else None
+        if user is None or not user.is_admin:
+            raise Unauthorized(
+                context=call.context,
+                config_entry_id=call.data[ATTR_CONFIG_ENTRY_ID],
+            )
+        return await manager_for(call).async_import_portable_config(
+            payload=cast(dict[str, object], call.data[ATTR_PAYLOAD]),
+            entity_remapping=cast(dict[str, str], call.data[ATTR_ENTITY_REMAPPING]),
+            zone_remapping=cast(dict[str, str], call.data[ATTR_ZONE_REMAPPING]),
+            dry_run=cast(bool, call.data[ATTR_DRY_RUN]),
+            confirm_overwrite=cast(bool, call.data[ATTR_CONFIRM_OVERWRITE]),
+            expected_config_hash=cast(str | None, call.data.get(ATTR_CONFIG_HASH)),
+            user=user,
+        )
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_START_MANUAL,
@@ -518,6 +565,20 @@ async def async_register_services(hass: HomeAssistant) -> None:
         SERVICE_COPY_PROFILE,
         copy_profile_service,
         schema=COPY_PROFILE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CORRECT_PHYSICAL_METER,
+        correct_physical_meter,
+        schema=CORRECT_PHYSICAL_METER_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_IMPORT_CONFIG,
+        import_config,
+        schema=IMPORT_CONFIG_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(

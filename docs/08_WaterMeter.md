@@ -9,6 +9,12 @@
 
 Die Integration ist nicht an ESPHome gebunden. Jede numerische HA-Entity kann verwendet werden, wenn Einheit, Geräteklasse oder ein expliziter Umrechnungsfaktor eine eindeutige Normalisierung erlauben.
 
+Im Config Flow sind kumulatives Volumen und roher Impuls-/Zählwert gegenseitig
+ausschließend. Ein Rohwert ist nur zusammen mit `Liter je Impuls oder Zählschritt`
+gültig. Die optionale Auflösung wird in Litern gespeichert; bei einem Rohzähler ist
+der Umrechnungsfaktor zugleich die kleinste Auflösung, sofern keine gröbere
+Auflösung angegeben ist.
+
 ## Empfohlene Kombination
 
 - kumulatives Volumen als maßgebliche Verbrauchsquelle
@@ -38,6 +44,10 @@ Die Integration führt einen eigenen fortlaufenden Verbrauch:
 5. unplausible Sprünge nicht ungeprüft verbuchen
 
 Die Quelle selbst wird niemals verändert.
+
+Interner letzter Rohwert, fortlaufender normalisierter Stand, Resetanzahl und
+Korrekturoffset werden atomar mit dem Anlagenzustand persistiert. Dadurch erzeugt
+ein Home-Assistant-Neustart keinen neuen Zähleranfang.
 
 ## Physische Korrektur
 
@@ -71,6 +81,10 @@ Jede Menge trägt eine Herkunft:
 - unbekannt
 
 Bei Ausfall eines konfigurierten kumulativen Zählers darf eine gültige Durchflussrate integriert werden. Danach gilt die zonenspezifische Zählerausfallstrategie: Vorgang abbrechen oder auf Zeitsteuerung mit Schätzung wechseln. Ohne konfigurierten kumulativen Zähler sind Mengenziele unabhängig von der Zählerausfallstrategie unzulässig.
+
+Die öffentliche Qualität lautet dabei `measured`, `integrated`, `estimated` oder
+`unknown`. Nur eine gültige kumulative Differenz heißt `measured`. Eine Integration
+direkter Durchflusswerte wird niemals nachträglich als gemessen bezeichnet.
 
 ## Messauflösung
 
@@ -114,3 +128,9 @@ Bereitgestellt werden fortlaufende Sensoren für:
 - unzugeordneten Verbrauch
 
 Die Sensoren verwenden eine kanonische interne Einheit und Home Assistants Einheitenkonvertierung. Sie sind für Recorder, Langzeitstatistik und Wasserverbrauch im Energie-Dashboard geeignet.
+
+Die kumulativen Sensoren verwenden `device_class: water`, Liter und
+`state_class: total_increasing`. Die Periodenwerte werden aus einer begrenzten,
+persistierten Beitragsliste nach lokaler Zeitzone abgeleitet; sie führen keine
+zweite Gesamtsumme. Zugeordneter unzugeordneter Verbrauch reduziert nur den
+zuweisbaren Bestand, nie den kumulativen Statistikwert.

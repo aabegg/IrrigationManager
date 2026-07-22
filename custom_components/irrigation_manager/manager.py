@@ -13,6 +13,8 @@ from hashlib import sha256
 from typing import Any, cast
 from uuid import uuid4
 
+from homeassistant.auth.models import User
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
@@ -60,6 +62,7 @@ from .const import (
     CONF_HARDWARE_CONNECTIVITY_SENSOR,
     CONF_HARDWARE_FAULT_SENSOR,
     CONF_HARDWARE_HEALTH_MAX_AGE_SECONDS,
+    CONF_HUMIDITY_SENSORS,
     CONF_INSTALLATION_DAILY_BUDGET_LITERS,
     CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
     CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
@@ -68,6 +71,7 @@ from .const import (
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
+    CONF_LITERS_PER_COUNT,
     CONF_MAIN_VALVE,
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
@@ -83,18 +87,22 @@ from .const import (
     CONF_MAXIMUM_TARGET_LITERS,
     CONF_METER_FAILURE_STRATEGY,
     CONF_METER_MAX_AGE_SECONDS,
+    CONF_METER_RESOLUTION_LITERS,
     CONF_MIN_FLOW,
     CONF_MINIMUM_EFFECTIVE_LITERS,
     CONF_MINIMUM_INTERVAL_DAYS,
     CONF_MINIMUM_TRIGGER_LITERS,
+    CONF_NOTIFY_ENTITIES,
     CONF_OPEN_METEO_ENABLED,
     CONF_PAUSE_TIMEOUT_SECONDS,
     CONF_PLANT_PROFILE,
+    CONF_PRESSURE_SENSORS,
     CONF_PROFILE_OVERRIDES,
     CONF_RAIN_FACTOR,
     CONF_RAIN_SENSORS,
     CONF_RAIN_STOP_ENTITY,
     CONF_RAIN_STOP_THRESHOLD,
+    CONF_RAW_METER,
     CONF_SEASONAL_CROP_FACTORS,
     CONF_SOAK_DURATION,
     CONF_SOIL_MOISTURE_AGGREGATION,
@@ -104,7 +112,9 @@ from .const import (
     CONF_SOIL_MOISTURE_SENSORS,
     CONF_SOIL_MOISTURE_WET_THRESHOLD,
     CONF_SOIL_PROFILE,
+    CONF_SOLAR_RADIATION_SENSORS,
     CONF_SUBAREAS,
+    CONF_SUNSHINE_DURATION_SENSORS,
     CONF_TEMPERATURE_SENSORS,
     CONF_WATER_METER,
     CONF_WATERING_MODE,
@@ -116,6 +126,7 @@ from .const import (
     CONF_WEATHER_FINALIZATION_TIME,
     CONF_WEATHER_MAX_AGE_SECONDS,
     CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
+    CONF_WIND_SPEED_SENSORS,
     CONF_ZONE_DAILY_BUDGET_LITERS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
@@ -130,6 +141,7 @@ from .coordinator import IrrigationCoordinator
 from .events import IrrigationEventPublisher
 from .executor import ExecutionRequest, ExecutionResult, IrrigationExecutor
 from .leak_monitor import LeakObservation
+from .meter import CumulativeMeter, round_target_to_resolution
 from .models import (
     ActiveExecutionState,
     CalibrationProposal,
@@ -139,6 +151,7 @@ from .models import (
     ManualIrrigationRequest,
     StoredInstallationState,
     UncreditedBalanceDelivery,
+    WaterConsumptionRecord,
 )
 from .profiles import (
     EffectiveZoneProfile,
@@ -156,6 +169,7 @@ from .scheduler import (
     active_and_next_window,
     decide_zone_schedule,
     dose_target,
+    parse_window_rule,
     select_manual_request,
 )
 from .soil_moisture import SoilMoistureAssessment, assess_soil_moisture
@@ -183,6 +197,10 @@ class _StaleRequestClaimError(HomeAssistantError):
 
 class _DurableTransitionError(HomeAssistantError):
     """Raised when an actuator-safe transition could not be persisted."""
+
+
+WATER_HISTORY_MAX_RECORDS = 50_000
+WATER_HISTORY_SAFETY_MARGIN_DAYS = 45
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,7 +293,9 @@ class IrrigationManager:
         self._provisional_period_id: str | None = None
         self._last_weather_preview_at: datetime | None = None
         self._restore_latest_weather_snapshot()
-        self._has_meter = bool(self._installation_data.get(CONF_WATER_METER))
+        meter_entity = self._installation_data.get(CONF_WATER_METER)
+        raw_meter_entity = self._installation_data.get(CONF_RAW_METER)
+        self._has_meter = bool(meter_entity or raw_meter_entity)
         self._actuators = HomeAssistantActuators(
             hass,
             self._number(
@@ -286,8 +306,24 @@ class IrrigationManager:
         )
         self._meter = HomeAssistantMeter(
             hass,
-            self._installation_data.get(CONF_WATER_METER),
+            cast(str | None, meter_entity or raw_meter_entity),
             self._optional_float(self._installation_data, CONF_METER_MAX_AGE_SECONDS) or 300.0,
+            liters_per_count=(
+                self._optional_float(self._installation_data, CONF_LITERS_PER_COUNT)
+                if raw_meter_entity
+                else None
+            ),
+            continuity=(
+                CumulativeMeter(
+                    accumulated_liters=stored_state.meter_accumulated_liters,
+                    last_raw_liters=stored_state.meter_last_raw_liters,
+                    correction_liters=stored_state.meter_correction_liters,
+                    reset_count=stored_state.meter_reset_count,
+                )
+                if stored_state.meter_accumulated_liters is not None
+                and stored_state.meter_last_raw_liters is not None
+                else None
+            ),
         )
         flow_entity_id = self._installation_data.get(CONF_FLOW_SENSOR)
         self._flow = (
@@ -345,6 +381,7 @@ class IrrigationManager:
         self._active_target_value: float | None = None
         self._active_remaining_value: float | None = None
         self._active_measurement_quality: str | None = None
+        self._current_flow_l_min: float | None = None
         self._complete_idle_event = asyncio.Event()
         self._pending_reload_task: asyncio.Task[None] | None = None
         self._maintenance_task: asyncio.Task[ExecutionResult] | None = None
@@ -586,6 +623,8 @@ class IrrigationManager:
             entity_ids.append(main_valve)
         await self._async_close_entities(list(dict.fromkeys(entity_ids)))
         await self._async_recover_interrupted_execution(could_have_flowed=active_could_have_flowed)
+        with suppress(HomeAssistantError):
+            await self._async_reconcile_meter_source()
         if self._stored_state.maintenance_test is not None:
             interrupted_test = self._stored_state.maintenance_test
             self._stored_state = replace(self._stored_state, maintenance_test=None)
@@ -1169,9 +1208,16 @@ class IrrigationManager:
             flow_l_min = self._flow.read_state_l_min(state)
         except HomeAssistantError:
             async with self._command_lock:
+                self._current_flow_l_min = None
                 self._cancel_leak_observation()
+                self._publish(status=self._coordinator.data.status, active_zone_id=None)
             return
         async with self._command_lock:
+            self._current_flow_l_min = flow_l_min
+            self._publish(
+                status=self._coordinator.data.status,
+                active_zone_id=self._coordinator.data.active_zone_id,
+            )
             if not self._is_idle_for_leak_monitoring():
                 self._cancel_leak_observation()
                 return
@@ -1299,10 +1345,20 @@ class IrrigationManager:
                 self._stored_state.installation_total_liters + amount_liters
             ),
             unassigned_total_liters=(self._stored_state.unassigned_total_liters + amount_liters),
+            unassigned_available_liters=(
+                self._stored_state.unassigned_available_liters + amount_liters
+            ),
             unassigned_measurement_quality=quality,
             unassigned_measurement_origin=origin,
             idle_meter_raw_baseline_liters=new_baseline,
             installation_safety_lock=reason,
+        )
+        self._stored_state = self._with_consumption_record(
+            self._with_meter_continuity(self._stored_state),
+            amount_liters=amount_liters,
+            zone_id=None,
+            source=origin,
+            quality=quality,
         )
         try:
             await self._store.async_save(self._stored_state)
@@ -1466,7 +1522,7 @@ class IrrigationManager:
                     fallback_duration_limit,
                 )
                 delivered_liters += fallback_duration * active.estimated_flow_l_min / 60
-            quality = "estimated"
+            quality = active.fallback_quality
         if (
             quality == "unknown"
             and active.fallback_started_at is None
@@ -1626,6 +1682,16 @@ class IrrigationManager:
                 delivered_liters=delivered_liters,
                 delivered_at=recovered_at,
             ),
+        )
+        recovered_state = self._with_consumption_record(
+            self._with_meter_continuity(recovered_state),
+            amount_liters=delivered_liters,
+            zone_id=active.zone_id,
+            source="restart_recovery",
+            quality=quality,
+            request_id=active.request_id,
+            execution_id=active.execution_id,
+            dose_number=active.dose_number,
         )
         await self._store.async_save(recovered_state)
         self._stored_state = recovered_state
@@ -2256,6 +2322,9 @@ class IrrigationManager:
                     if target_type == "volume"
                     else order.expected_duration_seconds
                 )
+                meter_rounding: dict[str, object] | None = None
+                if target_type == "volume":
+                    target_value, meter_rounding = self._round_meter_target(target_value)
                 remaining_window = max(
                     1.0,
                     (decision.active_window.end - planning_now).total_seconds(),
@@ -2273,6 +2342,8 @@ class IrrigationManager:
                 resolved_inputs = dict(
                     self._effective_zone_profile(data, planning_now.date()).resolved_inputs
                 )
+                if meter_rounding is not None:
+                    resolved_inputs["meter_target_rounding"] = meter_rounding
                 if existing is not None and existing.status in {"cancelled", "expired"}:
                     requests = tuple(
                         replace(
@@ -3053,6 +3124,9 @@ class IrrigationManager:
                 raise HomeAssistantError("The irrigation zone does not exist")
             if amount_liters is not None and not self._has_meter:
                 raise HomeAssistantError("Volume irrigation requires a configured cumulative meter")
+            meter_rounding: dict[str, object] | None = None
+            if amount_liters is not None:
+                amount_liters, meter_rounding = self._round_meter_target(amount_liters)
             target_type = "volume" if amount_liters is not None else "duration"
             target_value = amount_liters if amount_liters is not None else duration_seconds
             if target_value is None:
@@ -3122,9 +3196,14 @@ class IrrigationManager:
                 balance_minimum_effective_liters=balance_snapshot[3],
                 resolved_inputs=dict(
                     self._effective_zone_profile(subentry.data, now.date()).resolved_inputs
+                    | ({"meter_target_rounding": meter_rounding} if meter_rounding else {})
                 ),
             )
             budget_warnings = self._manual_budget_warnings(request, now=requested_start)
+            if meter_rounding and meter_rounding["direction"] != "exact":
+                budget_warnings.append("meter_target_rounded_up")
+            if meter_rounding and meter_rounding.get("coarse_resolution") is True:
+                budget_warnings.append("coarse_meter_resolution")
             self._stored_state = replace(
                 self._stored_state,
                 manual_requests=(*self._stored_state.manual_requests, request),
@@ -3224,6 +3303,9 @@ class IrrigationManager:
                     raise HomeAssistantError("A plan irrigation zone does not exist")
                 if amount is not None and not self._has_meter:
                     raise HomeAssistantError("Volume irrigation requires a cumulative meter")
+                meter_rounding: dict[str, object] | None = None
+                if amount is not None:
+                    amount, meter_rounding = self._round_meter_target(amount)
                 target_type = "volume" if amount is not None else "duration"
                 target_value = amount if amount is not None else duration
                 assert target_value is not None
@@ -3270,6 +3352,7 @@ class IrrigationManager:
                     balance_minimum_effective_liters=balance[3],
                     resolved_inputs=dict(
                         self._effective_zone_profile(subentry.data, now.date()).resolved_inputs
+                        | ({"meter_target_rounding": meter_rounding} if meter_rounding else {})
                     ),
                 )
                 requests.append(request)
@@ -3374,7 +3457,8 @@ class IrrigationManager:
             elif amount_liters is not None:
                 if not self._has_meter:
                     raise HomeAssistantError("Volume irrigation requires a cumulative meter")
-                target_type, target_value = "volume", amount_liters
+                target_type = "volume"
+                target_value, meter_rounding = self._round_meter_target(amount_liters)
             if target_type == "volume" and hard_time_limit_seconds is None:
                 hard_time_limit_seconds = request.hard_time_limit_seconds
             delivery_limit = self._delivery_runtime_limit(
@@ -3409,6 +3493,14 @@ class IrrigationManager:
                     subentry.data,
                     CONF_MAX_DOSE_AMOUNT if target_type == "volume" else CONF_MAX_DOSE_DURATION,
                 ),
+                resolved_inputs={
+                    **request.resolved_inputs,
+                    **(
+                        {"meter_target_rounding": meter_rounding}
+                        if amount_liters is not None
+                        else {}
+                    ),
+                },
                 revision=request.revision + 1,
             )
             self._stored_state = replace(
@@ -3857,6 +3949,26 @@ class IrrigationManager:
         suppressions = self._stored_state.suppressed_automatic_opportunities
         if skip_opportunity is not None and skip_opportunity not in suppressions:
             suppressions = (*suppressions, skip_opportunity)
+        dose_record = {
+            "dose_number": execution.dose_number,
+            "ended_at": now.isoformat(),
+            "delivered_liters": result.delivered_liters,
+            "duration_seconds": result.duration_seconds,
+            "measurement_quality": result.measurement_quality,
+            "measurement_origin": self._measurement_origin(result.measurement_quality),
+            "warning": result.safety_violation,
+        }
+        execution = replace(
+            execution,
+            measurement_quality=result.measurement_quality,
+            measurement_origin=self._measurement_origin(result.measurement_quality),
+            warnings=(
+                (*execution.warnings, result.safety_violation)
+                if result.safety_violation is not None
+                else execution.warnings
+            ),
+            doses=(*execution.doses, dose_record),
+        )
         next_state = replace(
             self._stored_state,
             installation_total_liters=(
@@ -3882,6 +3994,17 @@ class IrrigationManager:
                 delivered_at=now,
             ),
             suppressed_automatic_opportunities=suppressions,
+        )
+        next_state = self._with_consumption_record(
+            self._with_meter_continuity(next_state),
+            amount_liters=result.delivered_liters,
+            zone_id=request.zone_id,
+            source=request.source,
+            quality=result.measurement_quality,
+            request_id=request.request_id,
+            execution_id=execution.execution_id,
+            dose_number=execution.dose_number,
+            warnings=(() if result.safety_violation is None else (result.safety_violation,)),
         )
         try:
             await self._store.async_save(next_state)
@@ -4294,6 +4417,187 @@ class IrrigationManager:
             json.dumps(dict(data), sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
 
+    def _meter_resolution_liters(self) -> float | None:
+        """Return the explicitly configured smallest observable volume step."""
+        return self._optional_float(
+            self._installation_data, CONF_METER_RESOLUTION_LITERS
+        ) or self._optional_float(self._installation_data, CONF_LITERS_PER_COUNT)
+
+    def _round_meter_target(self, amount_liters: float) -> tuple[float, dict[str, object]]:
+        """Align a volume target and return immutable rounding provenance."""
+        resolution = self._meter_resolution_liters()
+        if resolution is None:
+            return amount_liters, {
+                "requested_liters": amount_liters,
+                "target_liters": amount_liters,
+                "direction": "exact",
+                "resolution_liters": None,
+                "expected_error_liters": 0.0,
+            }
+        rounded = round_target_to_resolution(amount_liters, resolution)
+        return rounded.target_liters, {
+            "requested_liters": rounded.requested_liters,
+            "target_liters": rounded.target_liters,
+            "direction": rounded.direction,
+            "resolution_liters": rounded.resolution_liters,
+            "expected_error_liters": rounded.error_liters,
+            "coarse_resolution": resolution > amount_liters * 0.1,
+        }
+
+    def _with_meter_continuity(self, state: StoredInstallationState) -> StoredInstallationState:
+        """Copy the adapter's accepted continuity state into durable storage."""
+        continuity = self._meter.continuity
+        if continuity is None:
+            return state
+        return replace(
+            state,
+            meter_accumulated_liters=continuity.accumulated_liters,
+            meter_last_raw_liters=continuity.last_raw_liters,
+            meter_correction_liters=continuity.correction_liters,
+            meter_reset_count=continuity.reset_count,
+        )
+
+    async def _async_reconcile_meter_source(self) -> None:
+        """Rebase changed meter identity/conversion without booking a consumption delta."""
+        source = self._installation_data.get(CONF_WATER_METER) or self._installation_data.get(
+            CONF_RAW_METER
+        )
+        source_id = source if isinstance(source, str) else None
+        factor = (
+            self._optional_float(self._installation_data, CONF_LITERS_PER_COUNT)
+            if self._installation_data.get(CONF_RAW_METER)
+            else None
+        )
+        if source_id is None:
+            if (
+                self._stored_state.meter_source_entity_id is not None
+                or self._stored_state.meter_source_liters_per_count is not None
+            ):
+                self._stored_state = replace(
+                    self._stored_state,
+                    meter_source_entity_id=None,
+                    meter_source_liters_per_count=None,
+                    idle_meter_raw_baseline_liters=None,
+                )
+                await self._store.async_save(self._stored_state)
+            return
+        if (
+            source_id == self._stored_state.meter_source_entity_id
+            and factor == self._stored_state.meter_source_liters_per_count
+        ):
+            return
+        continuity = await self._meter.rebase_source()
+        self._stored_state = replace(
+            self._with_meter_continuity(self._stored_state),
+            meter_source_entity_id=source_id,
+            meter_source_liters_per_count=factor,
+            idle_meter_raw_baseline_liters=continuity.last_raw_liters,
+        )
+        await self._store.async_save(self._stored_state)
+
+    @staticmethod
+    def _measurement_origin(quality: str) -> str:
+        """Map public quality to a stable non-misleading source label."""
+        return {
+            "measured": "cumulative_meter",
+            "integrated": "flow_sensor",
+            "estimated": "flow_profile",
+        }.get(quality, "unknown")
+
+    @staticmethod
+    def _with_consumption_record(
+        state: StoredInstallationState,
+        *,
+        amount_liters: float,
+        zone_id: str | None,
+        source: str,
+        quality: str,
+        request_id: str | None = None,
+        execution_id: str | None = None,
+        dose_number: int | None = None,
+        warnings: tuple[str, ...] = (),
+    ) -> StoredInstallationState:
+        """Append one bounded immutable contribution without creating another total."""
+        if amount_liters <= 0:
+            return state
+        now = datetime.now(UTC)
+        record = WaterConsumptionRecord(
+            recorded_at=now.isoformat(),
+            amount_liters=amount_liters,
+            zone_id=zone_id,
+            source=source,
+            quality=quality,
+            request_id=request_id,
+            execution_id=execution_id,
+            dose_number=dose_number,
+            warnings=warnings,
+        )
+        horizon = now.replace(
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        ) - timedelta(days=WATER_HISTORY_SAFETY_MARGIN_DAYS)
+        retained = tuple(
+            item
+            for item in (*state.water_consumption_history, record)
+            if datetime.fromisoformat(item.recorded_at) >= horizon
+        )
+        cap_reached = len(retained) > WATER_HISTORY_MAX_RECORDS
+        if cap_reached:
+            retained = retained[-WATER_HISTORY_MAX_RECORDS:]
+        return replace(
+            state,
+            water_consumption_history=retained,
+            water_history_incomplete=state.water_history_incomplete or cap_reached,
+        )
+
+    def _water_period_totals(self, now: datetime) -> dict[str, float]:
+        """Derive local calendar periods from persisted accounting history."""
+        local_now = dt_util.as_local(now)
+        day = local_now.date()
+        week_start = day - timedelta(days=day.weekday())
+        totals = {"today": 0.0, "week": 0.0, "month": 0.0, "year": 0.0}
+        for record in self._stored_state.water_consumption_history:
+            recorded = dt_util.as_local(datetime.fromisoformat(record.recorded_at))
+            recorded_day = recorded.date()
+            if recorded_day == day:
+                totals["today"] += record.amount_liters
+            if week_start <= recorded_day <= day:
+                totals["week"] += record.amount_liters
+            if recorded_day.year == day.year and recorded_day.month == day.month:
+                totals["month"] += record.amount_liters
+            if recorded_day.year == day.year:
+                totals["year"] += record.amount_liters
+        return totals
+
+    async def async_correct_physical_meter(
+        self, *, physical_total_liters: float
+    ) -> dict[str, object]:
+        """Persist an explicit future-facing physical meter display correction."""
+        async with self._command_lock:
+            await self._async_reconcile_meter_source()
+            await self._meter.read_liters()
+            continuity = self._meter.correct(physical_total_liters=physical_total_liters)
+            next_state = self._with_meter_continuity(self._stored_state)
+            await self._store.async_save(next_state)
+            self._stored_state = next_state
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+            self._events.fire(
+                "meter_correction",
+                reason="physical_reading_set",
+                target=self._events.installation_target(),
+                measurements={"physical_total_liters": physical_total_liters},
+                quality="measured",
+                context={"correction_liters": continuity.correction_liters},
+            )
+            return {
+                "physical_total_liters": continuity.total_liters,
+                "correction_liters": continuity.correction_liters,
+            }
+
     @staticmethod
     def _profile_config_hash(data: Mapping[str, Any]) -> str:
         """Hash only user-owned profiles for profile-service optimistic locking."""
@@ -4310,6 +4614,9 @@ class IrrigationManager:
         installation_keys = {
             CONF_MAIN_VALVE,
             CONF_WATER_METER,
+            CONF_RAW_METER,
+            CONF_LITERS_PER_COUNT,
+            CONF_METER_RESOLUTION_LITERS,
             CONF_METER_MAX_AGE_SECONDS,
             CONF_FLOW_SENSOR,
             CONF_FLOW_MAX_AGE_SECONDS,
@@ -4408,19 +4715,422 @@ class IrrigationManager:
             ],
         }
 
-    def export_history(self, *, limit: int, export_format: str) -> dict[str, object]:
-        """Return newest bounded execution history as JSON records or CSV text."""
-        records = [
-            execution.as_dict() for execution in self._stored_state.irrigation_executions[-limit:]
+    async def async_import_portable_config(
+        self,
+        *,
+        payload: Mapping[str, object],
+        entity_remapping: Mapping[str, str],
+        zone_remapping: Mapping[str, str],
+        dry_run: bool,
+        confirm_overwrite: bool,
+        expected_config_hash: str | None,
+        user: User | None = None,
+    ) -> dict[str, object]:
+        """Preview or explicitly apply one portable configuration to this entry."""
+        if payload.get("integration") != "irrigation_manager":
+            raise HomeAssistantError("The import is not an Irrigation Manager export")
+        if payload.get("schema_version") != EXPORT_SCHEMA_VERSION:
+            raise HomeAssistantError("Unsupported Irrigation Manager import schema version")
+        if not all(
+            isinstance(source, str) and isinstance(target, str)
+            for source, target in (*entity_remapping.items(), *zone_remapping.items())
+        ):
+            raise HomeAssistantError("Import mappings must contain only string IDs")
+        if len(zone_remapping.values()) != len(set(zone_remapping.values())):
+            raise HomeAssistantError("Imported zones cannot map to the same target zone")
+        installation = payload.get("installation")
+        zones = payload.get("zones")
+        if not isinstance(installation, Mapping) or not isinstance(zones, list):
+            raise HomeAssistantError("The portable configuration is malformed")
+        raw_installation = installation.get("config")
+        if not isinstance(raw_installation, Mapping):
+            raise HomeAssistantError("The portable installation configuration is malformed")
+        imported_installation = self._remap_import_entities(
+            dict(raw_installation), entity_remapping
+        )
+        if not isinstance(imported_installation.get("name"), str):
+            raise HomeAssistantError("The imported installation requires a name")
+        if imported_installation.get(CONF_WATER_METER) and imported_installation.get(
+            CONF_RAW_METER
+        ):
+            raise HomeAssistantError("The import contains multiple water meter sources")
+        if bool(imported_installation.get(CONF_RAW_METER)) != bool(
+            imported_installation.get(CONF_LITERS_PER_COUNT)
+        ):
+            raise HomeAssistantError("A raw meter requires an explicit liters-per-count factor")
+        try:
+            validate_custom_profiles(imported_installation.get(CONF_CUSTOM_PROFILES, {}))
+        except (TypeError, ValueError) as err:
+            raise HomeAssistantError("The imported profiles are invalid") from err
+        zone_changes: list[dict[str, object]] = []
+        imported_zone_data: list[tuple[_ZoneConfigSnapshot, dict[str, object]]] = []
+        imported_valves: set[str] = set()
+        imported_zone_ids: set[str] = set()
+        for raw_zone in zones:
+            if not isinstance(raw_zone, Mapping) or not isinstance(raw_zone.get("id"), str):
+                raise HomeAssistantError("An imported irrigation zone is malformed")
+            imported_id = cast(str, raw_zone["id"])
+            if imported_id in imported_zone_ids:
+                raise HomeAssistantError("The import contains a duplicate source zone ID")
+            imported_zone_ids.add(imported_id)
+            target_subentry_id = zone_remapping.get(imported_id)
+            target = self._zone_configs_by_subentry_id.get(target_subentry_id or "")
+            raw_config = raw_zone.get("config")
+            if target is None or not isinstance(raw_config, Mapping):
+                zone_changes.append({"imported_id": imported_id, "status": "mapping_required"})
+                continue
+            remapped = self._remap_import_entities(dict(raw_config), entity_remapping)
+            name = remapped.get("name")
+            valve = remapped.get(CONF_ZONE_VALVE)
+            windows = remapped.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])
+            if not isinstance(name, str) or not isinstance(valve, str):
+                raise HomeAssistantError("An imported irrigation zone requires a name and valve")
+            if valve in imported_valves:
+                raise HomeAssistantError("Imported irrigation zones cannot share a valve")
+            imported_valves.add(valve)
+            if not isinstance(windows, list) or not windows:
+                raise HomeAssistantError("An imported irrigation zone requires watering windows")
+            try:
+                for window in windows:
+                    parse_window_rule(str(window))
+                resolve_effective_zone_profile(
+                    remapped,
+                    imported_installation.get(CONF_CUSTOM_PROFILES, {}),
+                    dt_util.now().date(),
+                )
+            except (TypeError, ValueError) as err:
+                raise HomeAssistantError("An imported irrigation zone is invalid") from err
+            imported_zone_data.append((target, remapped))
+            zone_changes.append(
+                {
+                    "imported_id": imported_id,
+                    "target_subentry_id": target.subentry_id,
+                    "status": "update",
+                }
+            )
+        entity_issues = self._import_entity_issues(
+            imported_installation,
+            [data for _, data in imported_zone_data],
+            user=user,
+        )
+        config_hash = self._import_config_hash(
+            payload=payload,
+            imported_installation=imported_installation,
+            imported_zone_data=imported_zone_data,
+        )
+        preview = {
+            "schema_version": EXPORT_SCHEMA_VERSION,
+            "dry_run": dry_run,
+            "config_hash": config_hash,
+            "entity_issues": entity_issues,
+            "unresolved_entities": sorted(
+                issue["entity_id"] for issue in entity_issues if issue["reason"] == "not_found"
+            ),
+            "installation_changed": imported_installation != dict(self._entry.data),
+            "zones": zone_changes,
+            "warnings": [
+                "No configuration from other integrations is imported automatically",
+                *(
+                    ["Every imported zone must be explicitly mapped"]
+                    if len(imported_zone_data) != len(zones)
+                    else []
+                ),
+            ],
+        }
+        if dry_run:
+            return preview
+        if entity_issues:
+            raise HomeAssistantError("The import contains invalid Home Assistant target entities")
+        if len(imported_zone_data) != len(zones):
+            raise HomeAssistantError("Every imported zone requires an explicit target mapping")
+        if not confirm_overwrite:
+            raise HomeAssistantError("Import overwrite requires explicit confirmation")
+        async with self._command_lock:
+            if expected_config_hash != self._import_config_hash(
+                payload=payload,
+                imported_installation=imported_installation,
+                imported_zone_data=imported_zone_data,
+            ):
+                raise HomeAssistantError("The irrigation configuration changed after preview")
+            if not self._is_complete_idle():
+                raise HomeAssistantError("Configuration can only be imported at complete idle")
+            self._hass.config_entries.async_update_entry(
+                self._entry,
+                title=cast(str, imported_installation["name"]),
+                data=imported_installation,
+            )
+            for target, data in imported_zone_data:
+                subentry = self._entry.subentries[target.subentry_id]
+                self._hass.config_entries.async_update_subentry(
+                    self._entry,
+                    subentry,
+                    title=str(data.get("name", subentry.title)),
+                    data=data,
+                )
+        return {**preview, "dry_run": False, "applied": True}
+
+    def _import_config_hash(
+        self,
+        *,
+        payload: Mapping[str, object],
+        imported_installation: Mapping[str, object],
+        imported_zone_data: list[tuple[_ZoneConfigSnapshot, dict[str, object]]],
+    ) -> str:
+        """Hash canonical source, resolved import, and every current write target."""
+        canonical = {
+            "source": payload,
+            "resolved": {
+                "installation": imported_installation,
+                "zones": [
+                    {"target_subentry_id": target.subentry_id, "data": data}
+                    for target, data in sorted(
+                        imported_zone_data, key=lambda item: item[0].subentry_id
+                    )
+                ],
+            },
+            "target": {
+                "installation": {
+                    "title": self._entry.title,
+                    "data": dict(self._entry.data),
+                },
+                "zones": [
+                    {
+                        "subentry_id": target.subentry_id,
+                        "title": self._entry.subentries[target.subentry_id].title,
+                        "data": dict(self._entry.subentries[target.subentry_id].data),
+                    }
+                    for target, _ in sorted(
+                        imported_zone_data, key=lambda item: item[0].subentry_id
+                    )
+                ],
+            },
+        }
+        return sha256(
+            json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def _import_entity_issues(
+        self,
+        installation: Mapping[str, object],
+        zones: list[Mapping[str, object]],
+        *,
+        user: User | None,
+    ) -> list[dict[str, str]]:
+        """Validate only remapped target entities against state, domain, and permissions."""
+        expectations: list[tuple[Mapping[str, object], dict[str, set[str]]]] = [
+            (
+                installation,
+                {
+                    CONF_MAIN_VALVE: {"switch", "valve"},
+                    CONF_WATER_METER: {"sensor"},
+                    CONF_RAW_METER: {"sensor"},
+                    CONF_FLOW_SENSOR: {"sensor"},
+                    CONF_FROST_ENTITY: {"sensor"},
+                    CONF_RAIN_STOP_ENTITY: {"sensor"},
+                    CONF_WEATHER_ENTITY: {"weather"},
+                    CONF_TEMPERATURE_SENSORS: {"sensor"},
+                    CONF_HUMIDITY_SENSORS: {"sensor"},
+                    CONF_WIND_SPEED_SENSORS: {"sensor"},
+                    CONF_SOLAR_RADIATION_SENSORS: {"sensor"},
+                    CONF_SUNSHINE_DURATION_SENSORS: {"sensor"},
+                    CONF_PRESSURE_SENSORS: {"sensor"},
+                    CONF_RAIN_SENSORS: {"sensor"},
+                    CONF_ET0_SENSORS: {"sensor"},
+                    CONF_NOTIFY_ENTITIES: {"notify"},
+                },
+            )
         ]
+        expectations.extend(
+            (
+                zone,
+                {
+                    CONF_ZONE_VALVE: {"switch", "valve"},
+                    CONF_SOIL_MOISTURE_SENSORS: {"sensor"},
+                    CONF_HARDWARE_BATTERY_SENSOR: {"sensor"},
+                    CONF_HARDWARE_CONNECTIVITY_SENSOR: {"sensor", "binary_sensor"},
+                    CONF_HARDWARE_FAULT_SENSOR: {"sensor", "binary_sensor"},
+                },
+            )
+            for zone in zones
+        )
+        issues: list[dict[str, str]] = []
+        checked: set[tuple[str, tuple[str, ...]]] = set()
+        for config, fields in expectations:
+            for key, domains in fields.items():
+                raw = config.get(key)
+                entity_ids = raw if isinstance(raw, list) else [raw]
+                for entity_id in entity_ids:
+                    if not isinstance(entity_id, str):
+                        continue
+                    check_key = (entity_id, tuple(sorted(domains)))
+                    if check_key in checked:
+                        continue
+                    checked.add(check_key)
+                    domain = entity_id.partition(".")[0]
+                    state = self._hass.states.get(entity_id)
+                    reason = (
+                        "wrong_domain"
+                        if domain not in domains
+                        else "not_found"
+                        if state is None
+                        else "unavailable"
+                        if state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}
+                        else "unauthorized"
+                        if user is not None
+                        and not user.permissions.check_entity(entity_id, POLICY_CONTROL)
+                        else None
+                    )
+                    if reason is not None:
+                        issues.append({"entity_id": entity_id, "field": key, "reason": reason})
+        return issues
+
+    @staticmethod
+    def _remap_import_entities(
+        data: dict[str, object], entity_remapping: Mapping[str, str]
+    ) -> dict[str, object]:
+        """Replace only explicitly mapped entity-id string values."""
+
+        def remap(value: object) -> object:
+            if isinstance(value, str):
+                return entity_remapping.get(value, value)
+            if isinstance(value, list):
+                return [remap(item) for item in value]
+            if isinstance(value, dict):
+                return {str(key): remap(item) for key, item in value.items()}
+            return value
+
+        return {key: remap(value) for key, value in data.items()}
+
+    @staticmethod
+    def _import_entity_ids(installation: Mapping[str, object], zones: list[object]) -> set[str]:
+        """Collect declared entity references without inspecting other integrations."""
+        entity_keys = {
+            CONF_MAIN_VALVE,
+            CONF_WATER_METER,
+            CONF_RAW_METER,
+            CONF_FLOW_SENSOR,
+            CONF_FROST_ENTITY,
+            CONF_RAIN_STOP_ENTITY,
+            CONF_WEATHER_ENTITY,
+            CONF_ZONE_VALVE,
+            CONF_HARDWARE_BATTERY_SENSOR,
+            CONF_HARDWARE_CONNECTIVITY_SENSOR,
+            CONF_HARDWARE_FAULT_SENSOR,
+        }
+        result = {
+            value
+            for key, value in installation.items()
+            if key in entity_keys and isinstance(value, str)
+        }
+        result.update(IrrigationManager._nested_entity_ids(installation))
+        for raw_zone in zones:
+            if not isinstance(raw_zone, Mapping):
+                continue
+            config = raw_zone.get("config")
+            if isinstance(config, Mapping):
+                result.update(IrrigationManager._nested_entity_ids(config))
+                result.update(
+                    value
+                    for key, value in config.items()
+                    if key in entity_keys and isinstance(value, str)
+                )
+        return result
+
+    @staticmethod
+    def _nested_entity_ids(value: object) -> set[str]:
+        """Find entity-id shaped strings in portable lists and nested objects."""
+        if isinstance(value, str):
+            domain, separator, object_id = value.partition(".")
+            entity_domains = {
+                "binary_sensor",
+                "climate",
+                "input_boolean",
+                "notify",
+                "number",
+                "sensor",
+                "switch",
+                "valve",
+                "weather",
+            }
+            return {value} if separator and domain in entity_domains and object_id else set()
+        if isinstance(value, Mapping):
+            result: set[str] = set()
+            for item in value.values():
+                result.update(IrrigationManager._nested_entity_ids(item))
+            return result
+        if isinstance(value, list):
+            result = set()
+            for item in value:
+                result.update(IrrigationManager._nested_entity_ids(item))
+            return result
+        return set()
+
+    def export_history(self, *, limit: int, export_format: str) -> dict[str, object]:
+        """Return bounded joined request, execution, dose, calculation, and source history."""
+        requests = {request.request_id: request for request in self._stored_state.manual_requests}
+        records: list[dict[str, object]] = []
+        for execution in self._stored_state.irrigation_executions[-limit:]:
+            request = requests.get(execution.request_id)
+            request_data = (
+                {
+                    key: value
+                    for key, value in request.as_dict().items()
+                    if key not in {"zone_name", "zone_valve", "main_valve"}
+                }
+                if request is not None
+                else None
+            )
+            records.append(
+                {
+                    "request": request_data,
+                    "execution": execution.as_dict(),
+                    "doses": [dict(dose) for dose in execution.doses],
+                    "calculation": dict(execution.resolved_inputs),
+                    "source": request.source if request is not None else "unknown",
+                    "measurement_origin": execution.measurement_origin,
+                    "measurement_quality": execution.measurement_quality,
+                    "warnings": list(execution.warnings),
+                }
+            )
         if export_format == "json":
-            return {"format": "json", "count": len(records), "history": records}
+            return {
+                "schema_version": EXPORT_SCHEMA_VERSION,
+                "format": "json",
+                "count": len(records),
+                "history": records,
+            }
         output = io.StringIO()
-        fields = list(IrrigationExecutionState.__dataclass_fields__)
+        fields = (
+            list(records[0])
+            if records
+            else [
+                "request",
+                "execution",
+                "doses",
+                "calculation",
+                "source",
+                "measurement_origin",
+                "measurement_quality",
+                "warnings",
+            ]
+        )
         writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
-        writer.writerows(records)
-        return {"format": "csv", "count": len(records), "data": output.getvalue()}
+        writer.writerows(
+            {
+                key: json.dumps(value, sort_keys=True, separators=(",", ":"))
+                if isinstance(value, dict | list)
+                else value
+                for key, value in record.items()
+            }
+            for record in records
+        )
+        return {
+            "schema_version": EXPORT_SCHEMA_VERSION,
+            "format": "csv",
+            "count": len(records),
+            "data": output.getvalue(),
+        }
 
     def diagnostics_state_decisions(self) -> dict[str, object]:
         """Expose safety and planning decisions without entity IDs or location names."""
@@ -4494,6 +5204,16 @@ class IrrigationManager:
                 for request in self._stored_state.manual_requests
             ),
             "uncredited_balance_count": len(self._stored_state.uncredited_balance_deliveries),
+            "metering": {
+                "configured": self._has_meter,
+                "resolution_liters": self._meter_resolution_liters(),
+                "continuity_persisted": self._stored_state.meter_last_raw_liters is not None,
+                "reset_count": self._stored_state.meter_reset_count,
+                "physical_correction_liters": self._stored_state.meter_correction_liters,
+                "unassigned_available_liters": self._stored_state.unassigned_available_liters,
+                "history_record_count": len(self._stored_state.water_consumption_history),
+            },
+            "recent_history": self.export_history(limit=25, export_format="json")["history"],
             "planning": [
                 {
                     "zone_id": planning.zone_id,
@@ -4837,6 +5557,7 @@ class IrrigationManager:
             raise HomeAssistantError("Volume irrigation requires a configured cumulative meter")
         if self._has_meter:
             try:
+                await self._async_reconcile_meter_source()
                 meter_raw_baseline_liters = await self._meter.read_raw_liters()
             except HomeAssistantError:
                 if amount_liters is None or meter_failure_strategy == METER_FAILURE_ABORT:
@@ -4924,6 +5645,11 @@ class IrrigationManager:
                 ).isoformat(),
                 operation_deadline_at=manual_request.operation_deadline_at,
                 meter_failure_strategy=meter_failure_strategy,
+                fallback_quality=(
+                    "integrated"
+                    if start_in_estimated_fallback and self._flow is not None
+                    else "estimated"
+                ),
                 request_id=manual_request.request_id,
                 execution_id=execution_id,
                 dose_number=dose_number,
@@ -4983,6 +5709,11 @@ class IrrigationManager:
                     on_zone_opening=self._async_mark_zone_opening,
                     on_zone_opened=self._async_mark_zone_opened,
                     on_progress=self._async_update_progress,
+                    observe_flow=self._flow is not None,
+                    use_flow_consumption=not self._has_meter and self._flow is not None,
+                    flow_freshness_seconds=self._number(
+                        self._installation_data, CONF_FLOW_MAX_AGE_SECONDS, 30.0
+                    ),
                     on_actuator_command=self._async_expect_actuator_state,
                 ),
                 estimated_flow_l_min=estimated_flow_l_min,
@@ -5062,7 +5793,7 @@ class IrrigationManager:
             else remaining
         )
         self._active_measurement_quality = quality
-        if active is not None and quality == "estimated":
+        if active is not None and quality in {"estimated", "integrated"}:
             delivered = max(0.0, (active.requested_amount_liters or 0.0) - remaining)
             now = datetime.now(UTC).isoformat()
             self._stored_state = replace(
@@ -5072,6 +5803,7 @@ class IrrigationManager:
                     fallback_started_at=active.fallback_started_at or now,
                     fallback_checkpoint_at=now,
                     delivered_liters_at_fallback=delivered,
+                    fallback_quality=quality,
                 ),
             )
             await self._store.async_save(self._stored_state)
@@ -5625,6 +6357,14 @@ class IrrigationManager:
                 delivered_at=datetime.now(UTC),
             ),
         )
+        self._stored_state = self._with_consumption_record(
+            self._with_meter_continuity(self._stored_state),
+            amount_liters=result.delivered_liters,
+            zone_id=test.zone_id,
+            source=test.kind,
+            quality=result.measurement_quality,
+            warnings=(() if result.safety_violation is None else (result.safety_violation,)),
+        )
         await self._store.async_save(self._stored_state)
         self._watering = False
         watchdog = self._maintenance_watchdog_task
@@ -5842,7 +6582,7 @@ class IrrigationManager:
         subentry = self._zone_configs_by_subentry_id.get(zone_subentry_id)
         if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
             raise HomeAssistantError("The irrigation zone does not exist")
-        if amount_liters > self._stored_state.unassigned_total_liters:
+        if amount_liters > self._stored_state.unassigned_available_liters:
             raise HomeAssistantError("The amount exceeds unassigned consumption")
 
         zone_id = subentry.unique_id or subentry.subentry_id
@@ -5867,7 +6607,9 @@ class IrrigationManager:
         self._stored_state = replace(
             self._stored_state,
             zone_totals_liters=zone_totals,
-            unassigned_total_liters=(self._stored_state.unassigned_total_liters - amount_liters),
+            unassigned_available_liters=(
+                self._stored_state.unassigned_available_liters - amount_liters
+            ),
             zone_deficit_mm=deficits,
             zone_last_effective_irrigation=last_effective,
         )
@@ -5897,7 +6639,9 @@ class IrrigationManager:
             delivered_liters = result.delivered_liters
             measurement_result_quality = result.measurement_quality
             if request.amount_liters is None and not self._has_meter:
-                if estimated_flow_l_min is not None:
+                if result.measurement_quality == "integrated":
+                    pass
+                elif estimated_flow_l_min is not None:
                     delivered_liters = result.duration_seconds * estimated_flow_l_min / 60
                     measurement_result_quality = "estimated"
                 else:
@@ -5956,8 +6700,21 @@ class IrrigationManager:
                 zone_last_duration_seconds=dict(self._stored_state.zone_last_duration_seconds),
                 zone_safety_locks=dict(self._stored_state.zone_safety_locks),
                 unassigned_total_liters=self._stored_state.unassigned_total_liters,
+                unassigned_available_liters=self._stored_state.unassigned_available_liters,
                 unassigned_measurement_quality=(self._stored_state.unassigned_measurement_quality),
                 unassigned_measurement_origin=(self._stored_state.unassigned_measurement_origin),
+                water_period_liters=self._water_period_totals(dt_util.now()),
+                water_period_quality=(
+                    "incomplete" if self._stored_state.water_history_incomplete else "complete"
+                ),
+                current_flow_l_min=self._current_flow_l_min,
+                physical_meter_liters=(
+                    self._meter.continuity.total_liters
+                    if self._meter.continuity is not None
+                    else None
+                ),
+                meter_measurement_quality=("measured" if self._meter.continuity else "unknown"),
+                meter_resolution_liters=self._meter_resolution_liters(),
                 status=status,
                 active_zone_id=active_zone_id,
                 emergency_stop=self._stored_state.emergency_stop,

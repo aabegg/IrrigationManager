@@ -3,10 +3,12 @@
 from dataclasses import replace
 from types import MappingProxyType
 
+import pytest
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import STATE_OFF
-from homeassistant.core import Event, HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.core import Context, Event, HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
+from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
 
 from custom_components.irrigation_manager.const import DOMAIN, EVENT_IRRIGATION_MANAGER
 from custom_components.irrigation_manager.diagnostics import async_get_config_entry_diagnostics
@@ -178,5 +180,140 @@ async def test_events_exports_diagnostics_and_reconciliation(hass: HomeAssistant
     assert event["target"] == {"type": "zone", "id": "zone-1"}
     assert "switch.lawn" not in str(event)
     assert "Private garden" not in str(event)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_portable_import_requires_preview_mapping_confirmation_and_hash(
+    hass: HomeAssistant,
+) -> None:
+    """Never silently import entities or overwrite an existing installation."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    payload = manager.export_portable_config()
+    payload["installation"]["config"]["name"] = "Imported garden"
+    hass.states.async_set("weather.imported", "sunny")
+
+    preview = await manager.async_import_portable_config(
+        payload=payload,
+        entity_remapping={"weather.home": "weather.imported"},
+        zone_remapping={"zone-1": subentry.subentry_id},
+        dry_run=True,
+        confirm_overwrite=False,
+        expected_config_hash=None,
+    )
+
+    assert preview["dry_run"] is True
+    assert preview["installation_changed"] is True
+    assert entry.title == "Private garden"
+    with pytest.raises(HomeAssistantError, match="confirmation"):
+        await manager.async_import_portable_config(
+            payload=payload,
+            entity_remapping={"weather.home": "weather.imported"},
+            zone_remapping={"zone-1": subentry.subentry_id},
+            dry_run=False,
+            confirm_overwrite=False,
+            expected_config_hash=preview["config_hash"],
+        )
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_import_config_service_requires_admin_user(hass: HomeAssistant) -> None:
+    """Reject configuration imports from non-admin service-call contexts."""
+    entry, subentry = await _setup_installation(hass)
+    user = MockUser().add_to_hass(hass)
+
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            "import_config",
+            {
+                "config_entry_id": entry.entry_id,
+                "payload": entry.runtime_data.manager.export_portable_config(),
+                "zone_remapping": {"zone-1": subentry.subentry_id},
+            },
+            blocking=True,
+            return_response=True,
+            context=Context(user_id=user.id),
+        )
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_import_hash_covers_source_and_current_target_zone(hass: HomeAssistant) -> None:
+    """Reject a preview after either imported source or mapped target zone changes."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    hass.states.async_set("weather.imported", "sunny")
+    payload = manager.export_portable_config()
+    preview = await manager.async_import_portable_config(
+        payload=payload,
+        entity_remapping={"weather.home": "weather.imported"},
+        zone_remapping={"zone-1": subentry.subentry_id},
+        dry_run=True,
+        confirm_overwrite=False,
+        expected_config_hash=None,
+    )
+    hass.config_entries.async_update_subentry(
+        entry,
+        subentry,
+        data={**subentry.data, "default_duration": 120},
+    )
+
+    with pytest.raises(HomeAssistantError, match="changed after preview"):
+        await manager.async_import_portable_config(
+            payload=payload,
+            entity_remapping={"weather.home": "weather.imported"},
+            zone_remapping={"zone-1": subentry.subentry_id},
+            dry_run=False,
+            confirm_overwrite=True,
+            expected_config_hash=preview["config_hash"],
+        )
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_import_rejects_duplicate_targets_and_invalid_remapped_target(
+    hass: HomeAssistant,
+) -> None:
+    """Validate resolved targets before making any config-entry write."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    payload = manager.export_portable_config()
+    second_zone = {**payload["zones"][0], "id": "zone-2"}
+    payload["zones"].append(second_zone)
+
+    with pytest.raises(HomeAssistantError, match="same target"):
+        await manager.async_import_portable_config(
+            payload=payload,
+            entity_remapping={"weather.home": "sensor.wrong_domain"},
+            zone_remapping={
+                "zone-1": subentry.subentry_id,
+                "zone-2": subentry.subentry_id,
+            },
+            dry_run=True,
+            confirm_overwrite=False,
+            expected_config_hash=None,
+        )
+
+    payload["zones"].pop()
+    hass.states.async_set("sensor.wrong_domain", "1")
+    preview = await manager.async_import_portable_config(
+        payload=payload,
+        entity_remapping={"weather.home": "sensor.wrong_domain"},
+        zone_remapping={"zone-1": subentry.subentry_id},
+        dry_run=True,
+        confirm_overwrite=False,
+        expected_config_hash=None,
+    )
+    assert preview["entity_issues"] == [
+        {
+            "entity_id": "sensor.wrong_domain",
+            "field": "weather_entity",
+            "reason": "wrong_domain",
+        }
+    ]
+    assert entry.title == "Private garden"
 
     assert await hass.config_entries.async_unload(entry.entry_id)

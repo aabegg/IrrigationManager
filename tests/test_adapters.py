@@ -56,3 +56,12 @@ async def test_meter_adapter_preserves_continuity_for_conservative_reset(
 
     hass.states.async_set(entity_id, "3", attributes)
     assert await meter.read_liters() == 8493
+
+
+async def test_raw_count_meter_uses_explicit_liters_per_count(hass: HomeAssistant) -> None:
+    """Normalize a unitless pulse total only through its configured factor."""
+    hass.states.async_set("sensor.pulses", "42")
+    meter = HomeAssistantMeter(hass, "sensor.pulses", liters_per_count=2.5)
+
+    assert await meter.read_raw_liters() == 105
+    assert await meter.read_liters() == 105

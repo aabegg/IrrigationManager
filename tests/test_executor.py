@@ -74,6 +74,19 @@ class FakeFlow:
         return next(self.readings)
 
 
+class FailingFlow:
+    """Return direct-flow samples until a deterministic failure."""
+
+    def __init__(self, readings: Sequence[float | Exception]) -> None:
+        self.readings = iter(readings)
+
+    async def read_l_min(self) -> float:
+        reading = next(self.readings)
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+
 class FakeClock:
     """Record requested waits without delaying the test."""
 
@@ -119,6 +132,26 @@ class FallbackBlockingClock:
             return
         self.sleeps += 1
         if self.sleeps <= 2:
+            self.elapsed += seconds
+            return
+        self.blocked.set()
+        await asyncio.Event().wait()
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+
+class FlowFinalBlockingClock:
+    """Allow one flow sample, then stop inside the following interval."""
+
+    def __init__(self) -> None:
+        self.sleeps = 0
+        self.elapsed = 0.0
+        self.blocked = asyncio.Event()
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps += 1
+        if self.sleeps == 1:
             self.elapsed += seconds
             return
         self.blocked.set()
@@ -274,6 +307,122 @@ async def test_volume_meter_failure_can_finish_with_explicit_estimated_fallback(
     assert result.delivered_liters == 10
     assert result.duration_seconds == 7
     assert result.measurement_quality == "estimated"
+
+
+async def test_volume_meter_failure_integrates_configured_direct_flow() -> None:
+    """Use direct flow samples without ever labelling them cumulative-meter measured."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FailingMeter([100, RuntimeError("offline")]),
+        flow=FakeFlow([60, 60]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            amount_liters=2,
+            hard_time_limit_seconds=5,
+            monitor_interval_seconds=1,
+            meter_failure_strategy="estimated_time_fallback",
+            estimated_flow_l_min=30,
+            observe_flow=True,
+        )
+    )
+
+    assert result.target_reached
+    assert result.delivered_liters == 2
+    assert result.measurement_quality == "integrated"
+
+
+async def test_cancellation_integrates_final_fresh_flow_interval_once() -> None:
+    """Account water between the last valid sample and cancellation exactly once."""
+    clock = FlowFinalBlockingClock()
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FakeMeter([0]),
+        flow=FakeFlow([60]),
+        clock=clock,
+    )
+    task = asyncio.create_task(
+        executor.execute(
+            ExecutionRequest(
+                zone_id="lawn",
+                zone_valve="switch.zone_lawn",
+                main_valve=None,
+                duration_seconds=60,
+                monitor_interval_seconds=1,
+                observe_flow=True,
+                use_flow_consumption=True,
+                flow_freshness_seconds=30,
+            )
+        )
+    )
+    await clock.blocked.wait()
+    clock.elapsed = 1.5
+
+    task.cancel()
+    result = await task
+
+    assert result.stopped
+    assert result.delivered_liters == 1.5
+    assert result.measurement_quality == "integrated"
+
+
+async def test_flow_failure_integrates_only_fresh_final_interval() -> None:
+    """Bound the final interval by freshness when the next flow read fails."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FakeMeter([0]),
+        flow=FailingFlow([60, RuntimeError("offline")]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            duration_seconds=10,
+            monitor_interval_seconds=1,
+            observe_flow=True,
+            use_flow_consumption=True,
+            flow_freshness_seconds=0.25,
+        )
+    )
+
+    assert result.delivered_liters == 0.5
+    assert result.measurement_quality == "integrated"
+    assert "Flow safety unavailable" in (result.safety_violation or "")
+
+
+async def test_final_meter_failure_uses_integrated_flow_consumption() -> None:
+    """Keep valid integrated consumption when the cumulative final read fails."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FailingMeter([0, RuntimeError("offline"), RuntimeError("offline")]),
+        flow=FakeFlow([60]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            duration_seconds=1,
+            monitor_interval_seconds=1,
+            observe_flow=True,
+            use_flow_consumption=True,
+            flow_freshness_seconds=30,
+        )
+    )
+
+    assert result.delivered_liters == 1
+    assert result.measurement_quality == "integrated"
+    assert result.safety_violation is None
 
 
 async def test_initial_meter_read_can_enter_explicit_estimated_fallback() -> None:

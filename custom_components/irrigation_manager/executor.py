@@ -73,6 +73,8 @@ class ExecutionRequest:
     on_zone_opened: Callable[[], Awaitable[None]] | None = None
     on_progress: Callable[[float, str], Awaitable[None]] | None = None
     observe_flow: bool = False
+    use_flow_consumption: bool = False
+    flow_freshness_seconds: float = 30.0
     on_flow_sample: Callable[[float], Awaitable[None]] | None = None
     on_actuator_command: Callable[[str, bool], Awaitable[None]] | None = None
 
@@ -108,6 +110,10 @@ class _ExecutionProgress:
     measurement_quality: str
     target_reached: bool
     accounted_at: float | None = None
+    flow_accounted_at: float | None = None
+    integrated_liters: float = 0.0
+    last_flow_l_min: float | None = None
+    flow_finalized: bool = False
 
 
 class IrrigationExecutor:
@@ -136,7 +142,7 @@ class IrrigationExecutor:
                 raise ValueError("An execution time limit is required")
             using_estimated_fallback = request.start_in_estimated_fallback
             meter_start_liters: float | None = None
-            if not using_estimated_fallback:
+            if not using_estimated_fallback and not request.use_flow_consumption:
                 try:
                     meter_start_liters = await self._meter.read_liters()
                     self._validate_meter_reading(meter_start_liters)
@@ -156,7 +162,14 @@ class IrrigationExecutor:
             delivered_duration_seconds = time_limit
             progress = _ExecutionProgress(
                 delivered_liters=0.0,
-                measurement_quality=("estimated" if using_estimated_fallback else "measured"),
+                measurement_quality=(
+                    "integrated"
+                    if request.use_flow_consumption
+                    or (using_estimated_fallback and self._flow is not None)
+                    else "estimated"
+                    if using_estimated_fallback
+                    else "measured"
+                ),
                 target_reached=request.duration_seconds is not None,
             )
             violations: list[str] = []
@@ -185,6 +198,7 @@ class IrrigationExecutor:
                                 await request.on_zone_opening()
                             watering_started_at = self._clock.monotonic()
                             progress.accounted_at = watering_started_at
+                            progress.flow_accounted_at = watering_started_at
                             zone_open_command_at = self._clock.monotonic()
                             await self._open_and_confirm(request, request.zone_valve)
                             opening_latency_seconds = self._clock.monotonic() - zone_open_command_at
@@ -205,6 +219,7 @@ class IrrigationExecutor:
                             await request.on_zone_opening()
                         watering_started_at = self._clock.monotonic()
                         progress.accounted_at = watering_started_at
+                        progress.flow_accounted_at = watering_started_at
                         deadline = watering_started_at + time_limit
                         zone_open_command_at = self._clock.monotonic()
                         await self._open_and_confirm(request, request.zone_valve)
@@ -279,6 +294,7 @@ class IrrigationExecutor:
                         max(0.0, self._clock.monotonic() - elapsed_started_at),
                     )
             finally:
+                self._finalize_flow_progress(request, progress, at=self._clock.monotonic())
                 cleanup_entities = [] if zone_closed else [request.zone_valve]
                 if request.main_valve is not None:
                     cleanup_entities.append(request.main_valve)
@@ -309,7 +325,16 @@ class IrrigationExecutor:
                 try:
                     meter_end_liters = await self._meter.read_liters()
                 except Exception as err:  # noqa: BLE001
-                    if request.amount_liters is None:
+                    if progress.integrated_liters > 0:
+                        progress.measurement_quality = "integrated"
+                        progress.delivered_liters = progress.integrated_liters
+                        if (
+                            request.amount_liters is not None
+                            and request.meter_failure_strategy != "estimated_time_fallback"
+                        ):
+                            violations.append(f"Water meter failed during irrigation: {err}")
+                            progress.target_reached = False
+                    elif request.amount_liters is None:
                         execution_error = execution_error or err
                 else:
                     try:
@@ -322,6 +347,8 @@ class IrrigationExecutor:
                         violations.append(str(err))
                         progress.target_reached = False
                         safety_scope = "installation"
+            elif progress.measurement_quality == "integrated":
+                progress.delivered_liters = progress.integrated_liters
             if execution_error is not None:
                 violations.append(str(execution_error))
 
@@ -412,6 +439,17 @@ class IrrigationExecutor:
                         return "installation"
                     if request.on_flow_sample is not None:
                         await request.on_flow_sample(flow_l_min)
+                    now = self._clock.monotonic()
+                    self._integrate_flow_interval(
+                        request,
+                        progress,
+                        at=now,
+                        fallback_flow_l_min=flow_l_min,
+                    )
+                    progress.flow_accounted_at = now
+                    progress.last_flow_l_min = flow_l_min
+                    if progress.measurement_quality == "integrated":
+                        progress.delivered_liters = progress.integrated_liters
                     if request.amount_liters is not None and self._clock.monotonic() >= deadline:
                         self._record_hard_timeout(request, violations, progress)
                         return None
@@ -442,6 +480,11 @@ class IrrigationExecutor:
                         current_liters = await self._meter.read_liters()
                     except Exception as err:  # noqa: BLE001
                         if request.meter_failure_strategy != "estimated_time_fallback":
+                            if self._flow is not None and progress.integrated_liters > 0:
+                                progress.delivered_liters = max(
+                                    progress.delivered_liters, progress.integrated_liters
+                                )
+                                progress.measurement_quality = "integrated"
                             violations.append(f"Water meter failed during irrigation: {err}")
                             progress.target_reached = False
                             return None
@@ -454,8 +497,19 @@ class IrrigationExecutor:
                             )
                             progress.target_reached = False
                             return None
-                        progress.measurement_quality = "estimated"
-                        self._capture_estimated_progress(request, progress)
+                        if (
+                            self._flow is not None
+                            and progress.flow_accounted_at is not None
+                            and progress.integrated_liters > 0
+                        ):
+                            progress.measurement_quality = "integrated"
+                            progress.delivered_liters = max(
+                                progress.delivered_liters, progress.integrated_liters
+                            )
+                            progress.accounted_at = self._clock.monotonic()
+                        else:
+                            progress.measurement_quality = "estimated"
+                            self._capture_estimated_progress(request, progress)
                     else:
                         if meter_start_liters is None:
                             raise RuntimeError("Volume irrigation meter baseline is missing")
@@ -470,6 +524,8 @@ class IrrigationExecutor:
                             progress.target_reached = False
                             return "installation"
                         progress.accounted_at = self._clock.monotonic()
+                elif progress.measurement_quality == "integrated":
+                    progress.delivered_liters = progress.integrated_liters
                 else:
                     if request.estimated_flow_l_min is None or request.estimated_flow_l_min <= 0:
                         raise RuntimeError("Estimated fallback flow is missing")
@@ -522,6 +578,43 @@ class IrrigationExecutor:
             max(0.0, now - progress.accounted_at) * request.estimated_flow_l_min / 60
         )
         progress.accounted_at = now
+
+    @staticmethod
+    def _integrate_flow_interval(
+        request: ExecutionRequest,
+        progress: _ExecutionProgress,
+        *,
+        at: float,
+        fallback_flow_l_min: float | None = None,
+    ) -> None:
+        """Integrate one monotonic interval using only a fresh last valid sample."""
+        if progress.flow_accounted_at is None:
+            return
+        flow_l_min = progress.last_flow_l_min
+        if flow_l_min is None:
+            flow_l_min = fallback_flow_l_min
+        if flow_l_min is None:
+            return
+        elapsed = max(0.0, at - progress.flow_accounted_at)
+        fresh_elapsed = min(elapsed, max(0.0, request.flow_freshness_seconds))
+        progress.integrated_liters += fresh_elapsed * flow_l_min / 60
+
+    @classmethod
+    def _finalize_flow_progress(
+        cls,
+        request: ExecutionRequest,
+        progress: _ExecutionProgress,
+        *,
+        at: float,
+    ) -> None:
+        """Capture the final fresh flow interval exactly once on every exit path."""
+        if progress.flow_finalized:
+            return
+        cls._integrate_flow_interval(request, progress, at=at)
+        progress.flow_accounted_at = at
+        progress.flow_finalized = True
+        if progress.measurement_quality == "integrated":
+            progress.delivered_liters = progress.integrated_liters
 
     @staticmethod
     def _validate_meter_reading(reading_liters: float) -> None:

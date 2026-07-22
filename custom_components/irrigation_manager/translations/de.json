@@ -75,6 +75,8 @@
       "name": "Portable Konfiguration exportieren",
       "description": "Gibt die versionierte Anlagen- und Zonenkonfiguration ohne Geheimnisse zurück."
     },
+    "import_config": {"name": "Portable Konfiguration importieren", "description": "Zeigt eine Vorschau oder überschreibt diese Anlage ausdrücklich anhand eines versionierten Exports und expliziter Entity-Zuordnungen."},
+    "correct_physical_meter": {"name": "Physischen Zähler korrigieren", "description": "Setzt den abgelesenen physischen Zählerstand, ohne historischen Verbrauch umzuschreiben."},
     "export_history": {
       "name": "Bewässerungshistorie exportieren",
       "description": "Gibt eine begrenzte Anzahl der neuesten Bewässerungsvorgänge als JSON oder CSV zurück.",
@@ -190,6 +192,13 @@
       "unassigned_water_total": {
         "name": "Unzugeordneter Wasserverbrauch"
       },
+      "water_today": {"name": "Wasser heute"},
+      "water_week": {"name": "Wasser diese Woche"},
+      "water_month": {"name": "Wasser diesen Monat"},
+      "water_year": {"name": "Wasser dieses Jahr"},
+      "current_flow": {"name": "Aktueller Durchfluss"},
+      "physical_meter": {"name": "Korrigierter physischer Zähler"},
+      "meter_measurement_quality": {"name": "Messqualität des Zählers"},
       "status": {
         "name": "Status",
         "state": {
@@ -219,6 +228,7 @@
         "name": "Messqualität",
         "state": {
           "measured": "Gemessen",
+          "integrated": "Aus Durchfluss integriert",
           "estimated": "Geschätzt",
           "unknown": "Unbekannt"
         }
@@ -259,6 +269,9 @@
           "name": "Name",
           "main_valve": "Hauptventil",
           "water_meter": "Kumulativer Wasserzähler",
+          "raw_meter": "Roher Impuls- oder Zählwert",
+          "liters_per_count": "Liter je Impuls oder Zählschritt",
+          "meter_resolution_liters": "Zählerauflösung",
           "meter_max_age_seconds": "Maximales Alter der Wasserzählerdaten",
           "flow_sensor": "Durchflusssensor",
           "leak_monitoring": "Leckage im Leerlauf überwachen",
@@ -322,7 +335,9 @@
     },
     "error": {
       "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein.",
-      "invalid_profiles": "Profildaten oder eine Profilreferenz sind ungültig."
+      "invalid_profiles": "Profildaten oder eine Profilreferenz sind ungültig.",
+      "multiple_meter_sources": "Wähle entweder einen kumulativen Volumenzähler oder einen Rohzähler, nicht beide.",
+      "raw_meter_requires_factor": "Rohzähler und Liter-je-Zählschritt müssen gemeinsam konfiguriert werden."
     }
   },
   "options": {
@@ -331,7 +346,8 @@
         "title": "Einstellungen des Irrigation Managers",
         "menu_options": {
           "installation": "Experteneinstellungen der Anlage",
-          "zone": "Experteneinstellungen einer Zone"
+          "zone": "Experteneinstellungen einer Zone",
+          "import_config": "Portable Konfiguration importieren"
         }
       },
       "installation": {
@@ -341,6 +357,9 @@
           "name": "Name",
           "main_valve": "Hauptventil",
           "water_meter": "Kumulativer Wasserzähler",
+          "raw_meter": "Roher Impuls- oder Zählwert",
+          "liters_per_count": "Liter je Impuls oder Zählschritt",
+          "meter_resolution_liters": "Zählerauflösung",
           "meter_max_age_seconds": "Maximales Alter der Wasserzählerdaten",
           "flow_sensor": "Durchflusssensor",
           "leak_monitoring": "Leckage im Leerlauf überwachen",
@@ -394,6 +413,8 @@
         "title": "Bewässerungszone auswählen",
         "data": {"zone_subentry_id": "Bewässerungszone"}
       },
+      "import_config": {"title": "Konfigurationsimport prüfen", "description": "Verwende nur einen portablen Irrigation-Manager-Export und ausdrückliche Zuordnungen.", "data": {"payload": "Portable Konfiguration", "entity_remapping": "Entity-Neuzuordnung", "zone_remapping": "Zonen-Neuzuordnung"}},
+      "import_confirm": {"title": "Überschreiben der Konfiguration bestätigen", "description": "Trockenlauf-Vorschau: {preview}", "data": {"confirm_overwrite": "Zugeordnete Anlage und Zonen überschreiben"}},
       "profile_impact": {
         "title": "Profiländerungen bestätigen",
         "description": "Betroffene Bewässerungszonen: {zones}. Historische Berechnungen bleiben unverändert.",
@@ -465,11 +486,16 @@
       "already_configured": "Dieses Zonenventil ist bereits konfiguriert.",
       "profile_change_not_pending": "Es gibt keine offene Profiländerung zur Bestätigung.",
       "configuration_changed": "Die Anlage wurde geändert, während dieses Formular geöffnet war. Öffne es erneut und wende die Änderungen nochmals an."
+      ,"installation_not_loaded": "Die Bewässerungsanlage ist nicht geladen."
+      ,"import_not_pending": "Es gibt keinen geprüften Import zur Bestätigung."
     },
     "error": {
       "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein.",
       "invalid_profiles": "Profildaten oder eine Profilreferenz sind ungültig.",
+      "multiple_meter_sources": "Wähle entweder einen kumulativen Volumenzähler oder einen Rohzähler, nicht beide.",
+      "raw_meter_requires_factor": "Rohzähler und Liter-je-Zählschritt müssen gemeinsam konfiguriert werden.",
       "soil_moisture_correction_limit_required": "Die konservative Korrektur benötigt eine ausdrücklich positive Korrekturgrenze."
+      ,"invalid_import": "Portable Datei, Version oder Entity-/Zonenzuordnung ist ungültig."
     }
   },
   "config_subentries": {

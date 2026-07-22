@@ -387,6 +387,56 @@ export_config:
       selector:
         config_entry:
           integration: irrigation_manager
+import_config:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    payload:
+      required: true
+      selector:
+        object:
+    entity_remapping:
+      required: false
+      default: {}
+      selector:
+        object:
+    zone_remapping:
+      required: false
+      default: {}
+      selector:
+        object:
+    dry_run:
+      required: false
+      default: true
+      selector:
+        boolean:
+    confirm_overwrite:
+      required: false
+      default: false
+      selector:
+        boolean:
+    config_hash:
+      required: false
+      selector:
+        text:
+correct_physical_meter:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    physical_total:
+      required: true
+      selector:
+        number:
+          min: 0
+          step: 0.001
+          unit_of_measurement: L
+          mode: box
 export_history:
   fields:
     config_entry_id:

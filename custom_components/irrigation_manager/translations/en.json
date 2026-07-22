@@ -75,6 +75,8 @@
       "name": "Export portable configuration",
       "description": "Return the versioned installation and zone configuration without secrets."
     },
+    "import_config": {"name": "Import portable configuration", "description": "Preview or explicitly overwrite this installation using a versioned export and explicit entity mappings."},
+    "correct_physical_meter": {"name": "Correct physical meter", "description": "Set the observed physical meter total without rewriting historical consumption."},
     "export_history": {
       "name": "Export irrigation history",
       "description": "Return a bounded set of the newest irrigation executions as JSON or CSV.",
@@ -190,6 +192,13 @@
       "unassigned_water_total": {
         "name": "Unassigned water consumption"
       },
+      "water_today": {"name": "Water today"},
+      "water_week": {"name": "Water this week"},
+      "water_month": {"name": "Water this month"},
+      "water_year": {"name": "Water this year"},
+      "current_flow": {"name": "Current flow"},
+      "physical_meter": {"name": "Corrected physical meter"},
+      "meter_measurement_quality": {"name": "Meter measurement quality"},
       "status": {
         "name": "Status",
         "state": {
@@ -219,6 +228,7 @@
         "name": "Measurement quality",
         "state": {
           "measured": "Measured",
+          "integrated": "Integrated from flow",
           "estimated": "Estimated",
           "unknown": "Unknown"
         }
@@ -259,6 +269,9 @@
           "name": "Name",
           "main_valve": "Main valve",
           "water_meter": "Cumulative water meter",
+          "raw_meter": "Raw pulse or count meter",
+          "liters_per_count": "Liters per pulse or count",
+          "meter_resolution_liters": "Meter resolution",
           "meter_max_age_seconds": "Maximum water meter data age",
           "flow_sensor": "Flow sensor",
           "leak_monitoring": "Monitor for leaks while idle",
@@ -322,7 +335,9 @@
     },
     "error": {
       "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time.",
-      "invalid_profiles": "Profile data or a profile reference is invalid."
+      "invalid_profiles": "Profile data or a profile reference is invalid.",
+      "multiple_meter_sources": "Select either a cumulative volume meter or a raw count meter, not both.",
+      "raw_meter_requires_factor": "A raw meter and its liters-per-count factor must be configured together."
     }
   },
   "options": {
@@ -331,7 +346,8 @@
         "title": "Irrigation Manager settings",
         "menu_options": {
           "installation": "Installation expert settings",
-          "zone": "Zone expert settings"
+          "zone": "Zone expert settings",
+          "import_config": "Import portable configuration"
         }
       },
       "installation": {
@@ -341,6 +357,9 @@
           "name": "Name",
           "main_valve": "Main valve",
           "water_meter": "Cumulative water meter",
+          "raw_meter": "Raw pulse or count meter",
+          "liters_per_count": "Liters per pulse or count",
+          "meter_resolution_liters": "Meter resolution",
           "meter_max_age_seconds": "Maximum water meter data age",
           "flow_sensor": "Flow sensor",
           "leak_monitoring": "Monitor for leaks while idle",
@@ -394,6 +413,8 @@
         "title": "Select irrigation zone",
         "data": {"zone_subentry_id": "Irrigation zone"}
       },
+      "import_config": {"title": "Preview configuration import", "description": "Provide only an Irrigation Manager portable export and explicit mappings.", "data": {"payload": "Portable configuration", "entity_remapping": "Entity remapping", "zone_remapping": "Zone remapping"}},
+      "import_confirm": {"title": "Confirm configuration overwrite", "description": "Dry-run preview: {preview}", "data": {"confirm_overwrite": "Overwrite the mapped installation and zones"}},
       "profile_impact": {
         "title": "Confirm profile changes",
         "description": "Affected irrigation zones: {zones}. Historical calculations remain unchanged.",
@@ -465,11 +486,16 @@
       "already_configured": "This zone valve is already configured.",
       "profile_change_not_pending": "There is no pending profile change to confirm.",
       "configuration_changed": "The installation changed while this form was open. Reopen it and apply your changes again."
+      ,"installation_not_loaded": "The irrigation installation is not loaded."
+      ,"import_not_pending": "There is no previewed import to confirm."
     },
     "error": {
       "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time.",
       "invalid_profiles": "Profile data or a profile reference is invalid.",
+      "multiple_meter_sources": "Select either a cumulative volume meter or a raw count meter, not both.",
+      "raw_meter_requires_factor": "A raw meter and its liters-per-count factor must be configured together.",
       "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
+      ,"invalid_import": "The portable file, version, entity mappings, or zone mappings are invalid."
     }
   },
   "config_subentries": {

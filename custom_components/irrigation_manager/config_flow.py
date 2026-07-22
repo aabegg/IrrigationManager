@@ -1,5 +1,6 @@
 """Config and subentry flows for Irrigation Manager."""
 
+import json
 from datetime import time
 from typing import Any, override
 from uuid import uuid4
@@ -74,6 +75,7 @@ from .const import (
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
+    CONF_LITERS_PER_COUNT,
     CONF_LOCAL_WIND_HEIGHT_M,
     CONF_MAIN_VALVE,
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
@@ -90,6 +92,7 @@ from .const import (
     CONF_MAXIMUM_TARGET_LITERS,
     CONF_METER_FAILURE_STRATEGY,
     CONF_METER_MAX_AGE_SECONDS,
+    CONF_METER_RESOLUTION_LITERS,
     CONF_MIN_FLOW,
     CONF_MINIMUM_EFFECTIVE_LITERS,
     CONF_MINIMUM_INTERVAL_DAYS,
@@ -104,6 +107,7 @@ from .const import (
     CONF_RAIN_SENSORS,
     CONF_RAIN_STOP_ENTITY,
     CONF_RAIN_STOP_THRESHOLD,
+    CONF_RAW_METER,
     CONF_SEASONAL_CROP_FACTORS,
     CONF_SEASONAL_ET0_MM,
     CONF_SOAK_DURATION,
@@ -168,6 +172,19 @@ INSTALLATION_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_WATER_METER): EntitySelector(
             EntitySelectorConfig(domain=Platform.SENSOR)
+        ),
+        vol.Optional(CONF_RAW_METER): EntitySelector(EntitySelectorConfig(domain=Platform.SENSOR)),
+        vol.Optional(CONF_LITERS_PER_COUNT): NumberSelector(
+            NumberSelectorConfig(min=0.001, max=1_000_000, step=0.001, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_METER_RESOLUTION_LITERS): NumberSelector(
+            NumberSelectorConfig(
+                min=0.001,
+                max=1_000_000,
+                step=0.001,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfVolume.LITERS,
+            )
         ),
         vol.Optional(CONF_METER_MAX_AGE_SECONDS, default=300): NumberSelector(
             NumberSelectorConfig(
@@ -681,6 +698,13 @@ def _validate_installation_input(user_input: dict[str, Any]) -> str | None:
         validate_custom_profiles(user_input.get(CONF_CUSTOM_PROFILES, {}))
     except TypeError, ValueError:
         return "invalid_profiles"
+    cumulative = user_input.get(CONF_WATER_METER)
+    raw = user_input.get(CONF_RAW_METER)
+    factor = user_input.get(CONF_LITERS_PER_COUNT)
+    if cumulative and raw:
+        return "multiple_meter_sources"
+    if bool(raw) != bool(factor):
+        return "raw_meter_requires_factor"
     return None
 
 
@@ -688,7 +712,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create and reconfigure irrigation installations."""
 
     VERSION = 1
-    MINOR_VERSION = 2
+    MINOR_VERSION = 3
 
     @override
     @staticmethod
@@ -798,12 +822,88 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         self._pending_installation_input: dict[str, Any] | None = None
         self._profile_impact_names = ""
         self._installation_config_hash: str | None = None
+        self._pending_import: dict[str, Any] | None = None
+        self._import_preview = ""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Offer installation and zone settings."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["installation", "zone"],
+            menu_options=["installation", "zone", "import_config"],
+        )
+
+    async def async_step_import_config(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate a portable file and show a dry-run preview before overwrite."""
+        if user_input is not None:
+            manager = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+            if not isinstance(manager, IrrigationManager):
+                return self.async_abort(reason="installation_not_loaded")
+            try:
+                preview = await manager.async_import_portable_config(
+                    payload=user_input["payload"],
+                    entity_remapping=user_input.get("entity_remapping", {}),
+                    zone_remapping=user_input.get("zone_remapping", {}),
+                    dry_run=True,
+                    confirm_overwrite=False,
+                    expected_config_hash=None,
+                )
+            except HomeAssistantError:
+                return self.async_show_form(
+                    step_id="import_config",
+                    data_schema=self._import_schema(),
+                    errors={"base": "invalid_import"},
+                )
+            self._pending_import = {**user_input, "config_hash": preview["config_hash"]}
+            self._import_preview = json.dumps(preview, sort_keys=True)
+            return await self.async_step_import_confirm()
+        return self.async_show_form(step_id="import_config", data_schema=self._import_schema())
+
+    async def async_step_import_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Require an explicit confirmation of the exact previewed entry hash."""
+        if self._pending_import is None:
+            return self.async_abort(reason="import_not_pending")
+        if user_input is not None:
+            if user_input.get("confirm_overwrite") is not True:
+                self._pending_import = None
+                return await self.async_step_init()
+            manager = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+            if not isinstance(manager, IrrigationManager):
+                return self.async_abort(reason="installation_not_loaded")
+            pending = self._pending_import
+            self._pending_import = None
+            try:
+                await manager.async_import_portable_config(
+                    payload=pending["payload"],
+                    entity_remapping=pending.get("entity_remapping", {}),
+                    zone_remapping=pending.get("zone_remapping", {}),
+                    dry_run=False,
+                    confirm_overwrite=True,
+                    expected_config_hash=pending["config_hash"],
+                )
+            except HomeAssistantError:
+                return self.async_abort(reason="configuration_changed")
+            return self.async_create_entry(data={})
+        return self.async_show_form(
+            step_id="import_confirm",
+            data_schema=vol.Schema(
+                {vol.Required("confirm_overwrite", default=False): BooleanSelector()}
+            ),
+            description_placeholders={"preview": self._import_preview},
+        )
+
+    @staticmethod
+    def _import_schema() -> vol.Schema:
+        """Return selectors for portable data and explicit remapping objects."""
+        return vol.Schema(
+            {
+                vol.Required("payload"): ObjectSelector(),
+                vol.Optional("entity_remapping", default={}): ObjectSelector(),
+                vol.Optional("zone_remapping", default={}): ObjectSelector(),
+            }
         )
 
     async def async_step_installation(

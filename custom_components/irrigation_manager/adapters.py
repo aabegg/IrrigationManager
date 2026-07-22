@@ -86,12 +86,38 @@ class HomeAssistantMeter:
         hass: HomeAssistant,
         entity_id: str | None,
         max_age_seconds: float | None = None,
+        *,
+        liters_per_count: float | None = None,
+        continuity: CumulativeMeter | None = None,
     ) -> None:
         """Initialize the meter adapter; a missing source reads zero."""
         self._hass = hass
         self._entity_id = entity_id
         self._max_age_seconds = max_age_seconds
-        self._continuity: CumulativeMeter | None = None
+        self._liters_per_count = liters_per_count
+        self._continuity = continuity
+
+    @property
+    def continuity(self) -> CumulativeMeter | None:
+        """Return the latest accepted continuity state for durable persistence."""
+        return self._continuity
+
+    def correct(self, *, physical_total_liters: float) -> CumulativeMeter:
+        """Set the physical display offset without changing consumption totals."""
+        if self._continuity is None:
+            raise HomeAssistantError("The water meter has no accepted reading")
+        self._continuity = self._continuity.correct(physical_total_liters=physical_total_liters)
+        return self._continuity
+
+    async def rebase_source(self) -> CumulativeMeter:
+        """Start the configured source at its current normalized reading without a delta."""
+        raw_liters = await self.read_raw_liters()
+        self._continuity = (
+            CumulativeMeter.start(raw_liters=raw_liters)
+            if self._continuity is None
+            else self._continuity.rebase(raw_liters=raw_liters)
+        )
+        return self._continuity
 
     async def read_liters(self) -> float:
         """Return the cumulative source value converted to liters."""
@@ -121,15 +147,19 @@ class HomeAssistantMeter:
             and (datetime.now(UTC) - state.last_reported).total_seconds() > self._max_age_seconds
         ):
             raise HomeAssistantError(f"Water meter {self._entity_id} is stale")
-        unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
-        if unit not in VolumeConverter.VALID_UNITS:
-            raise HomeAssistantError(f"Water meter {self._entity_id} has unsupported unit {unit!r}")
         try:
             value = float(state.state)
         except ValueError as err:
             raise HomeAssistantError(f"Water meter {self._entity_id} is not numeric") from err
         if not math.isfinite(value) or value < 0:
             raise HomeAssistantError(f"Water meter {self._entity_id} is not plausible")
+        if self._liters_per_count is not None:
+            if not math.isfinite(self._liters_per_count) or self._liters_per_count <= 0:
+                raise HomeAssistantError("liters_per_count must be a positive finite value")
+            return value * self._liters_per_count
+        unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+        if unit not in VolumeConverter.VALID_UNITS:
+            raise HomeAssistantError(f"Water meter {self._entity_id} has unsupported unit {unit!r}")
         return VolumeConverter.convert(value, unit, UnitOfVolume.LITERS)
 
 
