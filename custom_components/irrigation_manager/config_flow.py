@@ -1924,6 +1924,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
     def _calibration_preview(self) -> str:
         """Render the measured proposal in the configured UI language."""
         proposal = self._calibration_proposal or {}
+
         def number(key: str) -> float:
             value = proposal.get(key)
             return float(value) if isinstance(value, int | float) else 0.0
