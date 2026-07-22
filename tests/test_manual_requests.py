@@ -891,3 +891,283 @@ async def test_stale_selected_request_cannot_overwrite_concurrent_change(
     assert state.irrigation_executions == ()
     assert state.active_execution is None
     assert operations == []
+
+
+async def test_future_plan_is_atomic_editable_and_explicitly_reorderable(
+    hass: HomeAssistant,
+) -> None:
+    """Persist a complete future plan once and mutate only unstarted requests."""
+    entry, zones, operations = await _setup_installation(
+        hass,
+        zone_specs=(
+            ("Lawn", "switch.lawn", 60, 0),
+            ("Beds", "switch.beds", 60, 0),
+        ),
+    )
+    start = datetime.now(UTC) + timedelta(hours=1)
+    response = await hass.services.async_call(
+        DOMAIN,
+        "create_manual_plan",
+        {
+            "config_entry_id": entry.entry_id,
+            "start_at": start,
+            "expiry": 7200,
+            "items": [
+                {"zone_subentry_id": zones[0].subentry_id, "duration": 30},
+                {"zone_subentry_id": zones[1].subentry_id, "duration": 20},
+            ],
+        },
+        blocking=True,
+        return_response=True,
+    )
+    first_id, second_id = response["request_ids"]
+
+    edited = await hass.services.async_call(
+        DOMAIN,
+        "edit_request",
+        {
+            "config_entry_id": entry.entry_id,
+            "request_id": first_id,
+            "duration": 45,
+            "start_at": start + timedelta(minutes=5),
+            "expires_at": start + timedelta(hours=2),
+        },
+        blocking=True,
+        return_response=True,
+    )
+    reordered = await hass.services.async_call(
+        DOMAIN,
+        "reorder_requests",
+        {
+            "config_entry_id": entry.entry_id,
+            "request_ids": [second_id, first_id],
+        },
+        blocking=True,
+        return_response=True,
+    )
+
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    requests = {request.request_id: request for request in stored.manual_requests}
+    assert edited["target_value"] == 45
+    assert requests[first_id].plan_id == response["plan_id"]
+    assert requests[second_id].plan_id == response["plan_id"]
+    assert reordered["request_ids"][:2] == [second_id, first_id]
+    assert requests[second_id].sequence < requests[first_id].sequence
+    assert operations == []
+
+
+async def test_invalid_multi_zone_plan_persists_nothing(hass: HomeAssistant) -> None:
+    """Reject the complete plan before its single durable write."""
+    entry, zones, _ = await _setup_installation(
+        hass,
+        zone_specs=(("Lawn", "switch.lawn", 60, 0),),
+    )
+
+    with pytest.raises(HomeAssistantError):
+        await entry.runtime_data.manager.async_create_manual_plan(
+            items=(
+                {"zone_subentry_id": zones[0].subentry_id, "duration": 30},
+                {"zone_subentry_id": "missing", "duration": 30},
+            ),
+            requested_start_at=datetime.now(UTC) + timedelta(hours=1),
+            expiry_seconds=3600,
+        )
+
+    assert (await IrrigationStore(hass, entry.entry_id).async_load()).manual_requests == ()
+
+
+async def test_concurrent_plan_retry_is_idempotent(hass: HomeAssistant) -> None:
+    """Serialize concurrent retries and return the first plan's stable requests."""
+    entry, zones, _ = await _setup_installation(
+        hass,
+        zone_specs=(("Lawn", "switch.lawn", 60, 0),),
+    )
+    manager = entry.runtime_data.manager
+    start = datetime.now(UTC) + timedelta(hours=1)
+
+    first, second = await asyncio.gather(
+        *(
+            manager.async_create_manual_plan(
+                items=({"zone_subentry_id": zones[0].subentry_id, "duration": 30},),
+                requested_start_at=start,
+                expiry_seconds=3600,
+                plan_id="stable-client-plan",
+            )
+            for _ in range(2)
+        )
+    )
+
+    assert first["request_ids"] == second["request_ids"]
+    assert {first["created"], second["created"]} == {True, False}
+    assert len((await IrrigationStore(hass, entry.entry_id).async_load()).manual_requests) == 1
+
+
+async def test_plan_save_failure_leaves_memory_and_storage_unchanged(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Publish a new plan only after its single durable write succeeds."""
+    entry, zones, _ = await _setup_installation(
+        hass,
+        zone_specs=(("Lawn", "switch.lawn", 60, 0),),
+    )
+    manager = entry.runtime_data.manager
+    previous = manager._stored_state
+
+    async def fail_save(_state: StoredInstallationState) -> None:
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(manager._store, "async_save", fail_save)
+
+    with pytest.raises(OSError, match="storage unavailable"):
+        await manager.async_create_manual_plan(
+            items=({"zone_subentry_id": zones[0].subentry_id, "duration": 30},),
+            requested_start_at=datetime.now(UTC) + timedelta(hours=1),
+            expiry_seconds=3600,
+            plan_id="failed-plan",
+        )
+
+    assert manager._stored_state == previous
+    assert (await IrrigationStore(hass, entry.entry_id).async_load()).manual_requests == ()
+
+
+async def test_plan_id_rejects_a_changed_immutable_request(hass: HomeAssistant) -> None:
+    """Treat a plan ID as idempotent only for the complete canonical request."""
+    entry, zones, _ = await _setup_installation(
+        hass,
+        zone_specs=(("Lawn", "switch.lawn", 60, 0),),
+    )
+    manager = entry.runtime_data.manager
+    start = datetime.now(UTC) + timedelta(hours=1)
+    first = await manager.async_create_manual_plan(
+        items=({"zone_subentry_id": zones[0].subentry_id, "duration": 30},),
+        requested_start_at=start,
+        expiry_seconds=3600,
+        plan_id="canonical-plan",
+    )
+
+    retry = await manager.async_create_manual_plan(
+        items=({"zone_subentry_id": zones[0].subentry_id, "duration": 30},),
+        requested_start_at=start,
+        expiry_seconds=3600,
+        plan_id="canonical-plan",
+    )
+    with pytest.raises(HomeAssistantError, match="different immutable request"):
+        await manager.async_create_manual_plan(
+            items=({"zone_subentry_id": zones[0].subentry_id, "duration": 31},),
+            requested_start_at=start,
+            expiry_seconds=3600,
+            plan_id="canonical-plan",
+        )
+
+    assert retry["request_ids"] == first["request_ids"]
+    assert retry["created"] is False
+    assert len((await IrrigationStore(hass, entry.entry_id).async_load()).manual_requests) == 1
+
+
+async def test_partial_reorder_survives_restart_and_paused_request_resume(
+    hass: HomeAssistant,
+) -> None:
+    """Keep omitted order stable and allocate fresh unique sequences to all open work."""
+    entry, zones, _ = await _setup_installation(
+        hass,
+        zone_specs=(
+            ("Lawn", "switch.lawn", 60, 0),
+            ("Beds", "switch.beds", 60, 0),
+            ("Hedge", "switch.hedge", 60, 0),
+        ),
+    )
+    manager = entry.runtime_data.manager
+    plan = await manager.async_create_manual_plan(
+        items=tuple({"zone_subentry_id": zone.subentry_id, "duration": 30} for zone in zones),
+        requested_start_at=datetime.now(UTC) + timedelta(hours=1),
+        expiry_seconds=7200,
+    )
+    first_id, second_id, third_id = plan["request_ids"]
+    await manager.async_pause_request(first_id)
+
+    assert await manager.async_reorder_requests((third_id,)) == [third_id, second_id]
+    open_requests = [
+        request
+        for request in manager._stored_state.manual_requests
+        if request.status in {"pending", "paused", "executing"}
+    ]
+    sequences = [request.sequence for request in open_requests]
+    assert len(sequences) == len(set(sequences))
+    assert manager._stored_state.next_request_sequence > max(sequences)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    restarted = entry.runtime_data.manager
+    await restarted.async_resume_request(first_id)
+
+    ordered = [
+        request["request_id"]
+        for request in restarted.list_manual_requests()
+        if request["status"] == "pending"
+    ]
+    assert ordered == [first_id, third_id, second_id]
+
+
+async def test_active_stop_and_skip_closes_valve_before_failed_atomic_write(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stop hardware first without publishing either durable change on write failure."""
+    entry, zones, operations = await _setup_installation(
+        hass,
+        zone_specs=(("Lawn", "switch.lawn", 60, 0),),
+    )
+    manager = entry.runtime_data.manager
+    response = await manager.async_start_manual(
+        zone_subentry_id=zones[0].subentry_id,
+        duration_seconds=60,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        wait_for_completion=False,
+    )
+    request_id = str(response["request_id"])
+    await _wait_until(lambda: ("on", "switch.lawn") in operations)
+    previous = manager._stored_state
+
+    async def fail_save(_state: StoredInstallationState) -> None:
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(manager._store, "async_save", fail_save)
+
+    with pytest.raises(HomeAssistantError, match="stopped irrigation state"):
+        await manager.async_stop_and_skip(
+            request_id=request_id,
+            now=datetime(2026, 7, 22, 4, 0, tzinfo=UTC),
+        )
+
+    assert ("off", "switch.lawn") in operations
+    assert manager._stored_state == previous
+    assert manager._request(request_id).status == "executing"
+    assert manager._stored_state.suppressed_automatic_opportunities == ()
+
+
+async def test_pause_timeout_expires_request_and_survives_restart(
+    hass: HomeAssistant,
+) -> None:
+    """A paused remainder has a durable bounded resume opportunity."""
+    entry, zones, operations = await _setup_installation(
+        hass,
+        zone_specs=(("Lawn", "switch.lawn", 60, 0),),
+    )
+    manager = entry.runtime_data.manager
+    manager._installation_data["pause_timeout_seconds"] = 0.02
+    response = await manager.async_start_manual(
+        zone_subentry_id=zones[0].subentry_id,
+        duration_seconds=1,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        wait_for_completion=False,
+    )
+    await _wait_until(lambda: ("on", "switch.lawn") in operations)
+    await manager.async_pause_request(str(response["request_id"]))
+    await _wait_until(lambda: manager._request(str(response["request_id"])).status == "paused")
+    await _wait_until(lambda: manager._request(str(response["request_id"])).status == "expired")
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.manual_requests[0].status == "expired"

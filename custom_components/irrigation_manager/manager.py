@@ -24,6 +24,7 @@ from homeassistant.const import (
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
@@ -50,8 +51,10 @@ from .const import (
     CONF_FORECAST_RAIN_THRESHOLD_MM,
     CONF_FROST_ENTITY,
     CONF_FROST_THRESHOLD,
+    CONF_INSTALLATION_DAILY_BUDGET_LITERS,
     CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
     CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
+    CONF_INSTALLATION_WEEKLY_BUDGET_LITERS,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
@@ -75,6 +78,7 @@ from .const import (
     CONF_MINIMUM_INTERVAL_DAYS,
     CONF_MINIMUM_TRIGGER_LITERS,
     CONF_OPEN_METEO_ENABLED,
+    CONF_PAUSE_TIMEOUT_SECONDS,
     CONF_RAIN_FACTOR,
     CONF_RAIN_SENSORS,
     CONF_RAIN_STOP_ENTITY,
@@ -92,8 +96,10 @@ from .const import (
     CONF_WEATHER_FINALIZATION_TIME,
     CONF_WEATHER_MAX_AGE_SECONDS,
     CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
+    CONF_ZONE_DAILY_BUDGET_LITERS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
+    CONF_ZONE_WEEKLY_BUDGET_LITERS,
     EXPORT_SCHEMA_VERSION,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
@@ -142,6 +148,10 @@ from .weather import (
 
 class _StaleRequestClaimError(HomeAssistantError):
     """Raised when a selected request changed before its durable claim."""
+
+
+class _DurableTransitionError(HomeAssistantError):
+    """Raised when an actuator-safe transition could not be persisted."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +279,7 @@ class IrrigationManager:
         self._terminal_events: dict[str, asyncio.Event] = {}
         self._request_errors: dict[str, Exception] = {}
         self._cancel_requested: set[str] = set()
+        self._skip_requested: dict[str, str] = {}
         self._pause_requested: set[str] = set()
         self._watering = False
         self._command_lock = asyncio.Lock()
@@ -1374,6 +1385,7 @@ class IrrigationManager:
         active = self._stored_state.active_execution
         if active is None:
             return
+        recovered_at = datetime.now(UTC)
 
         delivered_liters = 0.0
         delivered_duration_seconds = 0.0
@@ -1383,7 +1395,7 @@ class IrrigationManager:
             recovery_started_at = active.zone_opening_at
         if recovery_started_at is not None:
             started_at = datetime.fromisoformat(recovery_started_at)
-            delivered_duration_seconds = max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+            delivered_duration_seconds = max(0.0, (recovered_at - started_at).total_seconds())
             if not could_have_flowed:
                 delivered_duration_seconds = min(
                     delivered_duration_seconds,
@@ -1416,7 +1428,7 @@ class IrrigationManager:
                         remaining_liters * 60 / active.estimated_flow_l_min,
                     )
                 fallback_duration = min(
-                    max(0.0, (datetime.now(UTC) - checkpoint_at).total_seconds()),
+                    max(0.0, (recovered_at - checkpoint_at).total_seconds()),
                     fallback_duration_limit,
                 )
                 delivered_liters += fallback_duration * active.estimated_flow_l_min / 60
@@ -1501,7 +1513,7 @@ class IrrigationManager:
             )
             remaining = max(0.0, request.remaining_value - delivered_target)
             completed = remaining <= 1e-6
-            expired = datetime.fromisoformat(request.expires_at) <= datetime.now(UTC)
+            expired = datetime.fromisoformat(request.expires_at) <= recovered_at
             request = replace(
                 request,
                 remaining_value=0.0 if completed else remaining,
@@ -1521,7 +1533,7 @@ class IrrigationManager:
                         execution.delivered_duration_seconds + delivered_duration_seconds
                     ),
                     status="completed" if completed else "interrupted",
-                    ended_at=datetime.now(UTC).isoformat(),
+                    ended_at=recovered_at.isoformat(),
                     result=(
                         "target_reached_during_recovery"
                         if completed
@@ -1542,7 +1554,7 @@ class IrrigationManager:
             zone_id=active.zone_id,
             delivered_liters=delivered_liters,
             effective_delivery=effective_delivery,
-            delivered_at=datetime.now(UTC),
+            delivered_at=recovered_at,
             area_m2=active.balance_area_m2,
             application_efficiency=active.balance_application_efficiency,
             maximum_deficit_mm=active.balance_maximum_deficit_mm,
@@ -1554,12 +1566,12 @@ class IrrigationManager:
                 self._uncredited_balance_delivery(
                     zone_id=active.zone_id,
                     delivered_liters=delivered_liters,
-                    delivered_at=datetime.now(UTC),
+                    delivered_at=recovered_at,
                     request_id=active.request_id,
                     execution_id=active.execution_id,
                 ),
             )
-        self._stored_state = replace(
+        recovered_state = replace(
             self._stored_state,
             installation_total_liters=(
                 self._stored_state.installation_total_liters + delivered_liters
@@ -1574,8 +1586,15 @@ class IrrigationManager:
             zone_deficit_mm=deficits,
             zone_last_effective_irrigation=last_effective,
             uncredited_balance_deliveries=uncredited_deliveries,
+            budget_usage_liters=self._budget_usage_after_delivery(
+                self._stored_state.budget_usage_liters,
+                zone_id=active.zone_id,
+                delivered_liters=delivered_liters,
+                delivered_at=recovered_at,
+            ),
         )
-        await self._store.async_save(self._stored_state)
+        await self._store.async_save(recovered_state)
+        self._stored_state = recovered_state
         if active.execution_id is not None:
             recovered_execution = self._execution(active.execution_id)
             self._events.fire(
@@ -1830,6 +1849,11 @@ class IrrigationManager:
                     maximum_target,
                     flow * self._number(data, CONF_AUTOMATIC_MAX_DURATION, 3_600.0) / 60,
                 )
+            budget_remaining = self._automatic_budget_remaining_liters(
+                zone_id=zone_id, data=data, now=now
+            )
+            if budget_remaining is not None:
+                maximum_target = min(maximum_target, budget_remaining)
             planning_input = ZonePlanningInput(
                 zone_id=zone_id,
                 mode=WateringMode(str(data.get(CONF_WATERING_MODE, WateringMode.DEMAND))),
@@ -1873,7 +1897,14 @@ class IrrigationManager:
                     days=self._number(data, CONF_MAXIMUM_INTERVAL_DAYS, 7.0)
                 ),
                 minimum_trigger_liters=self._number(data, CONF_MINIMUM_TRIGGER_LITERS, 1.0),
+                sun_resolver=self._sun_event,
             )
+            if (
+                budget_remaining is not None
+                and budget_remaining < self._number(data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1)
+                and target >= self._number(data, CONF_MINIMUM_TRIGGER_LITERS, 1.0)
+            ):
+                decision = replace(decision, order=None, reason="budget_exhausted")
             if decision.order is not None and self._forecast_defers_zone(
                 zone_id=zone_id, data=data, now=now
             ):
@@ -2025,6 +2056,7 @@ class IrrigationManager:
                     item[1].zone_id,
                 ),
             )
+            ordered = self._allocate_automatic_budgets(ordered, now=planning_now)
             created: list[str] = []
             updated: list[str] = []
             cancelled: list[str] = []
@@ -2272,6 +2304,55 @@ class IrrigationManager:
                 ],
             }
 
+    def _allocate_automatic_budgets(
+        self,
+        ordered: list[tuple[_ZoneConfigSnapshot, ZonePlanningInput, ZoneScheduleDecision]],
+        *,
+        now: datetime,
+    ) -> list[tuple[_ZoneConfigSnapshot, ZonePlanningInput, ZoneScheduleDecision]]:
+        """Allocate shared budget remainder once in final scheduler priority order."""
+        usage = dict(self._stored_state.budget_usage_liters)
+        allocated: list[tuple[_ZoneConfigSnapshot, ZonePlanningInput, ZoneScheduleDecision]] = []
+        for subentry, planning, decision in ordered:
+            order = decision.order
+            if order is None:
+                allocated.append((subentry, planning, decision))
+                continue
+            keys = self._budget_keys(planning.zone_id, now)
+            limits = (
+                self._optional_float(
+                    self._installation_data, CONF_INSTALLATION_DAILY_BUDGET_LITERS
+                ),
+                self._optional_float(
+                    self._installation_data, CONF_INSTALLATION_WEEKLY_BUDGET_LITERS
+                ),
+                self._optional_float(subentry.data, CONF_ZONE_DAILY_BUDGET_LITERS),
+                self._optional_float(subentry.data, CONF_ZONE_WEEKLY_BUDGET_LITERS),
+            )
+            remainders = [
+                max(0.0, limit - usage.get(key, 0.0))
+                for key, limit in zip(keys, limits, strict=True)
+                if limit is not None
+            ]
+            target = min(order.target_liters, *remainders) if remainders else order.target_liters
+            minimum = self._number(subentry.data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1)
+            if target < minimum:
+                decision = replace(decision, order=None, reason="budget_exhausted")
+            else:
+                for key in keys:
+                    usage[key] = usage.get(key, 0.0) + target
+                decision = replace(
+                    decision,
+                    order=replace(
+                        order,
+                        target_liters=target,
+                        expected_duration_seconds=(target / planning.flow_liters_per_minute * 60),
+                        is_partial=order.is_partial or target < order.target_liters,
+                    ),
+                )
+            allocated.append((subentry, planning, decision))
+        return allocated
+
     async def async_skip_automatic(
         self, *, zone_subentry_id: str, now: datetime | None = None
     ) -> dict[str, object]:
@@ -2289,7 +2370,9 @@ class IrrigationManager:
                 if isinstance(raw_windows, list | tuple)
                 else [str(raw_windows)]
             )
-            active_window, _ = active_and_next_window(now=planning_now, values=windows)
+            active_window, _ = active_and_next_window(
+                now=planning_now, values=windows, sun_resolver=self._sun_event
+            )
             if active_window is None:
                 raise HomeAssistantError("The irrigation zone has no active watering window")
             zone_id = subentry.unique_id or subentry.subentry_id
@@ -2747,7 +2830,9 @@ class IrrigationManager:
         for subentry in self._zone_configs:
             raw = subentry.data.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])
             values = [str(value) for value in raw] if isinstance(raw, list | tuple) else [str(raw)]
-            active, next_start = active_and_next_window(now=now, values=values)
+            active, next_start = active_and_next_window(
+                now=now, values=values, sun_resolver=self._sun_event
+            )
             if active is not None:
                 boundaries.append(active.end)
             if next_start is not None:
@@ -2780,6 +2865,7 @@ class IrrigationManager:
         amount_liters: float | None,
         hard_time_limit_seconds: float | None,
         expiry_seconds: float = 3600,
+        requested_start_at: datetime | None = None,
         wait_for_completion: bool = True,
     ) -> dict[str, object]:
         """Persist a manual order, dispatch it immediately when possible, and return its ID."""
@@ -2800,6 +2886,9 @@ class IrrigationManager:
             if target_value is None:
                 raise HomeAssistantError("An irrigation target is required")
             now = datetime.now(UTC)
+            requested_start = (requested_start_at or now).astimezone(UTC)
+            if requested_start < now:
+                requested_start = now
             request_id = uuid4().hex
             zone_id = subentry.unique_id or subentry.subentry_id
             max_dose_key = (
@@ -2807,10 +2896,10 @@ class IrrigationManager:
             )
             balance_snapshot = self._balance_snapshot(subentry.data)
             delivery_limit = self._delivery_runtime_limit(subentry.data, hard_time_limit_seconds)
-            expires_at = now + timedelta(seconds=expiry_seconds)
+            expires_at = requested_start + timedelta(seconds=expiry_seconds)
             operation_deadline = min(
                 expires_at,
-                now + timedelta(seconds=self._operation_lifetime_limit(subentry.data)),
+                requested_start + timedelta(seconds=self._operation_lifetime_limit(subentry.data)),
             )
             weather = self._weather_safety()
             if weather.frost_blocked:
@@ -2835,6 +2924,7 @@ class IrrigationManager:
                 remaining_value=target_value,
                 created_at=now.isoformat(),
                 expires_at=expires_at.isoformat(),
+                requested_start_at=requested_start.isoformat(),
                 hard_time_limit_seconds=(delivery_limit if target_type == "volume" else None),
                 delivery_runtime_limit_seconds=delivery_limit,
                 operation_deadline_at=operation_deadline.isoformat(),
@@ -2859,6 +2949,7 @@ class IrrigationManager:
                 balance_maximum_deficit_mm=balance_snapshot[2],
                 balance_minimum_effective_liters=balance_snapshot[3],
             )
+            budget_warnings = self._manual_budget_warnings(request, now=requested_start)
             self._stored_state = replace(
                 self._stored_state,
                 manual_requests=(*self._stored_state.manual_requests, request),
@@ -2876,6 +2967,23 @@ class IrrigationManager:
                     "source": "manual",
                 },
             )
+            for warning in budget_warnings:
+                self._events.fire(
+                    "manual_budget_overrun_warning",
+                    reason=warning,
+                    target=self._events.zone_target(zone_id),
+                    measurements={"target_liters": self._request_target_liters(request)},
+                    context={"request_id": request_id},
+                )
+            if budget_warnings:
+                await self._events.async_critical(
+                    f"manual_budget_overrun_{request_id}",
+                    title="Manual irrigation exceeds a water budget",
+                    message=(
+                        f"{request.zone_name} was queued by explicit request despite exceeding: "
+                        f"{', '.join(budget_warnings)}."
+                    ),
+                )
             terminal_event = self._terminal_events.setdefault(request_id, asyncio.Event())
             self._queue_event.set()
             self._publish(status=self._coordinator.data.status, active_zone_id=None)
@@ -2884,7 +2992,328 @@ class IrrigationManager:
             await terminal_event.wait()
             if error := self._request_errors.pop(request_id, None):
                 raise error
-        return {"request_id": request_id}
+        return {"request_id": request_id, "warnings": budget_warnings}
+
+    async def async_create_manual_plan(
+        self,
+        *,
+        items: tuple[Mapping[str, object], ...],
+        requested_start_at: datetime | None,
+        expiry_seconds: float,
+        plan_id: str | None = None,
+    ) -> dict[str, object]:
+        """Validate and persist a stable ordered multi-zone plan in one write."""
+        if not items:
+            raise HomeAssistantError("A manual plan requires at least one irrigation zone")
+        async with self._command_lock:
+            existing = sorted(
+                (
+                    request
+                    for request in self._stored_state.manual_requests
+                    if plan_id is not None and request.plan_id == plan_id
+                ),
+                key=lambda request: (request.sequence, request.request_id),
+            )
+            if existing and len(existing) != len(items):
+                raise HomeAssistantError("The manual plan ID already has different items")
+            if self._stored_state.emergency_stop or self._stored_state.winter_lock:
+                raise HomeAssistantError("The irrigation installation is locked")
+            if self._stored_state.maintenance_test is not None:
+                raise HomeAssistantError("A supervised maintenance test is active")
+            now = datetime.now(UTC)
+            requested_start = (
+                requested_start_at.astimezone(UTC)
+                if existing and requested_start_at is not None
+                else datetime.fromisoformat(
+                    existing[0].requested_start_at or existing[0].created_at
+                )
+                if existing
+                else max((requested_start_at or now).astimezone(UTC), now)
+            )
+            plan_id = plan_id or uuid4().hex
+            sequence = self._stored_state.next_request_sequence
+            requests: list[ManualIrrigationRequest] = []
+            for index, item in enumerate(items):
+                zone_subentry_id = item.get("zone_subentry_id")
+                if not isinstance(zone_subentry_id, str):
+                    raise HomeAssistantError("Every plan item requires an irrigation zone")
+                duration = self._finite_positive(item.get("duration"))
+                amount = self._finite_positive(item.get("amount"))
+                hard_limit = self._finite_positive(item.get("hard_time_limit"))
+                if (duration is None) == (amount is None):
+                    raise HomeAssistantError("Every plan item requires exactly one target")
+                if amount is not None and hard_limit is None:
+                    raise HomeAssistantError("Amount targets require a hard time limit")
+                subentry = self._zone_configs_by_subentry_id.get(zone_subentry_id)
+                if subentry is None:
+                    raise HomeAssistantError("A plan irrigation zone does not exist")
+                if amount is not None and not self._has_meter:
+                    raise HomeAssistantError("Volume irrigation requires a cumulative meter")
+                target_type = "volume" if amount is not None else "duration"
+                target_value = amount if amount is not None else duration
+                assert target_value is not None
+                delivery_limit = self._delivery_runtime_limit(subentry.data, hard_limit)
+                expires_at = requested_start + timedelta(seconds=expiry_seconds)
+                balance = self._balance_snapshot(subentry.data)
+                request = ManualIrrigationRequest(
+                    request_id=(existing[index].request_id if existing else uuid4().hex),
+                    sequence=(existing[index].sequence if existing else sequence),
+                    zone_id=subentry.unique_id or subentry.subentry_id,
+                    zone_subentry_id=subentry.subentry_id,
+                    zone_name=subentry.title,
+                    zone_valve=str(subentry.data[CONF_ZONE_VALVE]),
+                    main_valve=self._installation_data.get(CONF_MAIN_VALVE),
+                    target_type=target_type,
+                    target_value=target_value,
+                    remaining_value=target_value,
+                    created_at=now.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                    requested_start_at=requested_start.isoformat(),
+                    plan_id=plan_id,
+                    hard_time_limit_seconds=delivery_limit if target_type == "volume" else None,
+                    delivery_runtime_limit_seconds=delivery_limit,
+                    operation_deadline_at=min(
+                        expires_at,
+                        requested_start
+                        + timedelta(seconds=self._operation_lifetime_limit(subentry.data)),
+                    ).isoformat(),
+                    max_dose_value=self._optional_float(
+                        subentry.data,
+                        CONF_MAX_DOSE_AMOUNT if target_type == "volume" else CONF_MAX_DOSE_DURATION,
+                    ),
+                    soak_duration_seconds=self._number(subentry.data, CONF_SOAK_DURATION, 0),
+                    meter_failure_strategy=str(
+                        subentry.data.get(CONF_METER_FAILURE_STRATEGY, METER_FAILURE_ABORT)
+                    ),
+                    estimated_flow_l_min=self._estimated_flow(subentry.data),
+                    minimum_flow_l_min=self._optional_float(subentry.data, CONF_MIN_FLOW),
+                    maximum_flow_l_min=self._optional_float(subentry.data, CONF_MAX_FLOW),
+                    flow_grace_seconds=self._number(subentry.data, CONF_FLOW_GRACE_SECONDS, 5),
+                    balance_area_m2=balance[0],
+                    balance_application_efficiency=balance[1],
+                    balance_maximum_deficit_mm=balance[2],
+                    balance_minimum_effective_liters=balance[3],
+                )
+                requests.append(request)
+                sequence += 1
+            if existing:
+                if any(
+                    self._canonical_plan_request(current) != self._canonical_plan_request(candidate)
+                    for current, candidate in zip(existing, requests, strict=True)
+                ):
+                    raise HomeAssistantError(
+                        "The manual plan ID was reused with a different immutable request"
+                    )
+                return {
+                    "plan_id": plan_id,
+                    "request_ids": [request.request_id for request in existing],
+                    "warnings": {},
+                    "created": False,
+                }
+            next_state = replace(
+                self._stored_state,
+                manual_requests=(*self._stored_state.manual_requests, *requests),
+                next_request_sequence=sequence,
+            )
+            await self._store.async_save(next_state)
+            self._stored_state = next_state
+            warnings = {
+                request.request_id: self._manual_budget_warnings(request, now=requested_start)
+                for request in requests
+            }
+            for request in requests:
+                self._events.fire(
+                    "request_created",
+                    reason="manual_plan",
+                    target=self._events.zone_target(request.zone_id),
+                    measurements={"target_value": request.target_value},
+                    context={"request_id": request.request_id, "plan_id": plan_id},
+                )
+                if request_warnings := warnings[request.request_id]:
+                    await self._events.async_critical(
+                        f"manual_budget_overrun_{request.request_id}",
+                        title="Manual irrigation exceeds a water budget",
+                        message=(
+                            f"{request.zone_name} was queued by explicit request despite "
+                            f"exceeding: {', '.join(request_warnings)}."
+                        ),
+                    )
+            self._queue_event.set()
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+            return {
+                "plan_id": plan_id,
+                "request_ids": [request.request_id for request in requests],
+                "warnings": warnings,
+                "created": True,
+            }
+
+    @staticmethod
+    def _canonical_plan_request(request: ManualIrrigationRequest) -> dict[str, object]:
+        """Return every immutable execution input represented by one plan request."""
+        mutable_or_generated = {
+            "request_id",
+            "sequence",
+            "remaining_value",
+            "created_at",
+            "status",
+            "execution_id",
+            "soak_until",
+            "pause_until",
+            "revision",
+        }
+        return {
+            key: value
+            for key, value in request.as_dict().items()
+            if key not in mutable_or_generated
+        }
+
+    async def async_edit_request(
+        self,
+        *,
+        request_id: str,
+        duration_seconds: float | None,
+        amount_liters: float | None,
+        hard_time_limit_seconds: float | None,
+        requested_start_at: datetime | None,
+        expires_at: datetime | None,
+    ) -> dict[str, object]:
+        """Edit a manual request target and opportunity before execution starts."""
+        async with self._command_lock:
+            request = self._request(request_id)
+            if request is None or request.source != "manual":
+                raise HomeAssistantError("The manual irrigation request does not exist")
+            if request.status != "pending" or request.execution_id is not None:
+                raise HomeAssistantError("Only an unstarted request can be edited")
+            if duration_seconds is not None and amount_liters is not None:
+                raise HomeAssistantError("Exactly one edited target may be provided")
+            subentry = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+            if subentry is None:
+                raise HomeAssistantError("The irrigation zone no longer exists")
+            target_type = request.target_type
+            target_value = request.target_value
+            if duration_seconds is not None:
+                target_type, target_value = "duration", duration_seconds
+            elif amount_liters is not None:
+                if not self._has_meter:
+                    raise HomeAssistantError("Volume irrigation requires a cumulative meter")
+                target_type, target_value = "volume", amount_liters
+            if target_type == "volume" and hard_time_limit_seconds is None:
+                hard_time_limit_seconds = request.hard_time_limit_seconds
+            delivery_limit = self._delivery_runtime_limit(
+                subentry.data, hard_time_limit_seconds if target_type == "volume" else None
+            )
+            start = (
+                requested_start_at.astimezone(UTC)
+                if requested_start_at is not None
+                else datetime.fromisoformat(request.requested_start_at or request.created_at)
+            )
+            expiry = (
+                expires_at.astimezone(UTC)
+                if expires_at is not None
+                else datetime.fromisoformat(request.expires_at)
+            )
+            if expiry <= start:
+                raise HomeAssistantError("Request expiry must be after its desired start")
+            updated = replace(
+                request,
+                target_type=target_type,
+                target_value=target_value,
+                remaining_value=target_value,
+                requested_start_at=start.isoformat(),
+                expires_at=expiry.isoformat(),
+                hard_time_limit_seconds=delivery_limit if target_type == "volume" else None,
+                delivery_runtime_limit_seconds=delivery_limit,
+                operation_deadline_at=min(
+                    expiry,
+                    start + timedelta(seconds=self._operation_lifetime_limit(subentry.data)),
+                ).isoformat(),
+                max_dose_value=self._optional_float(
+                    subentry.data,
+                    CONF_MAX_DOSE_AMOUNT if target_type == "volume" else CONF_MAX_DOSE_DURATION,
+                ),
+                revision=request.revision + 1,
+            )
+            self._stored_state = replace(
+                self._stored_state, manual_requests=self._with_request(updated)
+            )
+            await self._store.async_save(self._stored_state)
+            self._queue_event.set()
+            self._events.fire(
+                "request_changed",
+                reason="user_edit",
+                target=self._events.zone_target(updated.zone_id),
+                measurements={"target_value": updated.target_value},
+                context={"request_id": request_id, "revision": updated.revision},
+            )
+            warnings = self._manual_budget_warnings(updated, now=start)
+            if warnings:
+                await self._events.async_critical(
+                    f"manual_budget_overrun_{request_id}",
+                    title="Manual irrigation exceeds a water budget",
+                    message=(
+                        f"{updated.zone_name} was changed by explicit request despite "
+                        f"exceeding: {', '.join(warnings)}."
+                    ),
+                )
+            return {**updated.as_dict(), "warnings": warnings}
+
+    async def async_reorder_requests(self, request_ids: tuple[str, ...]) -> list[str]:
+        """Assign an explicit stable priority order to unstarted manual requests."""
+        if len(request_ids) != len(set(request_ids)):
+            raise HomeAssistantError("Request IDs in a reorder action must be unique")
+        async with self._command_lock:
+            open_requests = sorted(
+                (
+                    request
+                    for request in self._stored_state.manual_requests
+                    if request.source == "manual"
+                    and request.status in {"pending", "paused", "executing", "soaking"}
+                ),
+                key=lambda request: (request.sequence, request.request_id),
+            )
+            pending = [
+                request
+                for request in open_requests
+                if request.status == "pending" and request.execution_id is None
+            ]
+            by_id = {request.request_id: request for request in pending}
+            if any(request_id not in by_id for request_id in request_ids):
+                raise HomeAssistantError("Only unstarted manual requests can be reordered")
+            selected = [by_id[request_id] for request_id in request_ids]
+            selected_ids = set(request_ids)
+            ordered_pending = selected + [
+                request for request in pending if request.request_id not in selected_ids
+            ]
+            pending_iterator = iter(ordered_pending)
+            ordered = [
+                next(pending_iterator) if request in pending else request
+                for request in open_requests
+            ]
+            next_sequence = self._stored_state.next_request_sequence
+            sequence_by_id = {
+                request.request_id: index
+                for index, request in enumerate(ordered, start=next_sequence)
+            }
+            requests = tuple(
+                replace(
+                    request,
+                    sequence=sequence_by_id[request.request_id],
+                    revision=request.revision + 1,
+                )
+                if request.request_id in sequence_by_id
+                and request.sequence != sequence_by_id[request.request_id]
+                else request
+                for request in self._stored_state.manual_requests
+            )
+            next_state = replace(
+                self._stored_state,
+                manual_requests=requests,
+                next_request_sequence=next_sequence + len(ordered),
+            )
+            await self._store.async_save(next_state)
+            self._stored_state = next_state
+            self._queue_event.set()
+            return [request.request_id for request in ordered_pending]
 
     async def _async_dispatch_requests(self) -> None:
         """Run ready manual orders one dose at a time, yielding during soak pauses."""
@@ -2900,6 +3329,8 @@ class IrrigationManager:
                         requests=self._stored_state.manual_requests,
                         executions=self._stored_state.irrigation_executions,
                     )
+                    if request is not None and request.source == "automatic":
+                        request = await self._async_apply_dispatch_budget(request)
                 if request is None:
                     delay = self._seconds_until_next_request_change()
                     with suppress(TimeoutError):
@@ -2994,6 +3425,8 @@ class IrrigationManager:
                     )
             except _StaleRequestClaimError:
                 pass
+            except _DurableTransitionError:
+                pass
             except asyncio.CancelledError:
                 return
             except Exception as err:  # noqa: BLE001
@@ -3011,6 +3444,62 @@ class IrrigationManager:
                 if not self._shutting_down:
                     await self._async_consider_current_flow()
 
+    async def _async_apply_dispatch_budget(
+        self, request: ManualIrrigationRequest
+    ) -> ManualIrrigationRequest | None:
+        """Revalidate an automatic target atomically immediately before its claim."""
+        subentry = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+        if subentry is None:
+            return request
+        remaining_liters = self._automatic_budget_remaining_liters(
+            zone_id=request.zone_id,
+            data=subentry.data,
+            now=dt_util.now(),
+        )
+        if remaining_liters is None:
+            return request
+        minimum_liters = self._number(subentry.data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1)
+        if remaining_liters < minimum_liters:
+            cancelled = replace(
+                request,
+                status="cancelled",
+                revision=request.revision + 1,
+            )
+            self._stored_state = replace(
+                self._stored_state,
+                manual_requests=self._with_request(cancelled),
+            )
+            await self._store.async_save(self._stored_state)
+            self._events.fire(
+                "automatic_irrigation_deferred",
+                reason="budget_exhausted",
+                target=self._events.zone_target(request.zone_id),
+                measurements={"budget_remaining_liters": remaining_liters},
+                context={"request_id": request.request_id},
+            )
+            self._planning_event.set()
+            return None
+        allowed_value = (
+            remaining_liters
+            if request.target_type == "volume"
+            else remaining_liters * 60 / request.estimated_flow_l_min
+            if request.estimated_flow_l_min
+            else request.remaining_value
+        )
+        if allowed_value >= request.remaining_value:
+            return request
+        limited = replace(
+            request,
+            remaining_value=allowed_value,
+            revision=request.revision + 1,
+        )
+        self._stored_state = replace(
+            self._stored_state,
+            manual_requests=self._with_request(limited),
+        )
+        await self._store.async_save(self._stored_state)
+        return limited
+
     async def _async_finish_dose(
         self,
         request_id: str,
@@ -3020,7 +3509,7 @@ class IrrigationManager:
     ) -> None:
         """Account dose progress and persist completion, pause, cancellation, or soak."""
         request = self._request(request_id)
-        if request is None or request.execution_id is None:
+        if request is None or request.execution_id is None or request.status != "executing":
             return
         execution = self._execution(request.execution_id)
         if execution is None:
@@ -3093,8 +3582,10 @@ class IrrigationManager:
                 ),
             )
         terminal = False
-        if request_id in self._cancel_requested:
-            self._cancel_requested.discard(request_id)
+        cancel_requested = request_id in self._cancel_requested
+        pause_requested = request_id in self._pause_requested
+        skip_opportunity = self._skip_requested.get(request_id)
+        if cancel_requested:
             request = replace(
                 request,
                 remaining_value=remaining,
@@ -3106,7 +3597,6 @@ class IrrigationManager:
             )
             terminal = True
         elif expired or self._request_deadline(request) <= now:
-            self._pause_requested.discard(request_id)
             request = replace(
                 request,
                 remaining_value=remaining,
@@ -3122,12 +3612,12 @@ class IrrigationManager:
                 result="expired",
             )
             terminal = True
-        elif request_id in self._pause_requested:
-            self._pause_requested.discard(request_id)
+        elif pause_requested:
             request = replace(
                 request,
                 remaining_value=remaining,
                 status="paused",
+                pause_until=self._pause_deadline(request, now).isoformat(),
                 revision=request.revision + 1,
             )
             execution = replace(execution, remaining_value=remaining, status="paused")
@@ -3186,7 +3676,10 @@ class IrrigationManager:
                 revision=request.revision + 1,
             )
             execution = replace(execution, remaining_value=remaining, status="soaking")
-        self._stored_state = replace(
+        suppressions = self._stored_state.suppressed_automatic_opportunities
+        if skip_opportunity is not None and skip_opportunity not in suppressions:
+            suppressions = (*suppressions, skip_opportunity)
+        next_state = replace(
             self._stored_state,
             installation_total_liters=(
                 self._stored_state.installation_total_liters + result.delivered_liters
@@ -3204,8 +3697,26 @@ class IrrigationManager:
             zone_deficit_mm=deficits,
             zone_last_effective_irrigation=last_effective,
             uncredited_balance_deliveries=uncredited_deliveries,
+            budget_usage_liters=self._budget_usage_after_delivery(
+                self._stored_state.budget_usage_liters,
+                zone_id=request.zone_id,
+                delivered_liters=result.delivered_liters,
+                delivered_at=now,
+            ),
+            suppressed_automatic_opportunities=suppressions,
         )
-        await self._store.async_save(self._stored_state)
+        try:
+            await self._store.async_save(next_state)
+        except Exception as err:
+            raise _DurableTransitionError(
+                "The stopped irrigation state could not be persisted"
+            ) from err
+        self._stored_state = next_state
+        if cancel_requested:
+            self._cancel_requested.discard(request_id)
+        if pause_requested:
+            self._pause_requested.discard(request_id)
+        self._skip_requested.pop(request_id, None)
         self._events.fire(
             "dose_ended",
             reason=_event_result_reason(execution.result, execution.status),
@@ -3363,9 +3874,14 @@ class IrrigationManager:
         requests: list[ManualIrrigationRequest] = []
         executions = self._stored_state.irrigation_executions
         for request in self._stored_state.manual_requests:
-            if (
-                request.status in {"pending", "executing", "soaking", "paused"}
-                and self._request_deadline(request) <= now
+            request_deadline = self._request_deadline(request)
+            pause_timed_out = (
+                request.status == "paused"
+                and request.pause_until is not None
+                and datetime.fromisoformat(request.pause_until) <= now
+            )
+            if request.status in {"pending", "executing", "soaking", "paused"} and (
+                request_deadline <= now or pause_timed_out
             ):
                 request = replace(
                     request,
@@ -3382,7 +3898,7 @@ class IrrigationManager:
                             execution,
                             status="interrupted",
                             ended_at=now.isoformat(),
-                            result="expired",
+                            result="pause_timeout" if pause_timed_out else "expired",
                         )
                         if item.execution_id == execution.execution_id
                         else item
@@ -3408,6 +3924,7 @@ class IrrigationManager:
                         context={"request_id": request_id, "source": expired_request.source},
                     )
             self._refresh_complete_idle_event()
+            self._planning_event.set()
 
     def _seconds_until_next_request_change(self) -> float | None:
         """Return the bounded delay until a soak or expiry needs reevaluation."""
@@ -3419,6 +3936,7 @@ class IrrigationManager:
             for value in (
                 (request.operation_deadline_at or request.expires_at),
                 request.soak_until,
+                request.pause_until,
             )
             if value is not None
         ]
@@ -3439,6 +3957,76 @@ class IrrigationManager:
     def list_irrigation_executions(self) -> list[dict[str, object]]:
         """Return persisted irrigation executions in creation order."""
         return [execution.as_dict() for execution in self._stored_state.irrigation_executions]
+
+    def calendar_events(self, *, start: datetime, end: datetime) -> list[dict[str, object]]:
+        """Return read-only scheduled order ranges with stable request UIDs."""
+        candidates = [
+            request
+            for request in self._stored_state.manual_requests
+            if request.status in {"pending", "executing", "soaking", "paused"}
+            and (
+                request.source == "automatic"
+                or (
+                    request.source == "manual"
+                    and request.requested_start_at is not None
+                    and datetime.fromisoformat(request.requested_start_at)
+                    > datetime.fromisoformat(request.created_at)
+                )
+            )
+        ]
+        candidates.sort(
+            key=lambda request: (
+                datetime.fromisoformat(request.requested_start_at or request.created_at),
+                0 if request.source == "manual" else 1,
+                request.sequence,
+                request.request_id,
+            )
+        )
+        cursor: datetime | None = None
+        events: list[dict[str, object]] = []
+        for request in candidates:
+            desired = datetime.fromisoformat(request.requested_start_at or request.created_at)
+            event_start = max(desired, cursor) if cursor is not None else desired
+            duration = self._request_expected_duration(request)
+            event_end = min(
+                event_start + duration,
+                datetime.fromisoformat(request.expires_at),
+            )
+            if event_end <= event_start:
+                event_end = event_start + timedelta(seconds=1)
+            cursor = event_end
+            if event_start < end and event_end > start:
+                events.append(
+                    {
+                        "uid": request.request_id,
+                        "start": event_start,
+                        "end": event_end,
+                        "summary": request.zone_name,
+                        "description": (
+                            f"{request.source}; {request.target_value:g} {request.target_type}; "
+                            f"request {request.request_id}"
+                        ),
+                    }
+                )
+        return events
+
+    def _request_expected_duration(self, request: ManualIrrigationRequest) -> timedelta:
+        """Estimate the complete event range, including planned soak pauses."""
+        watering_seconds = (
+            request.target_value
+            if request.target_type == "duration"
+            else request.target_value * 60 / request.estimated_flow_l_min
+            if request.estimated_flow_l_min
+            else request.delivery_runtime_limit_seconds or 1
+        )
+        dose_count = (
+            max(1, math.ceil(request.target_value / request.max_dose_value))
+            if request.max_dose_value is not None and request.max_dose_value > 0
+            else 1
+        )
+        return timedelta(
+            seconds=max(1.0, watering_seconds + (dose_count - 1) * request.soak_duration_seconds)
+        )
 
     def list_uncredited_balance_deliveries(self) -> list[dict[str, object]]:
         """Return deliveries requiring explicit water-balance reconciliation."""
@@ -3463,6 +4051,9 @@ class IrrigationManager:
             CONF_WEATHER_FAILURE_POLICY,
             CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
             CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
+            CONF_INSTALLATION_DAILY_BUDGET_LITERS,
+            CONF_INSTALLATION_WEEKLY_BUDGET_LITERS,
+            CONF_PAUSE_TIMEOUT_SECONDS,
             CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
             CONF_MAINTENANCE_MAX_DURATION,
             CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
@@ -3500,6 +4091,8 @@ class IrrigationManager:
             CONF_MAX_OPERATION_LIFETIME,
             CONF_ZONE_PRIORITY,
             CONF_WATERING_WINDOWS,
+            CONF_ZONE_DAILY_BUDGET_LITERS,
+            CONF_ZONE_WEEKLY_BUDGET_LITERS,
         }
         return {
             "schema_version": EXPORT_SCHEMA_VERSION,
@@ -3708,7 +4301,9 @@ class IrrigationManager:
                 raise HomeAssistantError("The irrigation request does not exist")
             if request.status != "paused":
                 raise HomeAssistantError("The irrigation request is not paused")
-            request = replace(request, status="pending", revision=request.revision + 1)
+            request = replace(
+                request, status="pending", pause_until=None, revision=request.revision + 1
+            )
             execution = self._execution(request.execution_id)
             self._stored_state = replace(
                 self._stored_state,
@@ -3754,6 +4349,11 @@ class IrrigationManager:
                     request,
                     status=status,
                     soak_until=None,
+                    pause_until=(
+                        self._pause_deadline(request, datetime.now(UTC)).isoformat()
+                        if action == "pause"
+                        else None
+                    ),
                     revision=request.revision + 1,
                 )
                 execution = self._execution(request.execution_id)
@@ -3790,7 +4390,9 @@ class IrrigationManager:
                     self._signal_terminal(request_id)
                 self._queue_event.set()
         if task is not None:
-            await asyncio.shield(task)
+            result = await asyncio.shield(task)
+            async with self._command_lock:
+                await self._async_finish_dose(request_id, result)
         self._refresh_complete_idle_event()
 
     def _request(self, request_id: str) -> ManualIrrigationRequest | None:
@@ -4181,6 +4783,115 @@ class IrrigationManager:
                 await self.async_cancel_request(open_request_id)
             except HomeAssistantError:
                 continue
+
+    async def async_stop_and_skip(
+        self,
+        *,
+        request_id: str | None = None,
+        execution_id: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, object]:
+        """Stop one execution and suppress its zone's current automatic opportunity."""
+        opportunity_id: str | None = None
+        planning_now = now or dt_util.now()
+        task: asyncio.Task[ExecutionResult] | None = None
+        async with self._command_lock:
+            if execution_id is not None:
+                execution = self._execution(execution_id)
+                if execution is None:
+                    raise HomeAssistantError("The irrigation execution does not exist")
+                request_id = execution.request_id
+            if request_id is None:
+                raise HomeAssistantError("Stop and skip requires a selected request or execution")
+            request = self._request(request_id)
+            if request is None:
+                raise HomeAssistantError("The irrigation request does not exist")
+            if request.status in {"completed", "cancelled", "expired"}:
+                raise HomeAssistantError("The irrigation request is already final")
+            if request.source == "automatic":
+                opportunity_id = request.request_id
+            else:
+                subentry = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+                if subentry is not None:
+                    raw = subentry.data.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])
+                    values = (
+                        [str(value) for value in raw]
+                        if isinstance(raw, list | tuple)
+                        else [str(raw)]
+                    )
+                    active, _ = active_and_next_window(
+                        now=planning_now, values=values, sun_resolver=self._sun_event
+                    )
+                    if active is not None:
+                        opportunity_id = self._automatic_request_id(
+                            request.zone_id, active.opportunity_id
+                        )
+            if request.status == "executing":
+                self._cancel_requested.add(request_id)
+                if opportunity_id is not None:
+                    self._skip_requested[request_id] = opportunity_id
+                task = self._active_task
+                if task is not None:
+                    task.cancel()
+            else:
+                cancelled = replace(
+                    request,
+                    status="cancelled",
+                    soak_until=None,
+                    pause_until=None,
+                    revision=request.revision + 1,
+                )
+                execution = self._execution(request.execution_id)
+                suppressions = self._stored_state.suppressed_automatic_opportunities
+                if opportunity_id is not None and opportunity_id not in suppressions:
+                    suppressions = (*suppressions, opportunity_id)
+                next_state = replace(
+                    self._stored_state,
+                    manual_requests=self._with_request(cancelled),
+                    irrigation_executions=(
+                        self._with_execution(
+                            replace(
+                                execution,
+                                status="cancelled",
+                                ended_at=planning_now.astimezone(UTC).isoformat(),
+                                result="cancelled",
+                            )
+                        )
+                        if execution is not None
+                        else self._stored_state.irrigation_executions
+                    ),
+                    suppressed_automatic_opportunities=suppressions,
+                )
+                try:
+                    await self._store.async_save(next_state)
+                except Exception as err:
+                    raise _DurableTransitionError(
+                        "The stop-and-skip state could not be persisted"
+                    ) from err
+                self._stored_state = next_state
+                self._events.fire(
+                    "request_cancelled",
+                    reason="user_cancelled",
+                    target=self._events.zone_target(cancelled.zone_id),
+                    context={
+                        "request_id": cancelled.request_id,
+                        "status": cancelled.status,
+                        "revision": cancelled.revision,
+                    },
+                )
+                self._signal_terminal(request_id)
+                self._queue_event.set()
+        if task is not None:
+            result = await asyncio.shield(task)
+            async with self._command_lock:
+                await self._async_finish_dose(request_id, result)
+        self._refresh_complete_idle_event()
+        self._planning_event.set()
+        return {
+            "request_id": request_id,
+            "opportunity_id": opportunity_id,
+            "suppressed": opportunity_id is not None,
+        }
 
     async def async_set_winter_lock(self) -> None:
         """Persist the winter lock before closing and cancelling every water path."""
@@ -4588,6 +5299,12 @@ class IrrigationManager:
             maintenance_test=None,
             active_execution=None,
             calibration_proposal=proposal,
+            budget_usage_liters=self._budget_usage_after_delivery(
+                self._stored_state.budget_usage_liters,
+                zone_id=test.zone_id,
+                delivered_liters=result.delivered_liters,
+                delivered_at=datetime.now(UTC),
+            ),
         )
         await self._store.async_save(self._stored_state)
         self._watering = False
@@ -5227,10 +5944,118 @@ class IrrigationManager:
             self._number(zone_data, CONF_MAX_OPERATION_LIFETIME, 14_400),
         )
 
+    def _sun_event(self, event: str, day: date) -> datetime | None:
+        """Resolve a sun event through Home Assistant's configured location helper."""
+        return get_astral_event_date(self._hass, event, day)
+
+    @staticmethod
+    def _budget_keys(zone_id: str, when: datetime) -> tuple[str, str, str, str]:
+        """Return stable local-day and ISO-week accounting keys."""
+        local = dt_util.as_local(when)
+        day = local.date().isoformat()
+        iso_year, iso_week, _ = local.date().isocalendar()
+        week = f"{iso_year}-W{iso_week:02d}"
+        return (
+            f"installation:day:{day}",
+            f"installation:week:{week}",
+            f"zone:{zone_id}:day:{day}",
+            f"zone:{zone_id}:week:{week}",
+        )
+
+    def _automatic_budget_remaining_liters(
+        self, *, zone_id: str, data: Mapping[str, object], now: datetime
+    ) -> float | None:
+        """Return the strictest configured automatic budget remainder."""
+        keys = self._budget_keys(zone_id, now)
+        limits = (
+            self._optional_float(self._installation_data, CONF_INSTALLATION_DAILY_BUDGET_LITERS),
+            self._optional_float(self._installation_data, CONF_INSTALLATION_WEEKLY_BUDGET_LITERS),
+            self._optional_float(data, CONF_ZONE_DAILY_BUDGET_LITERS),
+            self._optional_float(data, CONF_ZONE_WEEKLY_BUDGET_LITERS),
+        )
+        remaining = [
+            max(0.0, limit - self._stored_state.budget_usage_liters.get(key, 0.0))
+            for key, limit in zip(keys, limits, strict=True)
+            if limit is not None
+        ]
+        return min(remaining) if remaining else None
+
+    def _request_target_liters(self, request: ManualIrrigationRequest) -> float | None:
+        """Estimate a request's budget impact when its target is time-based."""
+        if request.target_type == "volume":
+            return request.target_value
+        if request.estimated_flow_l_min is None:
+            return None
+        return request.target_value * request.estimated_flow_l_min / 60
+
+    def _manual_budget_warnings(
+        self, request: ManualIrrigationRequest, *, now: datetime
+    ) -> list[str]:
+        """Describe manual budget overruns without blocking explicit user intent."""
+        target_liters = self._request_target_liters(request)
+        subentry = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+        if target_liters is None or subentry is None:
+            return []
+        keys = self._budget_keys(request.zone_id, now)
+        limits = (
+            (
+                "installation_daily_budget",
+                self._optional_float(
+                    self._installation_data, CONF_INSTALLATION_DAILY_BUDGET_LITERS
+                ),
+            ),
+            (
+                "installation_weekly_budget",
+                self._optional_float(
+                    self._installation_data, CONF_INSTALLATION_WEEKLY_BUDGET_LITERS
+                ),
+            ),
+            (
+                "zone_daily_budget",
+                self._optional_float(subentry.data, CONF_ZONE_DAILY_BUDGET_LITERS),
+            ),
+            (
+                "zone_weekly_budget",
+                self._optional_float(subentry.data, CONF_ZONE_WEEKLY_BUDGET_LITERS),
+            ),
+        )
+        return [
+            reason
+            for key, (reason, limit) in zip(keys, limits, strict=True)
+            if limit is not None
+            and self._stored_state.budget_usage_liters.get(key, 0.0) + target_liters > limit
+        ]
+
+    def _budget_usage_after_delivery(
+        self,
+        usage: Mapping[str, float],
+        *,
+        zone_id: str,
+        delivered_liters: float,
+        delivered_at: datetime,
+    ) -> dict[str, float]:
+        """Account one measured or estimated delivery for every applicable period."""
+        updated = dict(usage)
+        if delivered_liters <= 0:
+            return updated
+        for key in self._budget_keys(zone_id, delivered_at):
+            updated[key] = updated.get(key, 0.0) + delivered_liters
+        return updated
+
     @staticmethod
     def _request_deadline(request: ManualIrrigationRequest) -> datetime:
         """Return the immutable total-lifetime deadline, including waits and soaking."""
         return datetime.fromisoformat(request.operation_deadline_at or request.expires_at)
+
+    def _pause_deadline(self, request: ManualIrrigationRequest, now: datetime) -> datetime:
+        """Bound a user pause by its configured timeout and immutable request deadline."""
+        return min(
+            self._request_deadline(request),
+            now
+            + timedelta(
+                seconds=self._number(self._installation_data, CONF_PAUSE_TIMEOUT_SECONDS, 3_600)
+            ),
+        )
 
     @staticmethod
     def _estimated_flow(data: Mapping[str, object]) -> float | None:
@@ -5247,6 +6072,18 @@ class IrrigationManager:
         """Return one optional numeric config value as a float."""
         value = data.get(key)
         return float(value) if isinstance(value, int | float) else None
+
+    @staticmethod
+    def _finite_positive(value: object) -> float | None:
+        """Validate an optional positive finite service-input number."""
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise HomeAssistantError("Irrigation targets must be numeric")
+        numeric = float(value)
+        if not math.isfinite(numeric) or numeric <= 0:
+            raise HomeAssistantError("Irrigation targets must be positive and finite")
+        return numeric
 
     @staticmethod
     def _number(data: Mapping[str, object], key: str, default: float) -> float:

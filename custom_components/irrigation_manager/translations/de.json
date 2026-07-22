@@ -10,7 +10,8 @@
         "duration": {"name": "Dauer", "description": "Zeitziel in Sekunden."},
         "amount": {"name": "Menge", "description": "Mengenziel in Litern."},
         "hard_time_limit": {"name": "Hartes Zeitlimit", "description": "Erforderliches Sicherheitslimit in Sekunden für ein Mengenziel."},
-        "expiry": {"name": "Ablauf", "description": "Maximale Zeit in Sekunden, bevor ein offener Auftrag verfällt."}
+        "expiry": {"name": "Ablauf", "description": "Maximale Zeit in Sekunden, bevor ein offener Auftrag verfällt."},
+        "start_at": {"name": "Gewünschter Start", "description": "Optionaler einmaliger Start in der Zukunft."}
       }
     },
     "create_manual": {
@@ -22,9 +23,14 @@
         "duration": {"name": "Dauer"},
         "amount": {"name": "Menge"},
         "hard_time_limit": {"name": "Hartes Zeitlimit"},
-        "expiry": {"name": "Ablauf"}
+        "expiry": {"name": "Ablauf"},
+        "start_at": {"name": "Gewünschter Start"}
       }
     },
+    "create_manual_plan": {"name": "Manuellen Mehrzonenplan erstellen", "description": "Erstellt atomar eine geordnete Menge sofortiger oder zukünftiger Zonenaufträge."},
+    "edit_request": {"name": "Bewässerungsauftrag bearbeiten", "description": "Bearbeitet Ziel, Wunschstart oder Ablauf vor der Ausführung."},
+    "reorder_requests": {"name": "Bewässerungsaufträge sortieren", "description": "Legt eine ausdrückliche stabile Reihenfolge ungestarteter manueller Aufträge fest."},
+    "stop_and_skip": {"name": "Stoppen und einmal überspringen", "description": "Stoppt den ausgewählten Vorgang und unterdrückt seine aktuelle automatische Gelegenheit."},
     "list_requests": {"name": "Bewässerungsaufträge auflisten", "description": "Gibt persistierte manuelle Bewässerungsaufträge zurück."},
     "cancel_request": {"name": "Bewässerungsauftrag stornieren", "description": "Storniert einen ausgewählten Auftrag."},
     "pause_request": {"name": "Bewässerungsauftrag pausieren", "description": "Pausiert einen Auftrag und bewahrt sein Restziel."},
@@ -137,6 +143,7 @@
     }
   },
   "entity": {
+    "calendar": {"schedule": {"name": "Bewässerungsplan"}},
     "binary_sensor": {
       "emergency_stop": {
         "name": "Not-Aus"
@@ -275,6 +282,9 @@
           ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
           ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
           ,"calibration_settle_seconds": "Beobachtungszeit für Kalibrierungsnachlauf"
+          ,"installation_daily_budget_liters": "Tagesbudget der Anlage"
+          ,"installation_weekly_budget_liters": "Wochenbudget der Anlage"
+          ,"pause_timeout_seconds": "Maximale Pausendauer"
         },
         "data_description": {
           "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
@@ -352,6 +362,9 @@
           ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
           ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
           ,"calibration_settle_seconds": "Beobachtungszeit für Kalibrierungsnachlauf"
+          ,"installation_daily_budget_liters": "Tagesbudget der Anlage"
+          ,"installation_weekly_budget_liters": "Wochenbudget der Anlage"
+          ,"pause_timeout_seconds": "Maximale Pausendauer"
         },
         "data_description": {
           "local_wind_height_m": "Standard sind 2 m für lokale Gartensensoren; gib ihre tatsächliche physische Höhe an.",
@@ -399,7 +412,9 @@
           "max_delivery_runtime": "Maximale Bewässerungslaufzeit der Zone",
           "max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
           "zone_priority": "Zonenpriorität",
-          "watering_windows": "Tägliche Bewässerungsfenster"
+          "watering_windows": "Regeln für Bewässerungsfenster",
+          "zone_daily_budget_liters": "Tagesbudget der Zone",
+          "zone_weekly_budget_liters": "Wochenbudget der Zone"
         }
       }
     },
@@ -452,11 +467,13 @@
             "max_delivery_runtime": "Maximale Bewässerungslaufzeit der Zone",
             "max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
             "zone_priority": "Zonenpriorität",
-            "watering_windows": "Tägliche Bewässerungsfenster"
+            "watering_windows": "Regeln für Bewässerungsfenster",
+            "zone_daily_budget_liters": "Tagesbudget der Zone",
+            "zone_weekly_budget_liters": "Wochenbudget der Zone"
           },
           "data_description": {
             "meter_failure_strategy": "Gilt beim Ausfall eines konfigurierten kumulativen Zählers. Ohne Zähler laufen automatische Ziele zeitgesteuert anhand des Durchflussprofils.",
-            "watering_windows": "Ein oder mehrere tägliche Zeiträume im Format HH:MM-HH:MM. Ein früheres Ende reicht über Mitternacht."
+            "watering_windows": "Regeln verwenden HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed oder mon@sunrise-00:30..sunset+01:00. Datumsregeln überschreiben Wochentage; Wochentage überschreiben Standardregeln."
           }
         },
         "reconfigure": {
@@ -494,11 +511,13 @@
             "max_delivery_runtime": "Maximale Bewässerungslaufzeit der Zone",
             "max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
             "zone_priority": "Zonenpriorität",
-            "watering_windows": "Tägliche Bewässerungsfenster"
+            "watering_windows": "Regeln für Bewässerungsfenster",
+            "zone_daily_budget_liters": "Tagesbudget der Zone",
+            "zone_weekly_budget_liters": "Wochenbudget der Zone"
           },
           "data_description": {
             "meter_failure_strategy": "Gilt beim Ausfall eines konfigurierten kumulativen Zählers. Ohne Zähler laufen automatische Ziele zeitgesteuert anhand des Durchflussprofils.",
-            "watering_windows": "Ein oder mehrere tägliche Zeiträume im Format HH:MM-HH:MM. Ein früheres Ende reicht über Mitternacht."
+            "watering_windows": "Regeln verwenden HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed oder mon@sunrise-00:30..sunset+01:00. Datumsregeln überschreiben Wochentage; Wochentage überschreiben Standardregeln."
           }
         }
       },
@@ -507,7 +526,7 @@
       },
       "error": {
         "invalid_intervals": "Der maximale Abstand darf nicht kürzer als der minimale Abstand sein.",
-        "invalid_watering_windows": "Mindestens ein gültiges Bewässerungsfenster im Format HH:MM-HH:MM ist erforderlich.",
+        "invalid_watering_windows": "Mindestens eine gültige Standard-, Wochentags-, Datums- oder Sonnenereignisregel ist erforderlich.",
         "automation_requires_flow_profile": "Die Automatikfreigabe benötigt minimalen und maximalen Durchfluss."
       }
     }

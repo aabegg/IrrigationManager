@@ -1,7 +1,8 @@
 """Behavior tests for deterministic irrigation scheduling."""
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from custom_components.irrigation_manager.models import (
     IrrigationExecutionState,
@@ -14,8 +15,57 @@ from custom_components.irrigation_manager.scheduler import (
     decide_zone_schedule,
     dose_target,
     plan_orders,
+    resolve_daily_windows,
     select_manual_request,
 )
+
+
+def test_weekday_and_date_overrides_replace_default_windows() -> None:
+    """Apply exact-date closure ahead of weekday and default rules."""
+    berlin = ZoneInfo("Europe/Berlin")
+    monday = datetime(2026, 7, 20, 4, 30, tzinfo=berlin)
+    tuesday = datetime(2026, 7, 21, 4, 30, tzinfo=berlin)
+    values = ["04:00-06:00", "mon@05:00-07:00", "2026-07-21@closed"]
+
+    monday_window, _ = active_and_next_window(now=monday, values=values)
+    tuesday_window, next_start = active_and_next_window(now=tuesday, values=values)
+
+    assert monday_window is None
+    assert next_start is not None
+    assert tuesday_window is None
+
+
+def test_sun_offset_window_uses_resolver_and_stable_local_date() -> None:
+    """Resolve sun offsets through the supplied HA-compatible helper seam."""
+    berlin = ZoneInfo("Europe/Berlin")
+    now = datetime(2026, 7, 20, 5, 0, tzinfo=berlin)
+
+    def sun(event: str, day: date) -> datetime:
+        hour = 5 if event == "sunrise" else 21
+        return datetime.combine(day, time(hour), tzinfo=berlin)
+
+    active, _ = active_and_next_window(
+        now=now,
+        values=["mon@sunrise-00:30..sunrise+01:00"],
+        sun_resolver=sun,
+    )
+
+    assert active is not None
+    assert active.start == datetime(2026, 7, 20, 2, 30, tzinfo=UTC)
+    assert active.end == datetime(2026, 7, 20, 4, 0, tzinfo=UTC)
+
+
+def test_dst_window_range_uses_elapsed_time_not_wall_clock_time() -> None:
+    """A spring-forward window loses the nonexistent local hour."""
+    berlin = ZoneInfo("Europe/Berlin")
+    windows = resolve_daily_windows(
+        now=datetime(2026, 3, 29, 1, 45, tzinfo=berlin),
+        values=["sun@01:30-03:30"],
+    )
+
+    instant = datetime(2026, 3, 29, 0, 45, tzinfo=UTC)
+    active = next(window for window in windows if window.start <= instant < window.end)
+    assert active.end - active.start == timedelta(hours=1)
 
 
 def test_plan_orders_prioritizes_window_then_need_then_zone_priority() -> None:

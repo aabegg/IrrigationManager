@@ -11,6 +11,7 @@ import pytest
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import STATE_OFF
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -276,6 +277,54 @@ async def test_withdrawal_can_recreate_in_same_window_but_explicit_skip_stays_su
     restarted = await entry.runtime_data.manager.async_plan_automatic(now=now)
     assert restarted["recreated_request_ids"] == []
     assert entry.runtime_data.manager._request(request_id).status == "cancelled"
+
+
+async def test_stop_and_skip_cancels_selected_order_and_suppresses_opportunity(
+    hass: HomeAssistant,
+) -> None:
+    """Keep stop and stop-plus-skip as distinct durable actions."""
+    entry, _ = await _setup_automatic_zone(hass)
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    _make_zone_due(entry, now, deficit_mm=10)
+    manager = entry.runtime_data.manager
+    created = await manager.async_plan_automatic(now=now)
+    request_id = created["created_request_ids"][0]
+
+    result = await manager.async_stop_and_skip(request_id=request_id, now=now)
+    replanned = await manager.async_plan_automatic(now=now)
+
+    assert result["opportunity_id"] == request_id
+    assert manager._request(request_id).status == "cancelled"
+    assert request_id in manager._stored_state.suppressed_automatic_opportunities
+    assert replanned["zones"][0]["reason"] == "opportunity_suppressed"
+
+
+async def test_pending_stop_and_skip_save_failure_applies_neither_change(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never expose a skipped opportunity while its request remains runnable."""
+    entry, _ = await _setup_automatic_zone(hass)
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    _make_zone_due(entry, now, deficit_mm=10)
+    manager = entry.runtime_data.manager
+    created = await manager.async_plan_automatic(now=now)
+    request_id = created["created_request_ids"][0]
+    previous = manager._stored_state
+
+    async def fail_save(_state) -> None:
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(manager._store, "async_save", fail_save)
+
+    with pytest.raises(HomeAssistantError, match="stop-and-skip state"):
+        await manager.async_stop_and_skip(request_id=request_id, now=now)
+
+    assert manager._stored_state == previous
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert next(
+        request for request in stored.manual_requests if request.request_id == request_id
+    ).status == ("pending")
+    assert request_id not in stored.suppressed_automatic_opportunities
 
 
 async def test_outside_window_creates_no_automatic_request_but_manual_remains_allowed(
@@ -802,13 +851,16 @@ async def test_legacy_recovery_backfills_active_snapshot_from_linked_execution(
             execution_id=execution.execution_id,
         ),
     )
+    budget_keys = manager._budget_keys("zone-lawn", now)
 
+    await manager._async_recover_interrupted_execution(could_have_flowed=False)
     await manager._async_recover_interrupted_execution(could_have_flowed=False)
 
     stored = await IrrigationStore(hass, entry.entry_id).async_load()
     assert stored.zone_deficit_mm["zone-lawn"] == pytest.approx(9)
     assert stored.uncredited_balance_deliveries == ()
     assert stored.irrigation_executions[0].balance_area_m2 == 10
+    assert all(stored.budget_usage_liters[key] == 20 for key in budget_keys)
 
 
 async def test_recovery_without_trustworthy_snapshot_records_uncredited_delivery(
@@ -858,3 +910,82 @@ async def test_recovery_without_trustworthy_snapshot_records_uncredited_delivery
     assert response["uncredited_balance_deliveries"][0]["reconciliation_id"] == (
         reconciliation.reconciliation_id
     )
+
+
+async def test_automatic_budget_limits_target_and_persists_delivery_accounting(
+    hass: HomeAssistant,
+) -> None:
+    """Use strict daily/weekly remainders and account water in the dose transition."""
+    entry, zone = await _setup_automatic_zone(hass)
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    _make_zone_due(entry, now, deficit_mm=10)
+    manager._installation_data["installation_daily_budget_liters"] = 12
+    manager._zone_configs_by_subentry_id[zone.subentry_id].data["zone_weekly_budget_liters"] = 20
+    day_key, week_key, zone_day_key, zone_week_key = manager._budget_keys("zone-lawn", now)
+    manager._stored_state = replace(
+        manager._stored_state,
+        budget_usage_liters={day_key: 7, week_key: 7, zone_day_key: 7, zone_week_key: 7},
+    )
+
+    report = await manager.async_plan_automatic(now=now)
+    request = manager._request(report["created_request_ids"][0])
+    assert request is not None
+    assert request.target_value == pytest.approx(30)
+    request = replace(request, status="executing", execution_id="budget-execution")
+    execution = IrrigationExecutionState(
+        execution_id="budget-execution",
+        request_id=request.request_id,
+        zone_id=request.zone_id,
+        target_type=request.target_type,
+        target_value=request.target_value,
+        remaining_value=request.remaining_value,
+        status="watering",
+        created_at=now.isoformat(),
+        balance_area_m2=request.balance_area_m2,
+        balance_application_efficiency=request.balance_application_efficiency,
+        balance_maximum_deficit_mm=request.balance_maximum_deficit_mm,
+        balance_minimum_effective_liters=request.balance_minimum_effective_liters,
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=manager._with_request(request),
+        irrigation_executions=(execution,),
+    )
+
+    with patch("custom_components.irrigation_manager.manager.datetime") as clock:
+        clock.now.return_value = now
+        clock.fromisoformat.side_effect = datetime.fromisoformat
+        await manager._async_finish_dose(
+            request.request_id,
+            ExecutionResult(
+                zone_id=request.zone_id,
+                delivered_liters=5,
+                duration_seconds=30,
+            ),
+        )
+
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.budget_usage_liters[day_key] == 12
+    assert stored.budget_usage_liters[zone_week_key] == 12
+    manager._stored_state = replace(
+        manager._stored_state,
+        zone_deficit_mm={"zone-lawn": 10},
+        zone_last_effective_irrigation={"zone-lawn": (now - timedelta(days=2)).isoformat()},
+    )
+    exhausted = await manager.async_plan_automatic(now=now)
+    assert exhausted["zones"][0]["reason"] == "budget_exhausted"
+    queued_before_replan = replace(
+        request,
+        request_id="automatic:stale-budget-claim",
+        status="pending",
+        execution_id=None,
+        remaining_value=30,
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=(*manager._stored_state.manual_requests, queued_before_replan),
+    )
+    with patch.object(dt_util, "now", return_value=now):
+        assert await manager._async_apply_dispatch_budget(queued_before_replan) is None
+    assert manager._request(queued_before_replan.request_id).status == "cancelled"

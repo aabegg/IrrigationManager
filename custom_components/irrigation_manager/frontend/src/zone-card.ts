@@ -15,7 +15,7 @@ import { cardStyles } from "./styles";
 import type { HassEntity, HomeAssistant, ZoneCardConfig } from "./types";
 
 const DEFAULT_METRICS = ["balance", "next", "total", "recent", "quality"];
-const DEFAULT_ACTIONS = ["create", "start", "pause", "resume", "stop"];
+const DEFAULT_ACTIONS = ["create", "start", "pause", "resume", "stop", "stop_skip"];
 
 export class IrrigationManagerZoneCard extends LitElement {
   static styles = cardStyles;
@@ -115,7 +115,7 @@ export class IrrigationManagerZoneCard extends LitElement {
     });
   }
 
-  private async stop(): Promise<void> {
+  private async stop(skip = false): Promise<void> {
     const context = this.context();
     const request = entity(this.hass, this._config.request_entity);
     const activeRequest = activeRequestForZone(request, context?.zone_subentry_id);
@@ -126,7 +126,11 @@ export class IrrigationManagerZoneCard extends LitElement {
     const target = activeRequest.executionId
       ? { execution_id: activeRequest.executionId }
       : { request_id: activeRequest.requestId };
-    await this.perform("stop", { config_entry_id: context.config_entry_id, ...target }, localize(this.hass, "confirm_stop"));
+    await this.perform(
+      skip ? "stop_and_skip" : "stop",
+      { config_entry_id: context.config_entry_id, ...target },
+      localize(this.hass, skip ? "confirm_stop_skip" : "confirm_stop"),
+    );
   }
 
   render(): TemplateResult | typeof nothing {
@@ -211,7 +215,8 @@ export class IrrigationManagerZoneCard extends LitElement {
             ${actions.includes("start") ? html`<button class="primary" ?disabled=${this._busy || lock?.state === "on"} @click=${this.request}><ha-icon icon="mdi:play"></ha-icon>${localize(this.hass, "start")}</button>` : nothing}
             ${actions.includes("pause") ? html`<button ?disabled=${this._busy || !activeRequest?.requestId} @click=${() => this.requestAction("pause_request")}><ha-icon icon="mdi:pause"></ha-icon>${localize(this.hass, "pause")}</button>` : nothing}
             ${actions.includes("resume") ? html`<button ?disabled=${this._busy || !activeRequest?.requestId} @click=${() => this.requestAction("resume_request")}><ha-icon icon="mdi:play-pause"></ha-icon>${localize(this.hass, "resume")}</button>` : nothing}
-            ${actions.includes("stop") ? html`<button class="danger" ?disabled=${this._busy || !activeRequest} @click=${this.stop}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${localize(this.hass, "stop")}</button>` : nothing}
+            ${actions.includes("stop") ? html`<button class="danger" ?disabled=${this._busy || !activeRequest} @click=${() => this.stop()}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${localize(this.hass, "stop")}</button>` : nothing}
+            ${actions.includes("stop_skip") ? html`<button class="danger" ?disabled=${this._busy || !activeRequest} @click=${() => this.stop(true)}><ha-icon icon="mdi:skip-next-circle-outline"></ha-icon>${localize(this.hass, "stop_skip")}</button>` : nothing}
           </div>
         </div>
       </ha-card>

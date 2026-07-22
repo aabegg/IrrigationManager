@@ -46,6 +46,10 @@ start_manual:
           step: 1
           unit_of_measurement: s
           mode: box
+    start_at:
+      required: false
+      selector:
+        datetime:
 create_manual:
   fields:
     config_entry_id:
@@ -94,6 +98,38 @@ create_manual:
           step: 1
           unit_of_measurement: s
           mode: box
+    start_at:
+      required: false
+      selector:
+        datetime:
+create_manual_plan:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    items:
+      required: true
+      selector:
+        object:
+    plan_id:
+      required: false
+      selector:
+        text:
+    start_at:
+      required: false
+      selector:
+        datetime:
+    expiry:
+      required: false
+      default: 3600
+      selector:
+        number:
+          min: 0.001
+          max: 604800
+          unit_of_measurement: s
+          mode: box
 list_requests:
   fields:
     config_entry_id:
@@ -112,6 +148,59 @@ cancel_request:
       required: true
       selector:
         text:
+edit_request:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    request_id:
+      required: true
+      selector:
+        text:
+    duration:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          max: 14400
+          unit_of_measurement: s
+          mode: box
+    amount:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          unit_of_measurement: L
+          mode: box
+    hard_time_limit:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          max: 14400
+          unit_of_measurement: s
+          mode: box
+    start_at:
+      required: false
+      selector:
+        datetime:
+    expires_at:
+      required: false
+      selector:
+        datetime:
+reorder_requests:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    request_ids:
+      required: true
+      selector:
+        object:
 pause_request:
   fields:
     config_entry_id:
@@ -145,6 +234,25 @@ stop:
       required: false
       selector:
         text:
+stop_and_skip:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    request_id:
+      required: false
+      selector:
+        text:
+    execution_id:
+      required: false
+      selector:
+        text:
+    at:
+      required: false
+      selector:
+        datetime:
     execution_id:
       required: false
       selector:

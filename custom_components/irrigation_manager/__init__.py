@@ -16,7 +16,7 @@ from .runtime import IrrigationConfigEntry, IrrigationRuntimeData
 from .services import async_register_services
 from .storage import IrrigationStore
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.CALENDAR, Platform.SENSOR]
 LOGGER = logging.getLogger(__name__)
 
 

@@ -1,8 +1,9 @@
 """Deterministic planning of irrigation orders."""
 
-from collections.abc import Iterable
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 
 from .models import IrrigationExecutionState, ManualIrrigationRequest
@@ -57,6 +58,41 @@ class WateringWindow:
         return self.start.isoformat()
 
 
+type SunResolver = Callable[[str, date], datetime | None]
+
+_WEEKDAYS = {
+    "mon": 0,
+    "tue": 1,
+    "wed": 2,
+    "thu": 3,
+    "fri": 4,
+    "sat": 5,
+    "sun": 6,
+}
+_SUN_ENDPOINT = re.compile(
+    r"^(sunrise|sunset)(?:(?P<sign>[+-])(?P<hours>\d{1,2}):(?P<minutes>\d{2}))?$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class WateringWindowRule:
+    """One default, weekday, or exact-date watering-window rule."""
+
+    selector: str
+    start: str | None
+    end: str | None
+
+    def applies(self, day: date) -> bool:
+        """Return whether this rule selects the supplied local date."""
+        if self.selector == "default":
+            return True
+        if self.selector.startswith("date:"):
+            return day == date.fromisoformat(self.selector.removeprefix("date:"))
+        return day.weekday() in {
+            _WEEKDAYS[value] for value in self.selector.removeprefix("days:").split(",")
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class ZoneScheduleDecision:
     """Explain whether a zone should produce an order at one instant."""
@@ -82,34 +118,118 @@ def parse_daily_window(value: str) -> tuple[time, time]:
     return start, end
 
 
-def resolve_daily_windows(*, now: datetime, values: Iterable[str]) -> list[WateringWindow]:
-    """Resolve current and next fixed daily windows, including midnight crossings."""
+def parse_window_rule(value: str) -> WateringWindowRule:
+    """Parse a compact UI-storable window rule.
+
+    Accepted forms are legacy ``HH:MM-HH:MM``, ``mon,tue@...``, and
+    ``2026-07-22@...``. Sun endpoints use ``..`` as the range delimiter,
+    for example ``weekdays@sunrise-00:30..07:00``. ``@closed`` is an
+    explicit weekday or date override with no windows.
+    """
+    selector_value = "default"
+    range_value = value.strip().lower()
+    if "@" in range_value:
+        raw_selector, range_value = range_value.split("@", maxsplit=1)
+        if raw_selector == "weekdays":
+            raw_selector = "mon,tue,wed,thu,fri"
+        elif raw_selector == "weekends":
+            raw_selector = "sat,sun"
+        try:
+            selected_date = date.fromisoformat(raw_selector)
+        except ValueError:
+            days = raw_selector.split(",")
+            if not days or any(day not in _WEEKDAYS for day in days):
+                raise ValueError("Invalid watering-window selector") from None
+            selector_value = f"days:{','.join(dict.fromkeys(days))}"
+        else:
+            selector_value = f"date:{selected_date.isoformat()}"
+    if range_value == "closed":
+        if selector_value == "default":
+            raise ValueError("A default watering window cannot be closed")
+        return WateringWindowRule(selector_value, None, None)
+    if ".." in range_value:
+        start, end = range_value.split("..", maxsplit=1)
+    else:
+        start_time, end_time = parse_daily_window(range_value)
+        start, end = start_time.isoformat(), end_time.isoformat()
+    _validate_endpoint(start)
+    _validate_endpoint(end)
+    if start == end:
+        raise ValueError("Watering window start and end must differ")
+    return WateringWindowRule(selector_value, start, end)
+
+
+def _validate_endpoint(value: str) -> None:
+    """Validate a fixed wall time or a supported sun-event expression."""
+    if _SUN_ENDPOINT.fullmatch(value):
+        return
+    time.fromisoformat(value)
+
+
+def resolve_daily_windows(
+    *,
+    now: datetime,
+    values: Iterable[str],
+    sun_resolver: SunResolver | None = None,
+) -> list[WateringWindow]:
+    """Resolve selected local windows to UTC, including midnight and DST crossings."""
+    rules = [parse_window_rule(value) for value in values]
     windows: list[WateringWindow] = []
-    for value in values:
-        start_time, end_time = parse_daily_window(value)
-        for day_offset in (-1, 0, 1):
-            day = now.date() + timedelta(days=day_offset)
-            start = _combine(day, start_time, now)
-            end_day = day + timedelta(days=1) if end_time <= start_time else day
-            end = _combine(end_day, end_time, now)
-            if end > now or start > now:
+    local_now = now
+    for day_offset in (-1, 0, 1, 2):
+        day = local_now.date() + timedelta(days=day_offset)
+        date_rules = [rule for rule in rules if rule.selector == f"date:{day.isoformat()}"]
+        weekday_rules = [
+            rule for rule in rules if rule.selector.startswith("days:") and rule.applies(day)
+        ]
+        selected = (
+            date_rules or weekday_rules or [rule for rule in rules if rule.selector == "default"]
+        )
+        for rule in selected:
+            if rule.start is None or rule.end is None:
+                continue
+            start = _resolve_endpoint(day, rule.start, local_now, sun_resolver)
+            end = _resolve_endpoint(day, rule.end, local_now, sun_resolver)
+            if start is None or end is None:
+                continue
+            if end <= start:
+                end = _resolve_endpoint(day + timedelta(days=1), rule.end, local_now, sun_resolver)
+            if end is not None and (end > now.astimezone(UTC) or start > now.astimezone(UTC)):
                 windows.append(WateringWindow(start=start, end=end))
     return sorted(set(windows), key=lambda window: (window.start, window.end))
 
 
 def active_and_next_window(
-    *, now: datetime, values: Iterable[str]
+    *, now: datetime, values: Iterable[str], sun_resolver: SunResolver | None = None
 ) -> tuple[WateringWindow | None, datetime | None]:
     """Return the active opportunity and next future start."""
-    windows = resolve_daily_windows(now=now, values=values)
-    active = next((window for window in windows if window.start <= now < window.end), None)
-    next_start = next((window.start for window in windows if window.start > now), None)
+    windows = resolve_daily_windows(now=now, values=values, sun_resolver=sun_resolver)
+    utc_now = now.astimezone(UTC)
+    active = next((window for window in windows if window.start <= utc_now < window.end), None)
+    next_start = next((window.start for window in windows if window.start > utc_now), None)
     return active, next_start
 
 
-def _combine(day: date, value: time, reference: datetime) -> datetime:
-    """Combine a wall-clock value using the planning instant's timezone."""
-    return datetime.combine(day, value, tzinfo=reference.tzinfo)
+def _resolve_endpoint(
+    day: date,
+    value: str,
+    reference: datetime,
+    sun_resolver: SunResolver | None,
+) -> datetime | None:
+    """Resolve one endpoint and normalize nonexistent wall times through UTC."""
+    if match := _SUN_ENDPOINT.fullmatch(value):
+        if sun_resolver is None:
+            raise ValueError("Sun watering windows require a sun resolver")
+        resolved = sun_resolver(match.group(1), day)
+        if resolved is None:
+            return None
+        sign = -1 if match.group("sign") == "-" else 1
+        offset = timedelta(
+            hours=int(match.group("hours") or 0), minutes=int(match.group("minutes") or 0)
+        )
+        return (resolved + sign * offset).astimezone(UTC)
+    local = datetime.combine(day, time.fromisoformat(value), tzinfo=reference.tzinfo)
+    return local.astimezone(UTC)
 
 
 def decide_zone_schedule(
@@ -121,10 +241,17 @@ def decide_zone_schedule(
     minimum_interval: timedelta,
     maximum_interval: timedelta,
     minimum_trigger_liters: float,
+    sun_resolver: SunResolver | None = None,
 ) -> ZoneScheduleDecision:
     """Apply rhythm and window policy before producing one deterministic order."""
-    active_window, next_window_start = active_and_next_window(now=now, values=watering_windows)
-    age = now - last_effective_irrigation if last_effective_irrigation is not None else None
+    active_window, next_window_start = active_and_next_window(
+        now=now, values=watering_windows, sun_resolver=sun_resolver
+    )
+    age = (
+        now.astimezone(UTC) - last_effective_irrigation.astimezone(UTC)
+        if last_effective_irrigation is not None
+        else None
+    )
     if not zone.enabled:
         return ZoneScheduleDecision(
             None, False, 0.0, "automation_disabled", None, next_window_start
@@ -249,6 +376,10 @@ def select_manual_request(
             and request.status != "soaking"
         )
         and datetime.fromisoformat(request.expires_at) > now
+        and (
+            request.requested_start_at is None
+            or datetime.fromisoformat(request.requested_start_at) <= now
+        )
         and (
             request.status == "pending"
             or request.soak_until is None

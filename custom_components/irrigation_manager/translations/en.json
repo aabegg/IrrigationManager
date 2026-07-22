@@ -10,7 +10,8 @@
         "duration": {"name": "Duration", "description": "Time target in seconds."},
         "amount": {"name": "Amount", "description": "Volume target in liters."},
         "hard_time_limit": {"name": "Hard time limit", "description": "Required safety timeout in seconds for a volume target."},
-        "expiry": {"name": "Expiry", "description": "Maximum time in seconds before an uncompleted request expires."}
+        "expiry": {"name": "Expiry", "description": "Maximum time in seconds before an uncompleted request expires."},
+        "start_at": {"name": "Desired start", "description": "Optional one-time future start."}
       }
     },
     "create_manual": {
@@ -22,9 +23,14 @@
         "duration": {"name": "Duration"},
         "amount": {"name": "Amount"},
         "hard_time_limit": {"name": "Hard time limit"},
-        "expiry": {"name": "Expiry"}
+        "expiry": {"name": "Expiry"},
+        "start_at": {"name": "Desired start"}
       }
     },
+    "create_manual_plan": {"name": "Create manual multi-zone plan", "description": "Atomically create an ordered set of future or immediate zone requests."},
+    "edit_request": {"name": "Edit irrigation request", "description": "Edit target, desired start, or expiry before execution."},
+    "reorder_requests": {"name": "Reorder irrigation requests", "description": "Set an explicit stable order for unstarted manual requests."},
+    "stop_and_skip": {"name": "Stop and skip once", "description": "Stop the selected execution and suppress its current automatic opportunity."},
     "list_requests": {"name": "List irrigation requests", "description": "Return persisted manual irrigation requests."},
     "cancel_request": {"name": "Cancel irrigation request", "description": "Cancel one selected request."},
     "pause_request": {"name": "Pause irrigation request", "description": "Pause one selected request and preserve its remaining target."},
@@ -137,6 +143,7 @@
     }
   },
   "entity": {
+    "calendar": {"schedule": {"name": "Schedule"}},
     "binary_sensor": {
       "emergency_stop": {
         "name": "Emergency stop"
@@ -275,6 +282,9 @@
           ,"maintenance_max_duration": "Maximum maintenance test duration"
           ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
           ,"calibration_settle_seconds": "Calibration post-run observation time"
+          ,"installation_daily_budget_liters": "Daily installation budget"
+          ,"installation_weekly_budget_liters": "Weekly installation budget"
+          ,"pause_timeout_seconds": "Maximum pause duration"
         },
         "data_description": {
           "main_valve": "Optional switch or valve that isolates the complete installation.",
@@ -352,6 +362,9 @@
           ,"maintenance_max_duration": "Maximum maintenance test duration"
           ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
           ,"calibration_settle_seconds": "Calibration post-run observation time"
+          ,"installation_daily_budget_liters": "Daily installation budget"
+          ,"installation_weekly_budget_liters": "Weekly installation budget"
+          ,"pause_timeout_seconds": "Maximum pause duration"
         },
         "data_description": {
           "local_wind_height_m": "Defaults to 2 m for local garden sensors; set their actual physical height.",
@@ -399,7 +412,9 @@
           "max_delivery_runtime": "Maximum zone delivery runtime",
           "max_operation_lifetime": "Maximum operation lifetime",
           "zone_priority": "Zone priority",
-          "watering_windows": "Daily watering windows"
+          "watering_windows": "Watering-window rules",
+          "zone_daily_budget_liters": "Daily zone budget",
+          "zone_weekly_budget_liters": "Weekly zone budget"
         }
       }
     },
@@ -452,11 +467,13 @@
             "max_delivery_runtime": "Maximum zone delivery runtime",
             "max_operation_lifetime": "Maximum operation lifetime",
             "zone_priority": "Zone priority",
-            "watering_windows": "Daily watering windows"
+            "watering_windows": "Watering-window rules",
+            "zone_daily_budget_liters": "Daily zone budget",
+            "zone_weekly_budget_liters": "Weekly zone budget"
           },
           "data_description": {
             "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
-            "watering_windows": "One or more fixed daily windows in HH:MM-HH:MM form. An end before the start crosses midnight."
+            "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults."
           }
         },
         "reconfigure": {
@@ -494,11 +511,13 @@
             "max_delivery_runtime": "Maximum zone delivery runtime",
             "max_operation_lifetime": "Maximum operation lifetime",
             "zone_priority": "Zone priority",
-            "watering_windows": "Daily watering windows"
+            "watering_windows": "Watering-window rules",
+            "zone_daily_budget_liters": "Daily zone budget",
+            "zone_weekly_budget_liters": "Weekly zone budget"
           },
           "data_description": {
             "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
-            "watering_windows": "One or more fixed daily windows in HH:MM-HH:MM form. An end before the start crosses midnight."
+            "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults."
           }
         }
       },
@@ -507,7 +526,7 @@
       },
       "error": {
         "invalid_intervals": "The maximum interval must not be shorter than the minimum interval.",
-        "invalid_watering_windows": "Enter at least one valid HH:MM-HH:MM watering window.",
+        "invalid_watering_windows": "Enter at least one valid default, weekday, date, or sun-event watering-window rule.",
         "automation_requires_flow_profile": "Automatic release requires minimum and maximum flow values."
       }
     }

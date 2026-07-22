@@ -56,8 +56,10 @@ from .const import (
     CONF_FROST_ENTITY,
     CONF_FROST_THRESHOLD,
     CONF_HUMIDITY_SENSORS,
+    CONF_INSTALLATION_DAILY_BUDGET_LITERS,
     CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
     CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
+    CONF_INSTALLATION_WEEKLY_BUDGET_LITERS,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
@@ -83,6 +85,7 @@ from .const import (
     CONF_MINIMUM_TRIGGER_LITERS,
     CONF_NOTIFY_ENTITIES,
     CONF_OPEN_METEO_ENABLED,
+    CONF_PAUSE_TIMEOUT_SECONDS,
     CONF_PRESSURE_SENSORS,
     CONF_RAIN_FACTOR,
     CONF_RAIN_SENSORS,
@@ -107,8 +110,10 @@ from .const import (
     CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
     CONF_WEATHER_WIND_HEIGHT_M,
     CONF_WIND_SPEED_SENSORS,
+    CONF_ZONE_DAILY_BUDGET_LITERS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
+    CONF_ZONE_WEEKLY_BUDGET_LITERS,
     DOMAIN,
     ET0_PRIORITY_CALCULATED,
     ET0_PRIORITY_DIRECT,
@@ -119,7 +124,7 @@ from .const import (
     WATERING_MODE_MINIMUM,
     WEATHER_FAILURE_FAIL_SAFE,
 )
-from .scheduler import parse_daily_window
+from .scheduler import parse_window_rule
 from .weather import calculate_seasonal_value
 
 ATTR_ZONE_SUBENTRY_ID = "zone_subentry_id"
@@ -277,6 +282,33 @@ INSTALLATION_SCHEMA = vol.Schema(
             NumberSelectorConfig(
                 min=1,
                 max=2_592_000,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        ),
+        vol.Optional(CONF_INSTALLATION_DAILY_BUDGET_LITERS): NumberSelector(
+            NumberSelectorConfig(
+                min=0.001,
+                max=10_000_000,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfVolume.LITERS,
+            )
+        ),
+        vol.Optional(CONF_INSTALLATION_WEEKLY_BUDGET_LITERS): NumberSelector(
+            NumberSelectorConfig(
+                min=0.001,
+                max=100_000_000,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfVolume.LITERS,
+            )
+        ),
+        vol.Optional(CONF_PAUSE_TIMEOUT_SECONDS, default=3600): NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=604_800,
                 step=1,
                 mode=NumberSelectorMode.BOX,
                 unit_of_measurement=UnitOfTime.SECONDS,
@@ -488,6 +520,24 @@ ZONE_SCHEMA = vol.Schema(
         vol.Optional(CONF_WATERING_WINDOWS, default=["04:00-06:00"]): TextSelector(
             {"multiple": True}
         ),
+        vol.Optional(CONF_ZONE_DAILY_BUDGET_LITERS): NumberSelector(
+            NumberSelectorConfig(
+                min=0.001,
+                max=1_000_000,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfVolume.LITERS,
+            )
+        ),
+        vol.Optional(CONF_ZONE_WEEKLY_BUDGET_LITERS): NumberSelector(
+            NumberSelectorConfig(
+                min=0.001,
+                max=10_000_000,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfVolume.LITERS,
+            )
+        ),
     }
 )
 
@@ -499,7 +549,7 @@ def _validate_zone_input(user_input: dict[str, Any]) -> str | None:
         if not isinstance(windows, list) or not windows:
             raise ValueError
         for value in windows:
-            parse_daily_window(value)
+            parse_window_rule(value)
         if float(user_input[CONF_MAXIMUM_INTERVAL_DAYS]) < float(
             user_input[CONF_MINIMUM_INTERVAL_DAYS]
         ):

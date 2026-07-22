@@ -20,6 +20,9 @@ class ManualIrrigationRequest:
     remaining_value: float
     created_at: str
     expires_at: str
+    requested_start_at: str | None = None
+    pause_until: str | None = None
+    plan_id: str | None = None
     status: str = "pending"
     source: str = "manual"
     automatic_window_end: str | None = None
@@ -62,6 +65,9 @@ class ManualIrrigationRequest:
         main_valve = data.get("main_valve")
         execution_id = data.get("execution_id")
         soak_until = data.get("soak_until")
+        requested_start_at = data.get("requested_start_at")
+        pause_until = data.get("pause_until")
+        plan_id = data.get("plan_id")
         automatic_window_end = data.get("automatic_window_end")
         operation_deadline_at = data.get("operation_deadline_at")
         status = data.get("status", "pending")
@@ -78,6 +84,9 @@ class ManualIrrigationRequest:
                     soak_until,
                     automatic_window_end,
                     operation_deadline_at,
+                    requested_start_at,
+                    pause_until,
+                    plan_id,
                 )
             )
             or not isinstance(status, str)
@@ -103,6 +112,9 @@ class ManualIrrigationRequest:
             remaining_value=StoredInstallationState._float(data.get("remaining_value")),
             created_at=str(data["created_at"]),
             expires_at=str(data["expires_at"]),
+            requested_start_at=cast(str | None, requested_start_at),
+            pause_until=cast(str | None, pause_until),
+            plan_id=cast(str | None, plan_id),
             status=status,
             source=source,
             automatic_window_end=automatic_window_end,
@@ -598,6 +610,7 @@ class StoredInstallationState:
     forecast_deferral_started: dict[str, str] = field(default_factory=dict)
     forecast_deferral_deadlines: dict[str, str] = field(default_factory=dict)
     cancelled_forecast_deferrals: tuple[str, ...] = ()
+    budget_usage_liters: dict[str, float] = field(default_factory=dict)
 
     @staticmethod
     def _float(value: object) -> float:
@@ -677,6 +690,7 @@ class StoredInstallationState:
         raw_forecast_deferrals = data.get("forecast_deferral_started", {})
         raw_forecast_deadlines = data.get("forecast_deferral_deadlines", {})
         raw_cancelled_deferrals = data.get("cancelled_forecast_deferrals", [])
+        raw_budget_usage = data.get("budget_usage_liters", {})
         if not isinstance(raw_deficits, dict):
             raise ValueError("Stored zone water deficits are malformed")
         if not isinstance(raw_last_effective, dict) or not all(
@@ -718,6 +732,8 @@ class StoredInstallationState:
             isinstance(value, str) for value in raw_cancelled_deferrals
         ):
             raise ValueError("Stored cancelled forecast deferrals are malformed")
+        if not isinstance(raw_budget_usage, dict):
+            raise ValueError("Stored budget usage is malformed")
         return cls(
             installation_total_liters=cls._float(data.get("installation_total_liters", 0.0)),
             zone_totals_liters=zone_totals,
@@ -768,6 +784,9 @@ class StoredInstallationState:
             forecast_deferral_started=dict(raw_forecast_deferrals),
             forecast_deferral_deadlines=dict(raw_forecast_deadlines),
             cancelled_forecast_deferrals=tuple(raw_cancelled_deferrals),
+            budget_usage_liters={
+                str(key): cls._float(value) for key, value in raw_budget_usage.items()
+            },
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -814,4 +833,5 @@ class StoredInstallationState:
             "forecast_deferral_started": self.forecast_deferral_started,
             "forecast_deferral_deadlines": self.forecast_deferral_deadlines,
             "cancelled_forecast_deferrals": list(self.cancelled_forecast_deferrals),
+            "budget_usage_liters": self.budget_usage_liters,
         }

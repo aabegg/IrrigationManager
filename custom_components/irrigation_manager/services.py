@@ -20,6 +20,11 @@ ATTR_REQUEST_ID = "request_id"
 ATTR_EXECUTION_ID = "execution_id"
 ATTR_DRY_RUN = "dry_run"
 ATTR_AT = "at"
+ATTR_START_AT = "start_at"
+ATTR_EXPIRES_AT = "expires_at"
+ATTR_ITEMS = "items"
+ATTR_REQUEST_IDS = "request_ids"
+ATTR_PLAN_ID = "plan_id"
 ATTR_PERIOD_ID = "period_id"
 ATTR_REFERENCE_EVAPOTRANSPIRATION = "reference_evapotranspiration"
 ATTR_RAIN = "rain"
@@ -35,9 +40,13 @@ SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
 SERVICE_LIST_REQUESTS = "list_requests"
 SERVICE_CANCEL_REQUEST = "cancel_request"
+SERVICE_EDIT_REQUEST = "edit_request"
+SERVICE_REORDER_REQUESTS = "reorder_requests"
+SERVICE_CREATE_MANUAL_PLAN = "create_manual_plan"
 SERVICE_PAUSE_REQUEST = "pause_request"
 SERVICE_RESUME_REQUEST = "resume_request"
 SERVICE_STOP = "stop"
+SERVICE_STOP_AND_SKIP = "stop_and_skip"
 SERVICE_EMERGENCY_STOP = "emergency_stop"
 SERVICE_RESET_EMERGENCY_STOP = "reset_emergency_stop"
 SERVICE_RESET_ZONE_SAFETY = "reset_zone_safety"
@@ -87,6 +96,7 @@ START_MANUAL_SCHEMA = vol.All(
             vol.Optional(ATTR_EXPIRY, default=3600): vol.All(
                 vol.Coerce(float), vol.Range(min=0.001, max=604_800)
             ),
+            vol.Optional(ATTR_START_AT): cv.datetime,
         }
     ),
     _validate_manual_target,
@@ -103,6 +113,51 @@ REQUEST_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_REQUEST_ID): cv.string,
+    }
+)
+EDIT_REQUEST_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_REQUEST_ID): cv.string,
+        vol.Optional(ATTR_DURATION): vol.All(vol.Coerce(float), vol.Range(min=0.001, max=14_400)),
+        vol.Optional(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+        vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(
+            vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+        ),
+        vol.Optional(ATTR_START_AT): cv.datetime,
+        vol.Optional(ATTR_EXPIRES_AT): cv.datetime,
+    }
+)
+PLAN_ITEM_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+            vol.Optional(ATTR_DURATION): vol.All(
+                vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+            ),
+            vol.Optional(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+            vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(
+                vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+            ),
+        }
+    ),
+    _validate_manual_target,
+)
+CREATE_MANUAL_PLAN_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ITEMS): vol.All(cv.ensure_list, [PLAN_ITEM_SCHEMA], vol.Length(min=1)),
+        vol.Optional(ATTR_START_AT): cv.datetime,
+        vol.Optional(ATTR_EXPIRY, default=3600): vol.All(
+            vol.Coerce(float), vol.Range(min=0.001, max=604_800)
+        ),
+        vol.Optional(ATTR_PLAN_ID): cv.string,
+    }
+)
+REORDER_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_REQUEST_IDS): vol.All(cv.ensure_list, [cv.string], vol.Length(min=1)),
     }
 )
 ASSIGN_WATER_SCHEMA = vol.Schema(
@@ -191,6 +246,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             amount_liters=cast(float | None, call.data.get(ATTR_AMOUNT)),
             hard_time_limit_seconds=cast(float | None, call.data.get(ATTR_HARD_TIME_LIMIT)),
             expiry_seconds=cast(float, call.data[ATTR_EXPIRY]),
+            requested_start_at=cast(Any, call.data.get(ATTR_START_AT)),
             wait_for_completion=wait,
         )
 
@@ -214,8 +270,39 @@ async def async_register_services(hass: HomeAssistant) -> None:
             execution_id=cast(str | None, call.data.get(ATTR_EXECUTION_ID)),
         )
 
+    async def stop_and_skip(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_stop_and_skip(
+            request_id=cast(str | None, call.data.get(ATTR_REQUEST_ID)),
+            execution_id=cast(str | None, call.data.get(ATTR_EXECUTION_ID)),
+            now=cast(Any, call.data.get(ATTR_AT)),
+        )
+
     async def cancel_request(call: ServiceCall) -> None:
         await manager_for(call).async_cancel_request(cast(str, call.data[ATTR_REQUEST_ID]))
+
+    async def edit_request(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_edit_request(
+            request_id=cast(str, call.data[ATTR_REQUEST_ID]),
+            duration_seconds=cast(float | None, call.data.get(ATTR_DURATION)),
+            amount_liters=cast(float | None, call.data.get(ATTR_AMOUNT)),
+            hard_time_limit_seconds=cast(float | None, call.data.get(ATTR_HARD_TIME_LIMIT)),
+            requested_start_at=cast(Any, call.data.get(ATTR_START_AT)),
+            expires_at=cast(Any, call.data.get(ATTR_EXPIRES_AT)),
+        )
+
+    async def reorder_requests(call: ServiceCall) -> dict[str, Any]:
+        order = await manager_for(call).async_reorder_requests(
+            tuple(cast(list[str], call.data[ATTR_REQUEST_IDS]))
+        )
+        return {"request_ids": order}
+
+    async def create_manual_plan(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_create_manual_plan(
+            items=tuple(cast(list[dict[str, object]], call.data[ATTR_ITEMS])),
+            requested_start_at=cast(Any, call.data.get(ATTR_START_AT)),
+            expiry_seconds=cast(float, call.data[ATTR_EXPIRY]),
+            plan_id=cast(str | None, call.data.get(ATTR_PLAN_ID)),
+        )
 
     async def pause_request(call: ServiceCall) -> None:
         await manager_for(call).async_pause_request(cast(str, call.data[ATTR_REQUEST_ID]))
@@ -430,6 +517,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_CREATE_MANUAL_PLAN,
+        create_manual_plan,
+        schema=CREATE_MANUAL_PLAN_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_LIST_REQUESTS,
         list_requests,
         schema=INSTALLATION_SCHEMA,
@@ -437,7 +531,35 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(DOMAIN, SERVICE_STOP, stop, schema=STOP_SCHEMA)
     hass.services.async_register(
+        DOMAIN,
+        SERVICE_STOP_AND_SKIP,
+        stop_and_skip,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+                vol.Exclusive(ATTR_REQUEST_ID, "target"): cv.string,
+                vol.Exclusive(ATTR_EXECUTION_ID, "target"): cv.string,
+                vol.Optional(ATTR_AT): cv.datetime,
+            }
+        ),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
         DOMAIN, SERVICE_CANCEL_REQUEST, cancel_request, schema=REQUEST_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EDIT_REQUEST,
+        edit_request,
+        schema=EDIT_REQUEST_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REORDER_REQUESTS,
+        reorder_requests,
+        schema=REORDER_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
         DOMAIN, SERVICE_PAUSE_REQUEST, pause_request, schema=REQUEST_SCHEMA

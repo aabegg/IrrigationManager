@@ -62,7 +62,7 @@ const germanLabels: Record<string, string> = {
 const overviewMetrics = ["active", "pending", "next", "today", "month", "quality"];
 const overviewActions = ["stop", "emergency"];
 const zoneMetrics = ["balance", "next", "total", "recent", "quality"];
-const zoneActions = ["create", "start", "pause", "resume", "stop"];
+const zoneActions = ["create", "start", "pause", "resume", "stop", "stop_skip"];
 
 abstract class BaseEditor<T extends CardConfig> extends LitElement {
   static styles = editorStyles;
