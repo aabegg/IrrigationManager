@@ -5,6 +5,7 @@ import asyncio
 import pytest
 from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL
 from homeassistant.core import HomeAssistant
+from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -38,7 +39,8 @@ async def test_frontend_bundle_is_served_registered_and_cleaned_up(
     assert isinstance(registration, FrontendRegistration)
     assert registration.entries == {entry.entry_id}
     assert registration.module_url is not None
-    assert registration.module_url.endswith("irrigation-manager.js?v=0.1.0-rc3")
+    integration = await async_get_integration(hass, DOMAIN)
+    assert registration.module_url.endswith(f"irrigation-manager.js?v={integration.version}")
     assert registration.module_url in hass.data[DATA_EXTRA_MODULE_URL].urls
 
     await async_register_frontend(hass, entry.entry_id)
