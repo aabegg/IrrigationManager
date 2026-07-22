@@ -1,20 +1,27 @@
 # Changelog
 
-Alle relevanten Änderungen an IrrigationManager werden hier dokumentiert.
+## 0.1.0-rc1 - 2026-07-22
 
-## Unreleased
+First private release candidate.
 
-### Added
+### Included
 
-- initiale Projektstruktur
-- erste funktionale und technische Spezifikationsdokumente
-- verbindliches Domänenvokabular in `CONTEXT.md`
-- Architekturentscheidungen für sequenzielle Zonen, exklusive Ventilsteuerung und Sicherheitsübersteuerung
-- dokumentierte persönliche Referenzanlage mit sechs Bewässerungszonen
+- Guided German and English setup for installations, zones, raised beds, profiles,
+  metering, weather sources, and safety limits.
+- Serialized time- and volume-controlled irrigation with main-valve ordering,
+  split doses, soak pauses, persistent requests, restart recovery, and hard limits.
+- Emergency stop, winter lock, supervised maintenance, calibration, leak detection,
+  flow monitoring, external interlocks, actuator feedback, and weather interlocks.
+- Recorder-, Weather-, and optional Open-Meteo-based evapotranspiration and water
+  balances with researched, versioned plant, soil, and irrigation profiles.
+- Scheduling windows, priorities, budgets, forecast deferral, manual plans, calendar,
+  consumption statistics, portable import/export, diagnostics, and Lovelace cards.
+- HACS and Hassfest validation plus backend and frontend CI.
 
-### Changed
+### Release-candidate limitations
 
-- Funktionsumfang nach ausführlicher Grill-Session konsolidiert
-- Anforderungen, Architektur, Datenmodell, Datenhaltung, Scheduler, Wasserberechnung, Wasserzähler, UI, Entitäten und Sicherheit aufeinander abgestimmt
-- Roadmap auf vollständige Simulation vor privatem Feldtest und späteres öffentliches HACS-Release ausgerichtet
-- frühere offene Produktfragen durch konkrete Implementierungs- und Validierungspunkte ersetzt
+- Intended for simulation and supervised private field testing, not unattended use.
+- Site-specific soil, root-depth, infiltration, flow, and application-rate values must
+  be verified during commissioning.
+- An independent hardware shutoff timer remains strongly recommended.
+- Browser/mobile presentation and all six physical zones still require field validation.

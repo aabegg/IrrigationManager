@@ -38,7 +38,7 @@ async def test_frontend_bundle_is_served_registered_and_cleaned_up(
     assert isinstance(registration, FrontendRegistration)
     assert registration.entries == {entry.entry_id}
     assert registration.module_url is not None
-    assert registration.module_url.endswith("irrigation-manager.js?v=0.1.0")
+    assert registration.module_url.endswith("irrigation-manager.js?v=0.1.0-rc1")
     assert registration.module_url in hass.data[DATA_EXTRA_MODULE_URL].urls
 
     await async_register_frontend(hass, entry.entry_id)

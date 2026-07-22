@@ -1,0 +1,31 @@
+name: Release package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build HACS integration archive
+        working-directory: custom_components/irrigation_manager
+        run: >-
+          zip -r "$GITHUB_WORKSPACE/irrigation_manager.zip" .
+          -x "*/__pycache__/*" "*.pyc" "frontend/node_modules/*"
+          "frontend/src/*" "frontend/*.json" "frontend/*.ts"
+          "frontend/README.md"
+
+      - name: Attach archive to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release upload "${{ github.event.release.tag_name }}"
+          irrigation_manager.zip --clobber
