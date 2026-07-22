@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-rc2 - 2026-07-22
+
+### Fixed
+
+- Allow Home Assistant's card picker to apply an empty preview configuration before
+  the user selects installation and zone entities.
+- Add a browser-like catalog regression test covering both bundled Lovelace cards.
+- Remove a duplicate `execution_id` field from the action metadata.
+
 ## 0.1.0-rc1 - 2026-07-22
 
 First private release candidate.

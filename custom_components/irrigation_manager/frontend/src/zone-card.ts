@@ -46,7 +46,6 @@ export class IrrigationManagerZoneCard extends LitElement {
   }
 
   setConfig(config: ZoneCardConfig): void {
-    if (!config.zone_entity) throw new Error("zone_entity is required");
     this._config = { ...config };
   }
 
@@ -135,6 +134,9 @@ export class IrrigationManagerZoneCard extends LitElement {
 
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
+    if (!this._config.zone_entity) {
+      return html`<ha-card><div class="card"><div class="warning"><ha-icon icon="mdi:water-alert"></ha-icon><span>${localize(this.hass, "missing")}</span></div></div></ha-card>`;
+    }
     const zone = entity(this.hass, this._config.zone_entity);
     const needed = entity(this.hass, this._config.automation_needed_entity);
     const lock = entity(this.hass, this._config.safety_lock_entity);

@@ -253,10 +253,6 @@ stop_and_skip:
       required: false
       selector:
         datetime:
-    execution_id:
-      required: false
-      selector:
-        text:
 emergency_stop:
   fields:
     config_entry_id:

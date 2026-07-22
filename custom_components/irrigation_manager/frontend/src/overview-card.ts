@@ -31,7 +31,6 @@ export class IrrigationManagerOverviewCard extends LitElement {
   }
 
   setConfig(config: OverviewCardConfig): void {
-    if (!config.status_entity) throw new Error("status_entity is required");
     this._config = { ...config };
   }
 
@@ -65,6 +64,9 @@ export class IrrigationManagerOverviewCard extends LitElement {
 
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
+    if (!this._config.status_entity) {
+      return html`<ha-card><div class="card"><div class="warning"><ha-icon icon="mdi:water-alert"></ha-icon><span>${localize(this.hass, "missing")}</span></div></div></ha-card>`;
+    }
     const status = entity(this.hass, this._config.status_entity);
     const emergency = entity(this.hass, this._config.emergency_entity);
     const lock = entity(this.hass, this._config.lock_entity);
