@@ -65,6 +65,8 @@ async def _setup(
     hass.states.async_set("switch.lawn", STATE_OFF)
     data: dict[str, object] = {
         "name": "Garden",
+        "automation_enabled": True,
+        "hardware_shutoff_acknowledged": True,
         "maintenance_max_duration": max_duration,
         "maintenance_confirmation_interval": confirmation_interval,
         "calibration_settle_seconds": 0,
@@ -93,6 +95,7 @@ async def _setup(
         title="Garden",
         data=data,
         unique_id="installation-safety-modes",
+        minor_version=7,
     )
     entry.add_to_hass(hass)
     zone = ConfigSubentry(

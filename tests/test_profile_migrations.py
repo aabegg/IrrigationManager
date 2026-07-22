@@ -130,13 +130,19 @@ async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant
     entry = MockConfigEntry(
         domain="irrigation_manager",
         title="Garden",
-        data={"name": "Garden"},
+        data={
+            "name": "Garden",
+            "automation_enabled": True,
+            "hardware_shutoff_acknowledged": True,
+        },
         version=1,
         minor_version=3,
     )
     entry.add_to_hass(hass)
     zone = ConfigSubentry(
-        data=MappingProxyType({"name": "Lawn", "zone_valve": "switch.lawn"}),
+        data=MappingProxyType(
+            {"name": "Lawn", "zone_valve": "switch.lawn", "automation_enabled": True}
+        ),
         subentry_id="zone-1",
         subentry_type="zone",
         title="Lawn",
@@ -145,8 +151,10 @@ async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant
     hass.config_entries.async_add_subentry(entry, zone)
 
     assert await async_migrate_entry(hass, entry)
-    assert entry.minor_version == 6
-    assert entry.data["automation_enabled"] is True
+    assert entry.minor_version == 7
+    assert entry.data["automation_enabled"] is False
+    assert entry.data["hardware_shutoff_acknowledged"] is False
     assert entry.data["external_failure_policy"] == "fail_safe"
     assert entry.subentries["zone-1"].data["external_failure_policy"] == "fail_safe"
+    assert entry.subentries["zone-1"].data["automation_enabled"] is False
     assert "plant_profile" not in entry.subentries["zone-1"].data

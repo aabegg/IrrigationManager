@@ -135,6 +135,20 @@
     "update_spring_checklist": {"name": "Update spring checklist", "description": "Confirm or reopen one configured recommission checklist item."}
   },
   "selector": {
+    "installation_purpose": {"options": {"private_garden": "Private garden", "landscape": "Ornamental landscape", "food_garden": "Food garden", "mixed": "Mixed use"}},
+    "meter_kind": {"options": {"cumulative": "Cumulative volume meter", "raw": "Pulse or count meter", "none": "No water meter"}},
+    "weather_strategy": {"options": {"recommended": "Use the recommended available source", "local": "Local sensors or weather entity", "open_meteo": "Open-Meteo", "seasonal": "Seasonal fallback only"}},
+    "setup_mode": {"options": {"guided": "Guided setup", "expert": "Expert settings"}},
+    "zone_category": {"options": {"raised_bed": "Raised bed", "vegetables": "Vegetable bed", "lawn": "Lawn", "shrubs": "Shrubs or hedge", "flowers": "Flowers or perennials", "young_tree": "Young fruit tree"}},
+    "area_method": {"options": {"measured": "I know the area", "rectangle": "Calculate length × width", "unknown": "I do not know yet"}},
+    "soil_answer": {"options": {"potting_mix": "Mostly purchased potting/raised-bed mix", "mineral_mix": "Mixed garden soil and compost", "sand": "Sandy and very loose", "sandy_loam": "Loose soil that holds some water", "loam": "Balanced garden soil", "clay_loam": "Heavy soil", "clay": "Very heavy/sticky soil", "unknown": "I am not sure"}},
+    "bed_age": {"options": {"new": "New this season", "established": "Established for more than one season", "unknown": "I am not sure"}},
+    "answer_unknown": {"options": {"yes": "Yes", "no": "No", "unknown": "I am not sure"}},
+    "drainage": {"options": {"fast": "Drains very quickly", "normal": "Normal", "slow": "Water remains for a long time", "unknown": "I am not sure"}},
+    "plant_choice": {"options": {"vegetables": "Mixed vegetables, e.g. lettuce, tomatoes, beans", "lawn": "Cool-season lawn", "shrubs": "Established shrubs and hedges", "flowers": "Groundcover and perennials", "young_tree": "Young fruit tree in establishment"}},
+    "irrigation_method": {"options": {"drip": "Drip line or emitters", "microspray": "Microsprayers", "fixed_spray": "Fixed spray heads", "rotor": "Rotor sprinklers"}},
+    "exposure": {"options": {"full_sun": "Full sun and normal rain", "partial_sun": "Part sun", "shade": "Mostly shaded", "sheltered": "Sheltered from some rain", "rain_shadow": "Under a roof/eave or strong rain shadow"}},
+    "rate_source": {"options": {"measured": "Measured flow range", "estimated": "Estimated application rate", "unknown": "Unknown; calibrate later"}},
     "meter_failure_strategy": {
       "options": {
         "abort": "Abort",
@@ -305,14 +319,16 @@
         "title": "Set up Irrigation Manager",
         "menu_options": {
           "create": "Create a new irrigation installation",
+          "expert_create": "Create with expert settings",
           "import": "Import a portable irrigation installation"
         }
       },
-      "create": {
+      "expert_create": {
         "title": "Create irrigation installation",
         "description": "Configure the shared water supply. Irrigation zones are added afterwards.",
         "data": {
           "name": "Name",
+          "purpose": "What will this installation water?",
           "main_valve": "Main valve",
           "main_valve_feedback": "Main valve feedback",
           "water_meter": "Cumulative water meter",
@@ -368,6 +384,7 @@
           ,"custom_profiles": "User-owned profile copies"
           ,"water_tariff_per_m3": "Water tariff per m³"
           ,"automation_enabled": "Global automatic release"
+          ,"hardware_shutoff_acknowledged": "Independent hardware-shutoff warning acknowledged"
           ,"winter_reminder_date": "Winter reminder date (MM-DD)"
           ,"maintenance_tasks": "Recurring maintenance tasks"
           ,"spring_checklist": "Spring recommission checklist"
@@ -386,6 +403,12 @@
           "weather_backfill_days": "Safety and retention cap for missing daily periods processed after downtime. Older periods are outside retained automatic backfill."
         }
       },
+      "create": {"title": "Create irrigation installation", "description": "Start with the purpose and a recognizable name. Shared hardware, metering, weather, and safety follow in manageable steps.", "data": {"name": "Name", "purpose": "What will this installation water?"}},
+      "installation_hardware": {"title": "Valve and feedback", "description": "Select a shared main valve only if one valve physically isolates the complete installation. Independent feedback makes failures visible.", "data": {"main_valve": "Optional main valve", "main_valve_feedback": "Optional independent valve feedback"}},
+      "installation_meter": {"title": "Water measurement", "description": "A cumulative meter enables volume targets. A flow sensor improves leak and plausibility checks. The selected unit and capability are checked before review.", "data": {"meter_kind": "What kind of meter is available?", "water_meter": "Cumulative volume sensor", "raw_meter": "Pulse or count sensor", "liters_per_count": "Liters per pulse/count", "flow_sensor": "Optional flow-rate sensor"}},
+      "installation_weather": {"title": "Weather source", "description": "{meter_preview} {comparison}", "data": {"weather_strategy": "Weather approach", "weather_entity": "Local weather entity", "et0_sensors": "Direct reference-evapotranspiration sensors"}},
+      "installation_safety": {"title": "Safety limits", "description": "Software and wireless valves can fail. Use a physical hardware shutoff timer or equivalent independent limit so water stops even if Home Assistant does not.", "data": {"installation_max_delivery_runtime": "Hard maximum delivery time", "hardware_shutoff_acknowledged": "I understand and have considered an independent hardware shutoff"}},
+      "installation_review": {"title": "Review and dry-run readiness", "description": "{preview}", "data": {"confirm_ready": "Create this installation"}},
       "import": {
         "title": "Import a new irrigation installation",
         "description": "Validate a portable export and explicit entity remapping before creating a separate installation.",
@@ -418,6 +441,9 @@
       "multiple_meter_sources": "Select either a cumulative volume meter or a raw count meter, not both.",
       "raw_meter_requires_factor": "A raw meter and its liters-per-count factor must be configured together."
       ,"main_feedback_requires_main_valve": "Main-valve feedback requires a configured main valve."
+      ,"selected_meter_required": "Select the sensor matching the chosen meter type."
+      ,"local_weather_source_required": "Select a local weather entity or direct reference-evapotranspiration sensor."
+      ,"hardware_shutoff_acknowledgement_required": "Automatic operation cannot be enabled until the independent hardware-shutoff warning is acknowledged."
     }
   },
   "options": {
@@ -425,11 +451,16 @@
       "init": {
         "title": "Irrigation Manager settings",
         "menu_options": {
-          "installation": "Installation expert settings",
-          "zone": "Zone expert settings",
+          "guided": "Guided settings",
+          "expert": "Expert settings",
           "import_config": "Import portable configuration"
         }
       },
+      "guided": {"title": "Guided settings", "menu_options": {"guided_installation": "Installation essentials", "guided_zone": "Zone and profile settings"}},
+      "expert": {"title": "Expert settings", "menu_options": {"installation": "Installation expert settings", "zone": "Zone expert settings"}},
+      "guided_installation": {"title": "Installation essentials", "description": "Only common choices are shown. Hidden expert values are preserved. Imported and migrated installations remain automatically disabled until the hardware warning is acknowledged locally.", "data": {"name": "Name", "main_valve": "Main valve", "main_valve_feedback": "Main-valve feedback", "water_meter": "Cumulative water meter", "flow_sensor": "Flow sensor", "weather_entity": "Weather entity", "open_meteo_enabled": "Use Open-Meteo fallback", "hardware_shutoff_acknowledged": "Independent hardware-shutoff warning acknowledged", "automation_enabled": "Global automatic release"}},
+      "guided_zone": {"title": "Select irrigation zone", "data": {"zone_subentry_id": "Irrigation zone"}},
+      "guided_zone_settings": {"title": "Guided zone settings", "description": "Profile changes show their expected water and runtime impact before saving. Hidden expert values are preserved.", "data": {"name": "Name", "area_m2": "Watered area", "plant_profile": "Plants", "soil_profile": "Soil", "irrigation_profile": "Irrigation method", "min_flow": "Measured minimum flow", "max_flow": "Measured maximum flow", "automation_enabled": "Automatic release"}},
       "installation": {
         "title": "Installation expert settings",
         "description": "Changes are saved immediately and applied after all open irrigation requests are finished.",
@@ -490,6 +521,7 @@
           ,"custom_profiles": "User-owned profile copies"
           ,"water_tariff_per_m3": "Water tariff per m³"
           ,"automation_enabled": "Global automatic release"
+          ,"hardware_shutoff_acknowledged": "Independent hardware-shutoff warning acknowledged"
           ,"winter_reminder_date": "Winter reminder date (MM-DD)"
           ,"maintenance_tasks": "Recurring maintenance tasks"
           ,"spring_checklist": "Spring recommission checklist"
@@ -613,10 +645,11 @@
     "zone": {
       "title": "Irrigation zone",
       "step": {
-        "user": {
+        "expert": {
           "title": "Add irrigation zone",
-          "description": "A zone is one independently switched irrigation area behind one logical valve.",
+          "description": "Choose a guided setup for plain-language recommendations or expert settings for the complete stored model.",
           "data": {
+            "setup_mode": "Setup mode",
             "name": "Name",
             "zone_valve": "Zone valve",
             "zone_valve_feedback": "Zone valve feedback",
@@ -686,14 +719,25 @@
             "phenology_stage_schedule": "For staged profiles, provide season_start as MM-DD plus initial_days, development_days, mid_days, and late_days, or explicit recurring stage boundary dates. No hemisphere is assumed."
           }
         },
+        "user": {"title": "Add irrigation zone", "description": "Choose guided setup for plain-language recommendations or expert settings for the complete stored model.", "data": {"setup_mode": "Setup mode"}},
+        "zone_basic": {"title": "Zone and valve", "description": "One zone is everything switched by this one valve.", "data": {"name": "Name", "zone_valve": "Zone valve", "zone_valve_feedback": "Optional independent feedback", "zone_category": "What best describes this zone?"}},
+        "zone_area": {"title": "Watered area", "description": "Area directly determines expected liters. An unknown area uses a clearly marked 1 m² placeholder and blocks safe automation readiness.", "data": {"area_method": "How should area be entered?", "area_m2": "Measured area in m²", "length_m": "Length in meters", "width_m": "Width in meters"}},
+        "zone_raised_bed": {"title": "Raised-bed soil", "description": "Usable soil depth limits water storage; do not include drainage layers or empty space. Age, organic matter, and drainage help explain uncertainty.", "data": {"usable_depth_cm": "Usable soil depth in cm", "soil_answer": "Closest soil mix", "bed_age": "Bed age", "organic_rich": "Is the mix rich in compost/organic matter?", "drainage": "Observed drainage"}},
+        "zone_profiles": {"title": "Plants and location", "description": "Choose recognizable categories. The next review explains why these researched planning defaults were selected and shows their ranges and assumptions.", "data": {"plant_choice": "Plant group", "soil_answer": "Closest soil", "irrigation_method": "Irrigation method", "exposure": "Sun and rain exposure"}},
+        "zone_rate": {"title": "Application rate", "description": "Measured flow enables calibrated automatic operation. An application-rate estimate is useful for a preview but does not count as calibration.", "data": {"rate_source": "How is the application rate known?", "min_flow": "Measured minimum flow (L/min)", "max_flow": "Measured maximum flow (L/min)", "application_rate_mm_h": "Estimated application rate (mm/h)"}},
+        "zone_automatic": {"title": "Automatic watering", "description": "Demand mode waters only when enough water is missing. Minimum mode guarantees a minimum dose at every due opportunity.", "data": {"request_automation": "Request automatic release", "watering_mode": "Watering mode", "window_start": "Daily window starts", "window_end": "Daily window ends"}},
+        "zone_cycle_soak": {"title": "Cycle and soak", "description": "Recommendation reason: {recommendation}. Short doses with soak pauses reduce runoff when water arrives faster than soil can accept it.", "data": {"use_cycle_soak": "Use cycle and soak", "max_dose_minutes": "Maximum minutes per partial dose", "soak_minutes": "Soak pause in minutes"}},
+        "zone_safety": {"title": "Zone safety limits", "description": "These limits cap every automatic target independently of the calculated need.", "data": {"automatic_max_minutes": "Maximum automatic runtime", "maximum_target_liters": "Maximum automatic liters"}},
+        "zone_review": {"title": "Recommendation and impact preview", "description": "{preview}", "data": {"confirm_profile_selection": "I reviewed the assumptions and want to save this zone"}},
         "profile_confirmation": {
           "title": "Confirm researched profile selection",
           "description": "Review profile ranges, confidence, sources, assumptions, warnings, and the resolved TAW and RAW before saving: {preview}",
           "data": {"confirm_profile_selection": "Use these profile assumptions"}
         },
-        "reconfigure": {
-          "title": "Update irrigation zone",
+        "reconfigure_expert": {
+          "title": "Update irrigation zone (expert)",
           "data": {
+            "setup_mode": "Edit mode",
             "name": "Name",
             "zone_valve": "Zone valve",
             "zone_valve_feedback": "Zone valve feedback",
@@ -762,7 +806,8 @@
             "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults.",
             "phenology_stage_schedule": "For staged profiles, provide season_start as MM-DD plus initial_days, development_days, mid_days, and late_days, or explicit recurring stage boundary dates. No hemisphere is assumed."
           }
-        }
+        },
+        "reconfigure": {"title": "Update irrigation zone", "description": "Choose guided editing or the complete expert form.", "data": {"setup_mode": "Edit mode"}}
       },
       "abort": {
         "already_configured": "This zone valve is already configured.",
@@ -777,6 +822,11 @@
         "invalid_profiles": "Profile data, Teilflaechen, or a profile reference is invalid.",
         "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
         ,"wind_interlock_requires_source_and_threshold": "Wind source and threshold must be configured together."
+        ,"area_required": "Enter the measured watered area."
+        ,"dimensions_required": "Enter both length and width."
+        ,"measured_flow_required": "Enter both ends of the measured flow range."
+        ,"invalid_flow_range": "Maximum flow must be greater than minimum flow."
+        ,"application_rate_required": "Enter the estimated application rate."
       }
     }
   }

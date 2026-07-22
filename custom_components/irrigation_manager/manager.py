@@ -69,6 +69,7 @@ from .const import (
     CONF_HARDWARE_CONNECTIVITY_SENSOR,
     CONF_HARDWARE_FAULT_SENSOR,
     CONF_HARDWARE_HEALTH_MAX_AGE_SECONDS,
+    CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED,
     CONF_HUMIDITY_SENSORS,
     CONF_INSTALLATION_DAILY_BUDGET_LITERS,
     CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
@@ -2486,6 +2487,7 @@ class IrrigationManager:
                 window_end=now,
                 enabled=(
                     bool(self._installation_data.get(CONF_AUTOMATION_ENABLED, True))
+                    and bool(self._installation_data.get(CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED, False))
                     and bool(data.get(CONF_AUTOMATION_ENABLED, False))
                     and not self._zone_archived(zone_id)
                 ),
@@ -5121,6 +5123,7 @@ class IrrigationManager:
             CONF_INSTALLATION_WEEKLY_BUDGET_LITERS,
             CONF_WATER_TARIFF_PER_M3,
             CONF_AUTOMATION_ENABLED,
+            CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED,
             CONF_WINTER_REMINDER_DATE,
             CONF_MAINTENANCE_TASKS,
             CONF_SPRING_CHECKLIST,
@@ -5258,6 +5261,8 @@ class IrrigationManager:
         imported_installation = self._remap_import_entities(
             dict(raw_installation), entity_remapping
         )
+        imported_installation[CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED] = False
+        imported_installation[CONF_AUTOMATION_ENABLED] = False
         if not isinstance(imported_installation.get("name"), str):
             raise HomeAssistantError("The imported installation requires a name")
         if imported_installation.get(CONF_WATER_METER) and imported_installation.get(
@@ -5293,6 +5298,7 @@ class IrrigationManager:
                 zone_changes.append({"imported_id": imported_id, "status": "mapping_required"})
                 continue
             remapped = self._remap_import_entities(dict(raw_config), entity_remapping)
+            remapped[CONF_AUTOMATION_ENABLED] = False
             name = remapped.get("name")
             valve = remapped.get(CONF_ZONE_VALVE)
             windows = remapped.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])

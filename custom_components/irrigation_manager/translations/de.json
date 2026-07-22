@@ -135,6 +135,20 @@
     "update_spring_checklist": {"name": "Frühjahrscheckliste aktualisieren", "description": "Bestätigt oder öffnet einen konfigurierten Inbetriebnahmepunkt erneut."}
   },
   "selector": {
+    "installation_purpose": {"options": {"private_garden": "Privatgarten", "landscape": "Ziergarten", "food_garden": "Nutzgarten", "mixed": "Gemischte Nutzung"}},
+    "meter_kind": {"options": {"cumulative": "Kumulativer Volumenzähler", "raw": "Impuls- oder Zählwert", "none": "Kein Wasserzähler"}},
+    "weather_strategy": {"options": {"recommended": "Empfohlene verfügbare Quelle", "local": "Lokale Sensoren oder Wetter-Entity", "open_meteo": "Open-Meteo", "seasonal": "Nur saisonaler Ersatz"}},
+    "setup_mode": {"options": {"guided": "Geführte Einrichtung", "expert": "Experteneinstellungen"}},
+    "zone_category": {"options": {"raised_bed": "Hochbeet", "vegetables": "Gemüsebeet", "lawn": "Rasen", "shrubs": "Sträucher oder Hecke", "flowers": "Blumen oder Stauden", "young_tree": "Junger Obstbaum"}},
+    "area_method": {"options": {"measured": "Fläche ist bekannt", "rectangle": "Länge × Breite", "unknown": "Noch unbekannt"}},
+    "soil_answer": {"options": {"potting_mix": "Gekaufte Pflanz-/Hochbeeterde", "mineral_mix": "Gartenerde mit Kompost", "sand": "Sandig und sehr locker", "sandy_loam": "Locker, hält etwas Wasser", "loam": "Ausgewogene Gartenerde", "clay_loam": "Schwerer Boden", "clay": "Sehr schwer und klebrig", "unknown": "Unsicher"}},
+    "bed_age": {"options": {"new": "Diese Saison neu", "established": "Älter als eine Saison", "unknown": "Unsicher"}},
+    "answer_unknown": {"options": {"yes": "Ja", "no": "Nein", "unknown": "Unsicher"}},
+    "drainage": {"options": {"fast": "Trocknet sehr schnell ab", "normal": "Normal", "slow": "Wasser bleibt lange stehen", "unknown": "Unsicher"}},
+    "plant_choice": {"options": {"vegetables": "Gemischtes Gemüse, z. B. Salat, Tomaten, Bohnen", "lawn": "Kühlklimatischer Rasen", "shrubs": "Etablierte Sträucher und Hecken", "flowers": "Bodendecker und Stauden", "young_tree": "Junger Obstbaum in der Anwuchsphase"}},
+    "irrigation_method": {"options": {"drip": "Tropfschlauch oder Tropfer", "microspray": "Mikrosprüher", "fixed_spray": "Feste Sprühregner", "rotor": "Rotorregner"}},
+    "exposure": {"options": {"full_sun": "Volle Sonne und normaler Regen", "partial_sun": "Teilweise Sonne", "shade": "Überwiegend schattig", "sheltered": "Teilweise regengeschützt", "rain_shadow": "Unter Dach/Traufe oder Regenschatten"}},
+    "rate_source": {"options": {"measured": "Gemessener Durchflussbereich", "estimated": "Geschätzte Ausbringungsrate", "unknown": "Unbekannt; später kalibrieren"}},
     "meter_failure_strategy": {
       "options": {
         "abort": "Abbrechen",
@@ -305,14 +319,16 @@
         "title": "Irrigation Manager einrichten",
         "menu_options": {
           "create": "Neue Bewässerungsanlage anlegen",
+          "expert_create": "Mit Experteneinstellungen anlegen",
           "import": "Portable Bewässerungsanlage importieren"
         }
       },
-      "create": {
+      "expert_create": {
         "title": "Bewässerungsanlage anlegen",
         "description": "Konfiguriere die gemeinsame Wasserzufuhr. Bewässerungszonen werden anschließend hinzugefügt.",
         "data": {
           "name": "Name",
+          "purpose": "Was soll diese Anlage bewässern?",
           "main_valve": "Hauptventil",
           "main_valve_feedback": "Rückmeldung des Hauptventils",
           "water_meter": "Kumulativer Wasserzähler",
@@ -368,6 +384,7 @@
           ,"custom_profiles": "Benutzereigene Profilkopien"
           ,"water_tariff_per_m3": "Wassertarif pro m³"
           ,"automation_enabled": "Globale Automatikfreigabe"
+          ,"hardware_shutoff_acknowledged": "Hinweis zur unabhängigen Hardware-Abschaltung bestätigt"
           ,"winter_reminder_date": "Wintererinnerung (MM-TT)"
           ,"maintenance_tasks": "Wiederkehrende Wartungsaufgaben"
           ,"spring_checklist": "Frühjahrs-Inbetriebnahmecheckliste"
@@ -386,6 +403,12 @@
           "weather_backfill_days": "Sicherheits- und Aufbewahrungsgrenze für nach einem Ausfall nachzuholende Tageszeiträume."
         }
       },
+      "create": {"title": "Bewässerungsanlage anlegen", "description": "Beginne mit Zweck und erkennbarem Namen. Hardware, Messung, Wetter und Sicherheit folgen in kleinen Schritten.", "data": {"name": "Name", "purpose": "Was soll diese Anlage bewässern?"}},
+      "installation_hardware": {"title": "Ventil und Rückmeldung", "description": "Ein Hauptventil nur wählen, wenn es die komplette Anlage physisch absperrt. Eine unabhängige Rückmeldung macht Fehler sichtbar.", "data": {"main_valve": "Optionales Hauptventil", "main_valve_feedback": "Optionale unabhängige Rückmeldung"}},
+      "installation_meter": {"title": "Wassermessung", "description": "Ein kumulativer Zähler ermöglicht Mengenziele. Ein Durchflusssensor verbessert Leckage- und Plausibilitätsprüfungen.", "data": {"meter_kind": "Welcher Zähler ist vorhanden?", "water_meter": "Kumulativer Volumensensor", "raw_meter": "Impuls- oder Zählsensor", "liters_per_count": "Liter je Impuls/Zählschritt", "flow_sensor": "Optionaler Durchflusssensor"}},
+      "installation_weather": {"title": "Wetterquelle", "description": "{meter_preview} {comparison}", "data": {"weather_strategy": "Wetteransatz", "weather_entity": "Lokale Wetter-Entity", "et0_sensors": "Direkte Referenzverdunstungssensoren"}},
+      "installation_safety": {"title": "Sicherheitsgrenzen", "description": "Software und Funkventile können ausfallen. Eine unabhängige Hardware-Abschaltung muss das Wasser auch ohne Home Assistant stoppen.", "data": {"installation_max_delivery_runtime": "Harte maximale Bewässerungsdauer", "hardware_shutoff_acknowledged": "Ich habe eine unabhängige Hardware-Abschaltung berücksichtigt"}},
+      "installation_review": {"title": "Prüfung und Trockenlauf-Bereitschaft", "description": "{preview}", "data": {"confirm_ready": "Diese Anlage erstellen"}},
       "import": {
         "title": "Neue Bewässerungsanlage importieren",
         "description": "Prüft einen portablen Export und die explizite Entity-Neuzuordnung vor dem Anlegen einer getrennten Anlage.",
@@ -418,6 +441,9 @@
       "multiple_meter_sources": "Wähle entweder einen kumulativen Volumenzähler oder einen Rohzähler, nicht beide.",
       "raw_meter_requires_factor": "Rohzähler und Liter-je-Zählschritt müssen gemeinsam konfiguriert werden."
       ,"main_feedback_requires_main_valve": "Eine Hauptventil-Rückmeldung benötigt ein konfiguriertes Hauptventil."
+      ,"selected_meter_required": "Wähle den Sensor passend zum gewählten Zählertyp."
+      ,"local_weather_source_required": "Wähle eine lokale Wetter-Entity oder direkte Referenzverdunstung."
+      ,"hardware_shutoff_acknowledgement_required": "Automatik bleibt gesperrt, bis der Hinweis zur unabhängigen Hardware-Abschaltung bestätigt ist."
     }
   },
   "options": {
@@ -425,11 +451,16 @@
       "init": {
         "title": "Einstellungen des Irrigation Managers",
         "menu_options": {
-          "installation": "Experteneinstellungen der Anlage",
-          "zone": "Experteneinstellungen einer Zone",
+          "guided": "Geführte Einstellungen",
+          "expert": "Experteneinstellungen",
           "import_config": "Portable Konfiguration importieren"
         }
       },
+      "guided": {"title": "Geführte Einstellungen", "menu_options": {"guided_installation": "Grundlagen der Anlage", "guided_zone": "Zone und Profile"}},
+      "expert": {"title": "Experteneinstellungen", "menu_options": {"installation": "Experteneinstellungen der Anlage", "zone": "Experteneinstellungen einer Zone"}},
+      "guided_installation": {"title": "Grundlagen der Anlage", "description": "Nur häufige Einstellungen werden gezeigt. Verborgene Expertenwerte bleiben erhalten. Importierte und migrierte Anlagen bleiben automatisch gesperrt, bis der Hardware-Hinweis lokal bestätigt wurde.", "data": {"name": "Name", "main_valve": "Hauptventil", "main_valve_feedback": "Hauptventil-Rückmeldung", "water_meter": "Kumulativer Wasserzähler", "flow_sensor": "Durchflusssensor", "weather_entity": "Wetter-Entity", "open_meteo_enabled": "Open-Meteo als Ersatz", "hardware_shutoff_acknowledged": "Hardware-Abschalthinweis bestätigt", "automation_enabled": "Globale Automatikfreigabe"}},
+      "guided_zone": {"title": "Bewässerungszone auswählen", "data": {"zone_subentry_id": "Bewässerungszone"}},
+      "guided_zone_settings": {"title": "Geführte Zoneneinstellungen", "description": "Profiländerungen zeigen vor dem Speichern ihre Auswirkung auf Wasser und Laufzeit. Verborgene Expertenwerte bleiben erhalten.", "data": {"name": "Name", "area_m2": "Bewässerte Fläche", "plant_profile": "Pflanzen", "soil_profile": "Boden", "irrigation_profile": "Bewässerungsmethode", "min_flow": "Gemessener Mindestdurchfluss", "max_flow": "Gemessener Maximaldurchfluss", "automation_enabled": "Automatikfreigabe"}},
       "installation": {
         "title": "Experteneinstellungen der Anlage",
         "description": "Änderungen werden sofort gespeichert und erst nach Abschluss aller offenen Bewässerungsaufträge angewendet.",
@@ -490,6 +521,7 @@
           ,"custom_profiles": "Benutzereigene Profilkopien"
           ,"water_tariff_per_m3": "Wassertarif pro m³"
           ,"automation_enabled": "Globale Automatikfreigabe"
+          ,"hardware_shutoff_acknowledged": "Hinweis zur unabhängigen Hardware-Abschaltung bestätigt"
           ,"winter_reminder_date": "Wintererinnerung (MM-TT)"
           ,"maintenance_tasks": "Wiederkehrende Wartungsaufgaben"
           ,"spring_checklist": "Frühjahrs-Inbetriebnahmecheckliste"
@@ -613,10 +645,11 @@
     "zone": {
       "title": "Bewässerungszone",
       "step": {
-        "user": {
+        "expert": {
           "title": "Bewässerungszone hinzufügen",
-          "description": "Eine Zone ist ein unabhängig schaltbarer Bewässerungsbereich hinter genau einem logischen Ventil.",
+          "description": "Wähle die geführte Einrichtung oder die vollständigen Experteneinstellungen.",
           "data": {
+            "setup_mode": "Einrichtungsmodus",
             "name": "Name",
             "zone_valve": "Zonenventil",
             "zone_valve_feedback": "Rückmeldung des Zonenventils",
@@ -686,14 +719,25 @@
             "phenology_stage_schedule": "Für gestufte Profile season_start als MM-TT sowie initial_days, development_days, mid_days und late_days oder wiederkehrende Datumsgrenzen angeben. Es wird keine Hemisphäre angenommen."
           }
         },
+        "user": {"title": "Bewässerungszone hinzufügen", "description": "Wähle die geführte Einrichtung oder die vollständigen Experteneinstellungen.", "data": {"setup_mode": "Einrichtungsmodus"}},
+        "zone_basic": {"title": "Zone und Ventil", "description": "Eine Zone umfasst alles, was gemeinsam durch dieses Ventil geschaltet wird.", "data": {"name": "Name", "zone_valve": "Zonenventil", "zone_valve_feedback": "Optionale unabhängige Rückmeldung", "zone_category": "Was beschreibt diese Zone?"}},
+        "zone_area": {"title": "Bewässerte Fläche", "description": "Die Fläche bestimmt direkt die erwarteten Liter. Unbekannt verwendet vorläufig 1 m².", "data": {"area_method": "Flächenermittlung", "area_m2": "Gemessene Fläche in m²", "length_m": "Länge in Metern", "width_m": "Breite in Metern"}},
+        "zone_raised_bed": {"title": "Boden im Hochbeet", "description": "Die nutzbare Bodentiefe begrenzt den Wasserspeicher; Drainageschichten nicht mitzählen.", "data": {"usable_depth_cm": "Nutzbare Bodentiefe in cm", "soil_answer": "Ähnlichste Bodenmischung", "bed_age": "Alter des Beets", "organic_rich": "Reich an Kompost/organischer Substanz?", "drainage": "Beobachteter Wasserablauf"}},
+        "zone_profiles": {"title": "Pflanzen und Standort", "description": "Erkennbare Kategorien wählen. Die Prüfung erklärt Empfehlungen, Bereiche und Annahmen.", "data": {"plant_choice": "Pflanzengruppe", "soil_answer": "Ähnlichster Boden", "irrigation_method": "Bewässerungsmethode", "exposure": "Sonnen- und Regenlage"}},
+        "zone_rate": {"title": "Ausbringungsrate", "description": "Nur gemessener Durchfluss gilt als Kalibrierung. Schätzungen dienen der Vorschau.", "data": {"rate_source": "Wie ist die Rate bekannt?", "min_flow": "Gemessener Mindestdurchfluss (l/min)", "max_flow": "Gemessener Maximaldurchfluss (l/min)", "application_rate_mm_h": "Geschätzte Ausbringungsrate (mm/h)"}},
+        "zone_automatic": {"title": "Automatische Bewässerung", "description": "Bedarfsbewässerung läuft nur bei Bedarf; Mindestbewässerung garantiert eine Mindestgabe.", "data": {"request_automation": "Automatikfreigabe anfordern", "watering_mode": "Bewässerungsmodus", "window_start": "Tägliches Fenster beginnt", "window_end": "Tägliches Fenster endet"}},
+        "zone_cycle_soak": {"title": "Teilgaben und Sickerpausen", "description": "Grund der Empfehlung: {recommendation}. Kurze Teilgaben reduzieren Oberflächenabfluss.", "data": {"use_cycle_soak": "Teilgaben verwenden", "max_dose_minutes": "Maximale Minuten je Teilgabe", "soak_minutes": "Sickerpause in Minuten"}},
+        "zone_safety": {"title": "Sicherheitsgrenzen", "description": "Diese Grenzen gelten unabhängig vom errechneten Bedarf.", "data": {"automatic_max_minutes": "Maximale automatische Laufzeit", "maximum_target_liters": "Maximale automatische Liter"}},
+        "zone_review": {"title": "Empfehlung und Auswirkung", "description": "{preview}", "data": {"confirm_profile_selection": "Annahmen geprüft und Zone speichern"}},
         "profile_confirmation": {
           "title": "Auswahl des Forschungsprofils bestätigen",
           "description": "Prüfe Wertebereiche, Vertrauensstufe, Quellen, Annahmen, Warnungen sowie die aufgelösten TAW- und RAW-Werte vor dem Speichern: {preview}",
           "data": {"confirm_profile_selection": "Diese Profilannahmen verwenden"}
         },
-        "reconfigure": {
-          "title": "Bewässerungszone bearbeiten",
+        "reconfigure_expert": {
+          "title": "Bewässerungszone bearbeiten (Experte)",
           "data": {
+            "setup_mode": "Bearbeitungsmodus",
             "name": "Name",
             "zone_valve": "Zonenventil",
             "zone_valve_feedback": "Rückmeldung des Zonenventils",
@@ -762,7 +806,8 @@
             "watering_windows": "Regeln verwenden HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed oder mon@sunrise-00:30..sunset+01:00. Datumsregeln überschreiben Wochentage; Wochentage überschreiben Standardregeln.",
             "phenology_stage_schedule": "Für gestufte Profile season_start als MM-TT sowie initial_days, development_days, mid_days und late_days oder wiederkehrende Datumsgrenzen angeben. Es wird keine Hemisphäre angenommen."
           }
-        }
+        },
+        "reconfigure": {"title": "Bewässerungszone bearbeiten", "description": "Wähle die geführte Bearbeitung oder das vollständige Expertenformular.", "data": {"setup_mode": "Bearbeitungsmodus"}}
       },
       "abort": {
         "already_configured": "Dieses Zonenventil ist bereits konfiguriert.",
@@ -777,6 +822,11 @@
         "invalid_profiles": "Profildaten, Teilflächen oder eine Profilreferenz sind ungültig.",
         "soil_moisture_correction_limit_required": "Die konservative Korrektur benötigt eine ausdrücklich positive Korrekturgrenze."
         ,"wind_interlock_requires_source_and_threshold": "Windquelle und Schwellwert müssen gemeinsam konfiguriert werden."
+        ,"area_required": "Gib die gemessene bewässerte Fläche ein."
+        ,"dimensions_required": "Gib Länge und Breite ein."
+        ,"measured_flow_required": "Gib beide Grenzen des gemessenen Durchflussbereichs ein."
+        ,"invalid_flow_range": "Der maximale Durchfluss muss größer als der minimale sein."
+        ,"application_rate_required": "Gib die geschätzte Ausbringungsrate ein."
       }
     }
   }

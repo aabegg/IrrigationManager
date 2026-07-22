@@ -233,6 +233,10 @@ async def test_portable_import_does_not_trust_researched_profile_confirmation(
     manager = entry.runtime_data.manager
     hass.states.async_set("weather.home", "sunny")
     payload = manager.export_portable_config()
+    payload["installation"]["config"].update(
+        {"automation_enabled": True, "hardware_shutoff_acknowledged": True}
+    )
+    payload["zones"][0]["config"]["automation_enabled"] = True
     payload["zones"][0]["config"].update(
         {
             "plant_profile": "builtin:plant:cool-season-turf:v1",
@@ -271,6 +275,9 @@ async def test_portable_import_does_not_trust_researched_profile_confirmation(
         expected_config_hash=preview["config_hash"],
     )
     assert entry.subentries[subentry.subentry_id].data["agronomic_values_confirmed"] is True
+    assert entry.data["hardware_shutoff_acknowledged"] is False
+    assert entry.data["automation_enabled"] is False
+    assert entry.subentries[subentry.subentry_id].data["automation_enabled"] is False
 
     assert await hass.config_entries.async_unload(entry.entry_id)
 

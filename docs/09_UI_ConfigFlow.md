@@ -10,11 +10,30 @@
 - Plausibilitätsprüfung vor Aktivierung
 - dieselbe Konfiguration ist niemals parallel in Karte und Config Flow editierbar
 
+## Implementierter Bedienmodus
+
+Config Flow, Zonen-Subentry-Flow und Options Flow bieten einen geführten und einen
+ausdrücklichen Expertenpfad. Der geführte Pfad verwendet ausschließlich Home-Assistant-Formulare
+und Selektoren. Er sammelt Antworten in kleinen Schritten und übersetzt sie erst bei der Prüfung in
+dasselbe persistierte Datenmodell wie der Expertenpfad. Dadurch bleiben bestehende Exporte,
+Migrationen und Expertenfelder kompatibel. Bei einer geführten Bearbeitung werden nicht sichtbare
+Expertenfelder aus dem vorhandenen Config Entry beziehungsweise Subentry übernommen und nicht
+zurückgesetzt.
+
+Unbekannte Antworten bleiben konservativ: Eine unbekannte Fläche verwendet sichtbar 1 m² als
+vorläufigen Platzhalter, eine geschätzte Ausbringungsrate dient nur der Vorschau, und beides erteilt
+keine Automatikfreigabe. Automatik benötigt bestätigte Profilannahmen und einen gemessenen
+Durchflussbereich. Zusätzlich muss bei geführten Anlagen der Hinweis bestätigt werden, dass
+eine unabhängige Hardware-Abschaltung den Wasserfluss auch bei Software-, Funk- oder
+Home-Assistant-Ausfall begrenzt. Importierte und migrierte Anlagen erhalten diese Bestätigung
+niemals automatisch; ihre globale und zonenspezifische Automatikfreigabe wird entfernt, bis die
+Sicherheitsbestätigung lokal erfolgt und die gewünschte Freigabe erneut gesetzt wird.
+
 ## Einrichtung einer Anlage
 
 ### Schritt 1: Anlage
 
-- Name
+- Zweck und Name
 - optionales Hauptventil
 - Aktortyp `valve` oder `switch`
 - optionales Feedback-Entity
@@ -30,6 +49,7 @@
 - erkannte Einheiten, Geräteklasse und Auflösung
 - aktueller physischer Zählerstand
 - Betrieb ohne Zähler mit sichtbaren Einschränkungen
+- erkannte Geräteklasse und Einheit werden verständlich zusammengefasst
 
 ### Schritt 3: Wetter
 
@@ -39,6 +59,7 @@
 - direkte ET0-Quelle oder eigene Berechnung
 - Fallbackdauer und Datenalter
 - Vergleichsansicht verfügbarer Quellen
+- Empfehlung: geeignete lokale Quelle, sonst Open-Meteo, saisonale Werte nur als Ersatz
 
 ### Schritt 4: Zonen
 
@@ -58,6 +79,21 @@ Wiederholbarer Subentry-Flow:
 - Zählerausfallstrategie
 - Wettersperren und Prognoseregeln
 - optionale Bodenfeuchtesensoren
+
+Der einfache Zonenpfad fragt zuerst nach erkennbaren Kategorien wie Hochbeet, Gemüse, Rasen,
+Sträucher, Stauden oder jungem Obstbaum. Flächen können direkt oder aus Länge und Breite bestimmt
+werden. Bei Hochbeeten begrenzt die nutzbare Bodentiefe den abgeleiteten Wurzelspeicher;
+Drainageschichten werden nicht mitgerechnet. Bodenmischung, Alter, organischer Anteil und
+beobachteter Ablauf dokumentieren die Unsicherheit, ohne daraus eine nicht belegte Messung zu
+erfinden. Bei unbekannter Bodenart verwendet die einfache Einrichtung konservativ das
+Sandprofil mit dem niedrigsten erforschten AWC-Standardwert. Die Sonnen-/Expositionsangabe bleibt
+in Katalogversion 1 beschreibend; ohne lokal belegten Faktor reduziert sie den Wasserbedarf nicht.
+
+Pflanzen-, Boden- und Bewässerungsprofile stammen aus dem versionierten Katalog. Die Vorschau
+zeigt Profilnamen, Begründung, Annahmen, erwartete Liter und Laufzeit. TAW und RAW werden im
+einfachen Text als „nutzbarer Wasserspeicher“ und „Wasser vor Pflanzenstress“ erklärt; die
+Fachbegriffe bleiben für den Expertenkontext sichtbar. Bei schweren Böden oder Regnern wird eine
+Teilgaben-/Sickerpausen-Empfehlung angeboten.
 
 ### Schritt 5: Sicherheit
 
@@ -101,6 +137,15 @@ Wiederholbarer Subentry-Flow:
 - Wartungsaufgaben verwalten
 - Notify-Ziele und Exporte konfigurieren
 - Expertenmodus aktivieren
+
+Der Modus wird beim Einstieg gewählt und nicht als parallele zweite Konfiguration gespeichert.
+Geführte Profiländerungen zeigen vor dem Speichern die neu berechneten Speicher-, Mengen- und
+Laufzeitwerte. Der Expertenpfad bleibt für alle gespeicherten Felder, Profilkopien, Teilflächen und
+Sicherheitsdetails verfügbar. Beim Wechsel eines Profils werden nur davon abhängige agronomische
+Überschreibungen entfernt, beispielsweise TAW/RAW, maximales Defizit, Wurzeltiefe,
+Pflanzenkoeffizient oder Anwendungseffizienz. Sicherheitsgrenzen, Zeitfenster, Prioritäten und
+unabhängige Expertenwerte bleiben erhalten. Der Hochbeetpfad baut seine begrenzten TAW-/RAW-Werte
+anschließend ausdrücklich aus gewähltem Bodenprofil und nutzbarer Bodentiefe neu auf.
 
 Jeder Vorgang verwendet seinen beim Preflight validierten Konfigurationssnapshot. Änderungen während offener Vorgänge werden vorgemerkt und erst im vollständigen Leerlauf wirksam. Unmittelbare Eingriffe erfolgen über Stop, Not-Aus oder eine Sicherheitssperre.
 

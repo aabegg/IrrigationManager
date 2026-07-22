@@ -1,10 +1,13 @@
 """Config-flow behavior tests for Irrigation Manager."""
 
 import asyncio
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.const import UnitOfSpeed
+from homeassistant.const import STATE_OFF, UnitOfSpeed
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -51,20 +54,42 @@ async def test_user_can_create_an_irrigation_installation(
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "create"
-
     with patch(
         "custom_components.irrigation_manager.config_flow.uuid4",
     ) as uuid4:
         uuid4.return_value.hex = "installation-1"
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
+            {"name": "Gartenbewässerung", "purpose": "private_garden"},
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_MAIN_VALVE: "switch.relais_09"},
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
             {
-                "name": "Gartenbewässerung",
-                CONF_MAIN_VALVE: "switch.relais_09",
+                "meter_kind": "cumulative",
                 CONF_WATER_METER: ("sensor.wasserzahler_bewasserung_wasserzahler_gesamt"),
                 CONF_FLOW_SENSOR: ("sensor.wasserzahler_bewasserung_wasserdurchfluss"),
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "weather_strategy": "local",
                 CONF_WEATHER_ENTITY: "weather.forecast_home",
             },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "installation_max_delivery_runtime": 14_400,
+                "hardware_shutoff_acknowledged": True,
+            },
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"confirm_ready": True}
         )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -95,6 +120,9 @@ async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"setup_mode": "expert"}
+    )
 
     with patch(
         "custom_components.irrigation_manager.config_flow.uuid4",
@@ -139,6 +167,9 @@ async def test_researched_profiles_show_provenance_and_derived_deficit_before_sa
         (entry.entry_id, "zone"), context={"source": SOURCE_USER}
     )
     result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"setup_mode": "expert"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
             "name": "Lawn",
@@ -178,7 +209,12 @@ async def test_portable_import_creates_new_entry_with_zone_subentries(
         "integration": DOMAIN,
         "installation": {
             "id": "source-installation",
-            "config": {"name": "Imported garden", CONF_MAIN_VALVE: "switch.old_main"},
+            "config": {
+                "name": "Imported garden",
+                CONF_MAIN_VALVE: "switch.old_main",
+                CONF_AUTOMATION_ENABLED: True,
+                "hardware_shutoff_acknowledged": True,
+            },
         },
         "zones": [
             {
@@ -192,6 +228,7 @@ async def test_portable_import_creates_new_entry_with_zone_subentries(
                     "plant_profile": "builtin:plant:cool-season-turf:v1",
                     "soil_profile": "builtin:soil:sandy-loam:v1",
                     "agronomic_values_confirmed": True,
+                    CONF_AUTOMATION_ENABLED: True,
                 },
             },
             {
@@ -248,6 +285,8 @@ async def test_portable_import_creates_new_entry_with_zone_subentries(
     entry = result["result"]
     assert entry.unique_id == "new-installation"
     assert entry.data[CONF_MAIN_VALVE] == "switch.new_main"
+    assert entry.data[CONF_AUTOMATION_ENABLED] is False
+    assert entry.data["hardware_shutoff_acknowledged"] is False
     assert [subentry.title for subentry in entry.subentries.values()] == ["Lawn", "Beds"]
     assert [subentry.unique_id for subentry in entry.subentries.values()] == [
         "new-zone-lawn",
@@ -258,6 +297,28 @@ async def test_portable_import_creates_new_entry_with_zone_subentries(
         "switch.new_beds",
     ]
     assert next(iter(entry.subentries.values())).data["agronomic_values_confirmed"] is True
+    assert all(
+        subentry.data[CONF_AUTOMATION_ENABLED] is False for subentry in entry.subentries.values()
+    )
+
+    options = await hass.config_entries.options.async_init(entry.entry_id)
+    options = await hass.config_entries.options.async_configure(
+        options["flow_id"], {"next_step_id": "guided"}
+    )
+    options = await hass.config_entries.options.async_configure(
+        options["flow_id"], {"next_step_id": "guided_installation"}
+    )
+    options = await hass.config_entries.options.async_configure(
+        options["flow_id"],
+        {
+            "name": "Imported garden",
+            "hardware_shutoff_acknowledged": True,
+            CONF_AUTOMATION_ENABLED: True,
+        },
+    )
+    assert options["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["hardware_shutoff_acknowledged"] is True
+    assert entry.data[CONF_AUTOMATION_ENABLED] is True
 
 
 async def test_portable_new_entry_import_rejects_missing_target_entities(
@@ -398,6 +459,9 @@ async def test_options_flow_updates_installation_and_zone_expert_settings(
         (entry.entry_id, "zone"), context={"source": SOURCE_USER}
     )
     zone_result = await hass.config_entries.subentries.async_configure(
+        zone_result["flow_id"], {"setup_mode": "expert"}
+    )
+    zone_result = await hass.config_entries.subentries.async_configure(
         zone_result["flow_id"],
         {
             "name": "Lawn",
@@ -413,6 +477,9 @@ async def test_options_flow_updates_installation_and_zone_expert_settings(
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
     result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "expert"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "installation"}
     )
     result = await hass.config_entries.options.async_configure(
@@ -421,6 +488,7 @@ async def test_options_flow_updates_installation_and_zone_expert_settings(
             "name": "Garden expert",
             CONF_FLOW_SENSOR: "sensor.flow",
             "notify_entities": ["notify.mobile_app_phone"],
+            "hardware_shutoff_acknowledged": True,
         },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -428,6 +496,9 @@ async def test_options_flow_updates_installation_and_zone_expert_settings(
     assert entry.data["notify_entities"] == ["notify.mobile_app_phone"]
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "expert"}
+    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "zone"}
     )
@@ -458,6 +529,7 @@ async def test_profile_change_shows_impacted_zone_before_saving(hass: HomeAssist
         title="Garden",
         data={
             "name": "Garden",
+            "hardware_shutoff_acknowledged": True,
             "custom_profiles": {
                 "plant:lawn": {
                     "kind": "plant",
@@ -470,6 +542,9 @@ async def test_profile_change_shows_impacted_zone_before_saving(hass: HomeAssist
     entry.add_to_hass(hass)
     zone_result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    zone_result = await hass.config_entries.subentries.async_configure(
+        zone_result["flow_id"], {"setup_mode": "expert"}
     )
     await hass.config_entries.subentries.async_configure(
         zone_result["flow_id"],
@@ -485,12 +560,16 @@ async def test_profile_change_shows_impacted_zone_before_saving(hass: HomeAssist
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "expert"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "installation"}
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
             "name": "Garden",
+            "hardware_shutoff_acknowledged": True,
             "custom_profiles": {
                 "plant:lawn": {
                     "kind": "plant",
@@ -526,12 +605,16 @@ async def test_profile_edit_rejects_concurrent_entry_change(hass: HomeAssistant)
     entry.add_to_hass(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "expert"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "installation"}
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
             "name": "Garden",
+            "hardware_shutoff_acknowledged": True,
             "custom_profiles": {
                 "plant:lawn": {
                     "kind": "plant",
@@ -559,3 +642,387 @@ async def test_profile_edit_rejects_concurrent_entry_change(hass: HomeAssistant)
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "configuration_changed"
     assert entry.data["custom_profiles"] == concurrent_profiles
+
+
+async def _create_guided_zone(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    *,
+    name: str,
+    valve: str,
+    category: str,
+    area: dict[str, object],
+    raised_bed: dict[str, object] | None,
+    profiles: dict[str, object],
+    rate: dict[str, object],
+    request_automation: bool,
+) -> tuple[dict[str, object], object]:
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    for payload in (
+        {"setup_mode": "guided"},
+        {"name": name, "zone_valve": valve, "zone_category": category},
+        area,
+    ):
+        result = await hass.config_entries.subentries.async_configure(result["flow_id"], payload)
+    if raised_bed is not None:
+        result = await hass.config_entries.subentries.async_configure(result["flow_id"], raised_bed)
+    for payload in (
+        profiles,
+        rate,
+        {
+            "request_automation": request_automation,
+            "watering_mode": "demand",
+            "window_start": "04:00:00",
+            "window_end": "06:00:00",
+        },
+        {"use_cycle_soak": True, "max_dose_minutes": 10, "soak_minutes": 20},
+        {"automatic_max_minutes": 60, "maximum_target_liters": 500},
+    ):
+        result = await hass.config_entries.subentries.async_configure(result["flow_id"], payload)
+    assert result["step_id"] == "zone_review"
+    review = result
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"confirm_profile_selection": True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(item for item in entry.subentries.values() if item.title == name)
+    return review, subentry
+
+
+async def test_novice_raised_bed_vegetables_with_drip(hass: HomeAssistant) -> None:
+    """Derive a depth-limited raised-bed profile and calibrated automatic readiness."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={"name": "Garden", "hardware_shutoff_acknowledged": True},
+        unique_id="guided-raised-bed",
+    )
+    entry.add_to_hass(hass)
+
+    review, subentry = await _create_guided_zone(
+        hass,
+        entry,
+        name="Vegetables",
+        valve="switch.raised_bed",
+        category="raised_bed",
+        area={"area_method": "rectangle", "length_m": 2.0, "width_m": 1.2},
+        raised_bed={
+            "usable_depth_cm": 30,
+            "soil_answer": "potting_mix",
+            "bed_age": "established",
+            "organic_rich": "yes",
+            "drainage": "normal",
+        },
+        profiles={
+            "plant_choice": "vegetables",
+            "irrigation_method": "drip",
+            "exposure": "full_sun",
+        },
+        rate={"rate_source": "measured", "min_flow": 1.8, "max_flow": 2.2},
+        request_automation=True,
+    )
+
+    preview = review["description_placeholders"]["preview"]
+    assert "Usable water storage" in preview
+    assert "water available before plant stress" in preview
+    assert "TAW" in preview
+    assert "RAW" in preview
+    assert subentry.data["area_m2"] == 2.4
+    assert subentry.data["profile_overrides"]["total_available_water_mm"] == 45.0
+    assert subentry.data[CONF_AUTOMATION_ENABLED] is True
+
+
+async def test_novice_lawn_sprinklers_keep_estimated_rate_uncalibrated(
+    hass: HomeAssistant,
+) -> None:
+    """Use sprinkler defaults and preview runtime without treating an estimate as calibration."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Garden", data={"name": "Garden"}, unique_id="guided-lawn"
+    )
+    entry.add_to_hass(hass)
+
+    review, subentry = await _create_guided_zone(
+        hass,
+        entry,
+        name="Lawn",
+        valve="switch.lawn_guided",
+        category="lawn",
+        area={"area_method": "measured", "area_m2": 80},
+        raised_bed=None,
+        profiles={
+            "plant_choice": "lawn",
+            "soil_answer": "clay_loam",
+            "irrigation_method": "rotor",
+            "exposure": "full_sun",
+        },
+        rate={"rate_source": "estimated", "application_rate_mm_h": 12},
+        request_automation=True,
+    )
+
+    assert "runtime about" in review["description_placeholders"]["preview"]
+    assert (
+        "blocked until area and measured flow are ready"
+        in review["description_placeholders"]["preview"]
+    )
+    assert subentry.data[CONF_AUTOMATION_ENABLED] is False
+    assert "min_flow" not in subentry.data
+    assert "max_flow" not in subentry.data
+    assert subentry.data["soak_duration"] == 1_200
+
+
+async def test_unknown_raised_bed_soil_uses_bounded_sand_storage(
+    hass: HomeAssistant,
+) -> None:
+    """Never overstate raised-bed storage when the novice cannot identify the soil mix."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Garden", data={"name": "Garden"}, unique_id="unknown-bed"
+    )
+    entry.add_to_hass(hass)
+
+    review, subentry = await _create_guided_zone(
+        hass,
+        entry,
+        name="Unknown bed",
+        valve="switch.unknown_bed",
+        category="raised_bed",
+        area={"area_method": "measured", "area_m2": 2},
+        raised_bed={
+            "usable_depth_cm": 30,
+            "soil_answer": "unknown",
+            "bed_age": "unknown",
+            "organic_rich": "unknown",
+            "drainage": "unknown",
+        },
+        profiles={
+            "plant_choice": "vegetables",
+            "irrigation_method": "drip",
+            "exposure": "partial_sun",
+        },
+        rate={"rate_source": "unknown"},
+        request_automation=False,
+    )
+
+    assert subentry.data["soil_profile"] == "builtin:soil:sand:v1"
+    assert subentry.data["profile_overrides"]["total_available_water_mm"] == 18.0
+    assert subentry.data["profile_overrides"]["readily_available_water_mm"] == 6.3
+    assert "Unknown soil conservatively uses sand" in review["description_placeholders"]["preview"]
+    assert "no automatic demand reduction" in review["description_placeholders"]["preview"]
+
+
+async def test_novice_shrubs_accept_unknown_answers_fail_safe(hass: HomeAssistant) -> None:
+    """Keep unknown observations explicit and automatic release disabled."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Garden", data={"name": "Garden"}, unique_id="guided-shrubs"
+    )
+    entry.add_to_hass(hass)
+
+    review, subentry = await _create_guided_zone(
+        hass,
+        entry,
+        name="Hedge",
+        valve="switch.hedge_guided",
+        category="shrubs",
+        area={"area_method": "unknown"},
+        raised_bed=None,
+        profiles={
+            "plant_choice": "shrubs",
+            "soil_answer": "unknown",
+            "irrigation_method": "drip",
+            "exposure": "sheltered",
+        },
+        rate={"rate_source": "unknown"},
+        request_automation=True,
+    )
+
+    assert "Area is provisional" in review["description_placeholders"]["preview"]
+    assert "Unknown soil conservatively uses sand" in review["description_placeholders"]["preview"]
+    assert subentry.data["soil_profile"] == "builtin:soil:sand:v1"
+    assert subentry.data[CONF_AUTOMATION_ENABLED] is False
+
+
+async def test_guided_reconfigure_preserves_expert_only_values(hass: HomeAssistant) -> None:
+    """Merge guided changes over stored data instead of replacing hidden expert settings."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Garden", data={"name": "Garden"}, unique_id="guided-edit"
+    )
+    entry.add_to_hass(hass)
+    created = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    created = await hass.config_entries.subentries.async_configure(
+        created["flow_id"], {"setup_mode": "expert"}
+    )
+    await hass.config_entries.subentries.async_configure(
+        created["flow_id"],
+        {
+            "name": "Shrubs",
+            "zone_valve": "switch.shrubs",
+            "default_duration": 600,
+            "min_flow": 2,
+            "max_flow": 4,
+            "external_block": "binary_sensor.water_ban",
+            "zone_priority": 17,
+            "profile_overrides": {
+                "total_available_water_mm": 999,
+                "readily_available_water_mm": 888,
+                "effective_root_depth_m": 9,
+                "application_efficiency": 0.1,
+                "operator_note": "keep",
+            },
+        },
+    )
+    subentry = next(iter(entry.subentries.values()))
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": subentry.subentry_id},
+    )
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"setup_mode": "guided"}
+    )
+    assert result["step_id"] == "zone_basic"
+    assert (
+        result["data_schema"]({"name": "Shrubs", "zone_valve": "switch.shrubs"})["zone_category"]
+        == "raised_bed"
+    )
+    for payload in (
+        {
+            "name": "Raised bed guided",
+            "zone_valve": "switch.shrubs",
+            "zone_category": "raised_bed",
+        },
+        {"area_method": "measured", "area_m2": 12},
+        {
+            "usable_depth_cm": 30,
+            "soil_answer": "potting_mix",
+            "bed_age": "established",
+            "organic_rich": "yes",
+            "drainage": "normal",
+        },
+        {
+            "plant_choice": "vegetables",
+            "irrigation_method": "drip",
+            "exposure": "partial_sun",
+        },
+        {"rate_source": "measured", "min_flow": 2.1, "max_flow": 3.9},
+        {
+            "request_automation": False,
+            "watering_mode": "demand",
+            "window_start": "04:00:00",
+            "window_end": "06:00:00",
+        },
+        {"use_cycle_soak": False, "max_dose_minutes": 30, "soak_minutes": 0},
+        {"automatic_max_minutes": 60, "maximum_target_liters": 500},
+        {"confirm_profile_selection": True},
+    ):
+        result = await hass.config_entries.subentries.async_configure(result["flow_id"], payload)
+    assert result["type"] is FlowResultType.ABORT
+    assert subentry.title == "Raised bed guided"
+    assert subentry.data["external_block"] == "binary_sensor.water_ban"
+    assert subentry.data["zone_priority"] == 17
+    assert subentry.data["profile_overrides"] == {
+        "operator_note": "keep",
+        "total_available_water_mm": 45.0,
+        "readily_available_water_mm": 15.75,
+    }
+
+
+async def test_novice_runtime_readiness_and_targets_match_guided_preview(
+    hass: HomeAssistant,
+) -> None:
+    """Exercise persisted novice configs through the production automatic planner."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={
+            "name": "Garden",
+            CONF_AUTOMATION_ENABLED: True,
+            "hardware_shutoff_acknowledged": True,
+        },
+        unique_id="guided-runtime",
+        version=1,
+        minor_version=7,
+    )
+    entry.add_to_hass(hass)
+    _, raised = await _create_guided_zone(
+        hass,
+        entry,
+        name="Runtime vegetables",
+        valve="switch.runtime_bed",
+        category="raised_bed",
+        area={"area_method": "measured", "area_m2": 2.4},
+        raised_bed={
+            "usable_depth_cm": 30,
+            "soil_answer": "potting_mix",
+            "bed_age": "established",
+            "organic_rich": "yes",
+            "drainage": "normal",
+        },
+        profiles={
+            "plant_choice": "vegetables",
+            "irrigation_method": "drip",
+            "exposure": "full_sun",
+        },
+        rate={"rate_source": "measured", "min_flow": 1.8, "max_flow": 2.2},
+        request_automation=True,
+    )
+    _, lawn = await _create_guided_zone(
+        hass,
+        entry,
+        name="Runtime lawn",
+        valve="switch.runtime_lawn",
+        category="lawn",
+        area={"area_method": "measured", "area_m2": 80},
+        raised_bed=None,
+        profiles={
+            "plant_choice": "lawn",
+            "soil_answer": "clay_loam",
+            "irrigation_method": "rotor",
+            "exposure": "full_sun",
+        },
+        rate={"rate_source": "estimated", "application_rate_mm_h": 12},
+        request_automation=True,
+    )
+
+    async def turn_off(call) -> None:
+        hass.states.async_set(call.data["entity_id"], STATE_OFF)
+
+    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.states.async_set("switch.runtime_bed", STATE_OFF)
+    hass.states.async_set("switch.runtime_lawn", STATE_OFF)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    manager = entry.runtime_data.manager
+    for task in (manager._dispatcher_task, manager._automatic_planner_task):
+        if task is not None:
+            task.cancel()
+    await asyncio.gather(
+        *(task for task in (manager._dispatcher_task, manager._automatic_planner_task) if task),
+        return_exceptions=True,
+    )
+    manager._dispatcher_task = None
+    manager._automatic_planner_task = None
+    assert manager._stored_state.installation_safety_lock is None
+    assert manager._stored_state.zone_safety_locks == {}
+    now = datetime(2026, 7, 22, 4, 30, tzinfo=UTC)
+    manager._stored_state = replace(
+        manager._stored_state,
+        zone_deficit_mm={raised.unique_id: 15.75, lawn.unique_id: 18.0},
+        zone_last_effective_irrigation={
+            raised.unique_id: (now - timedelta(days=2)).isoformat(),
+            lawn.unique_id: (now - timedelta(days=2)).isoformat(),
+        },
+    )
+
+    report = await manager.async_plan_automatic(dry_run=True, now=now)
+    decisions = {item["zone_id"]: item for item in report["zones"]}
+
+    assert decisions[raised.unique_id]["reason"] == "planned"
+    assert decisions[raised.unique_id]["target_liters"] == pytest.approx(42.0)
+    assert decisions[lawn.unique_id]["reason"] == "automation_disabled"
+    assert all(
+        lawn.unique_id not in request_id for request_id in report["would_create_request_ids"]
+    )

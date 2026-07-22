@@ -152,6 +152,9 @@ async def test_options_update_during_watering_reloads_only_after_complete_idle(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "expert"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "zone"}
     )
     result = await hass.config_entries.options.async_configure(

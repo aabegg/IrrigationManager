@@ -39,8 +39,13 @@ async def _setup_automatic_zone(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden irrigation",
-        data={"name": "Garden irrigation"},
+        data={
+            "name": "Garden irrigation",
+            "automation_enabled": True,
+            "hardware_shutoff_acknowledged": True,
+        },
         unique_id="installation-automatic",
+        minor_version=7,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(

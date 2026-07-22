@@ -12,6 +12,7 @@ from .const import (
     CONF_AUTOMATION_ENABLED,
     CONF_CUSTOM_PROFILES,
     CONF_EXTERNAL_FAILURE_POLICY,
+    CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED,
     DOMAIN,
     EXTERNAL_FAILURE_FAIL_SAFE,
 )
@@ -148,6 +149,22 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     if entry.minor_version < 6:
         hass.config_entries.async_update_entry(entry, minor_version=6)
+    if entry.minor_version < 7:
+        for subentry in entry.get_subentries_of_type("zone"):
+            hass.config_entries.async_update_subentry(
+                entry,
+                subentry,
+                data={**subentry.data, CONF_AUTOMATION_ENABLED: False},
+            )
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                CONF_AUTOMATION_ENABLED: False,
+                CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED: False,
+            },
+            minor_version=7,
+        )
     return True
 
 

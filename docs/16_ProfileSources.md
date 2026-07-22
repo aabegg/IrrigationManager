@@ -117,3 +117,15 @@ not inferred.
 - Portable imports never trust exported `agronomic_values_confirmed` or
   `confirmation_required` flags. Every referenced researched profile, including references in
   Teilflächen and custom `based_on` ancestry, requires a new explicit local confirmation.
+- The guided UI labels TAW as usable water storage and RAW as water available before plant stress;
+  the expert terms remain visible in the review. Expected liters use the resolved gross liters per
+  deficit millimeter. Runtime is shown only from a measured flow range or explicitly marked as an
+  estimate.
+- For a raised bed, usable soil depth caps the selected plant profile's effective root depth. The
+  resulting TAW and RAW are persisted as explicit profile overrides with their assumptions shown in
+  review. Drainage layers and empty space are excluded. Soil-mix age, organic richness, and observed
+  drainage are uncertainty prompts, not invented measurements.
+- Unknown raised-bed soil uses the researched sand profile as a conservative bounded default; it
+  is explicitly disclosed and still requires local profile confirmation. Catalog v1 has no sourced
+  sun/exposure reduction factors, so exposure answers remain descriptive and do not automatically
+  reduce demand.

@@ -222,7 +222,11 @@ class FakeHaIrrigationPlant:
         unique_id: str = "qualification-installation",
     ) -> MockConfigEntry:
         """Set up a persisted integration entry backed by this fake plant."""
-        data: dict[str, Any] = {"name": "Qualification irrigation"}
+        data: dict[str, Any] = {
+            "name": "Qualification irrigation",
+            "automation_enabled": True,
+            "hardware_shutoff_acknowledged": True,
+        }
         if self.main_valve is not None:
             data["main_valve"] = self.main_valve
         if with_meter:
@@ -236,6 +240,7 @@ class FakeHaIrrigationPlant:
             title="Qualification irrigation",
             data=data,
             unique_id=unique_id,
+            minor_version=7,
         )
         entry.add_to_hass(self.hass)
         specs = list(zone_data or ({},) * len(self.zone_valves))

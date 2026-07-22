@@ -119,6 +119,7 @@ CONF_WIND_MANUAL_POLICY: Final = "wind_manual_policy"
 CONF_MAINTENANCE_MAX_DURATION: Final = "maintenance_max_duration"
 CONF_MAINTENANCE_CONFIRMATION_INTERVAL: Final = "maintenance_confirmation_interval"
 CONF_CALIBRATION_SETTLE_SECONDS: Final = "calibration_settle_seconds"
+CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED: Final = "hardware_shutoff_acknowledged"
 
 WATERING_MODE_DEMAND: Final = "demand"
 WATERING_MODE_MINIMUM: Final = "minimum"
