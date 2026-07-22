@@ -9,7 +9,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 25
+STORAGE_MINOR_VERSION = 26
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -48,6 +48,7 @@ class _StateStore(Store[dict[str, object]]):
             22,
             23,
             24,
+            25,
         }:
             migrated = dict(old_data)
             if old_minor_version == 1:
@@ -298,6 +299,31 @@ class _StateStore(Store[dict[str, object]]):
                 migrated["meter_source_entity_id"] = None
                 migrated["meter_source_liters_per_count"] = None
                 migrated["water_history_incomplete"] = False
+            if old_minor_version < 26:
+                migrated["installation_cost"] = 0.0
+                migrated["zone_costs"] = {}
+                migrated["unassigned_cost"] = 0.0
+                migrated["archived_zones"] = {}
+                migrated["automatic_suspended_until"] = None
+                migrated["zone_automatic_suspended_until"] = {}
+                migrated["maintenance_task_state"] = {}
+                migrated["maintenance_history"] = []
+                migrated["maintenance_test_history"] = []
+                migrated["spring_checklist_completed"] = []
+                migrated["spring_test_status"] = "not_started"
+                migrated["winter_reminder_last_year"] = None
+                raw_test = migrated.get("maintenance_test")
+                if isinstance(raw_test, dict):
+                    migrated["maintenance_test"] = {
+                        **raw_test,
+                        "water_attribution": "zone",
+                    }
+                history = migrated.get("water_consumption_history", [])
+                if isinstance(history, list):
+                    migrated["water_consumption_history"] = [
+                        {**record, "cost": None} if isinstance(record, dict) else record
+                        for record in history
+                    ]
             return migrated
         raise NotImplementedError
 

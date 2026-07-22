@@ -5,8 +5,8 @@ import { displayState, localize, translatedValue } from "./localize";
 import { cardStyles } from "./styles";
 import type { HassEntity, HomeAssistant, OverviewCardConfig } from "./types";
 
-const DEFAULT_METRICS = ["active", "pending", "next", "today", "month", "quality"];
-const DEFAULT_ACTIONS = ["stop", "emergency"];
+const DEFAULT_METRICS = ["active", "pending", "next", "today", "month", "quality", "maintenance"];
+const DEFAULT_ACTIONS = ["stop", "emergency", "suspend", "resume"];
 
 export class IrrigationManagerOverviewCard extends LitElement {
   static styles = cardStyles;
@@ -44,7 +44,7 @@ export class IrrigationManagerOverviewCard extends LitElement {
     return html`<div class="metric"><span>${label}</span><strong>${displayState(this.hass, state)}</strong></div>`;
   }
 
-  private async call(service: "stop" | "emergency_stop", confirmation: string): Promise<void> {
+  private async call(service: string, confirmation: string, extra: Record<string, unknown> = {}): Promise<void> {
     if (!window.confirm(confirmation)) return;
     const status = entity(this.hass, this._config.status_entity);
     const configEntryId = stringAttribute(status, "config_entry_id");
@@ -55,7 +55,7 @@ export class IrrigationManagerOverviewCard extends LitElement {
     this._busy = true;
     this._error = undefined;
     try {
-      await this.hass.callService(DOMAIN, service, { config_entry_id: configEntryId });
+      await this.hass.callService(DOMAIN, service, { config_entry_id: configEntryId, ...extra });
     } catch (error) {
       this._error = `${localize(this.hass, "action_failed")}: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
@@ -68,6 +68,9 @@ export class IrrigationManagerOverviewCard extends LitElement {
     const status = entity(this.hass, this._config.status_entity);
     const emergency = entity(this.hass, this._config.emergency_entity);
     const lock = entity(this.hass, this._config.lock_entity);
+    const winter = entity(this.hass, this._config.winter_entity);
+    const maintenance = entity(this.hass, this._config.maintenance_entity);
+    const release = entity(this.hass, this._config.automation_release_entity);
     const active = entity(this.hass, this._config.active_zone_entity);
     const percent = progress(active);
     const actions = this._config.visible_actions ?? DEFAULT_ACTIONS;
@@ -89,6 +92,15 @@ export class IrrigationManagerOverviewCard extends LitElement {
 
           ${locked
             ? html`<div class="warning danger"><ha-icon icon="mdi:lock-alert-outline"></ha-icon><span>${emergency?.state === "on" ? localize(this.hass, "emergency_stop") : localize(this.hass, "safety_lock")}${stringAttribute(lock, "reason") ? `: ${stringAttribute(lock, "reason")}` : ""}</span></div>`
+            : nothing}
+          ${winter?.state === "on"
+            ? html`<div class="warning"><ha-icon icon="mdi:snowflake-alert"></ha-icon><span>${localize(this.hass, "winter_lock")}</span></div>`
+            : nothing}
+          ${maintenance?.state === "on"
+            ? html`<div class="warning"><ha-icon icon="mdi:wrench-clock"></ha-icon><span>${localize(this.hass, "maintenance_active")}</span></div>`
+            : nothing}
+          ${release?.state === "off" && stringAttribute(release, "suspended_until")
+            ? html`<div class="warning"><ha-icon icon="mdi:calendar-clock"></ha-icon><span>${localize(this.hass, "automatic_suspended")}: ${stringAttribute(release, "suspended_until")}</span></div>`
             : nothing}
 
           ${(this._config.visible_metrics ?? DEFAULT_METRICS).includes("active") && active
@@ -112,6 +124,7 @@ export class IrrigationManagerOverviewCard extends LitElement {
             ${this.metric("today", localize(this.hass, "today"), entity(this.hass, this._config.today_consumption_entity))}
             ${this.metric("month", localize(this.hass, "month"), entity(this.hass, this._config.month_consumption_entity))}
             ${this.metric("quality", localize(this.hass, "model_quality"), entity(this.hass, this._config.model_quality_entity))}
+            ${this.metric("maintenance", localize(this.hass, "maintenance_due"), entity(this.hass, this._config.maintenance_due_entity))}
           </div>
 
           ${this._error ? html`<div class="error" role="alert">${this._error}</div>` : nothing}
@@ -121,6 +134,12 @@ export class IrrigationManagerOverviewCard extends LitElement {
               : nothing}
             ${actions.includes("emergency")
               ? html`<button class="danger" ?disabled=${this._busy} @click=${() => this.call("emergency_stop", localize(this.hass, "confirm_emergency"))}><ha-icon icon="mdi:alert-octagon-outline"></ha-icon>${localize(this.hass, "emergency")}</button>`
+              : nothing}
+            ${actions.includes("suspend")
+              ? html`<button ?disabled=${this._busy} @click=${() => this.call("suspend_automatic", localize(this.hass, "confirm_suspend"), { until: new Date(Date.now() + 86400000).toISOString() })}><ha-icon icon="mdi:calendar-clock"></ha-icon>${localize(this.hass, "suspend_24h")}</button>`
+              : nothing}
+            ${actions.includes("resume")
+              ? html`<button ?disabled=${this._busy} @click=${() => this.call("resume_automatic", localize(this.hass, "confirm_resume"))}><ha-icon icon="mdi:calendar-check"></ha-icon>${localize(this.hass, "resume_automatic")}</button>`
               : nothing}
           </div>
         </div>

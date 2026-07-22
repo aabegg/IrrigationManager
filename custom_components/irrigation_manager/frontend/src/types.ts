@@ -29,6 +29,10 @@ export interface OverviewCardConfig {
   today_consumption_entity?: string;
   month_consumption_entity?: string;
   model_quality_entity?: string;
+  winter_entity?: string;
+  maintenance_entity?: string;
+  automation_release_entity?: string;
+  maintenance_due_entity?: string;
   display_mode?: DisplayMode;
   visible_metrics?: string[];
   visible_actions?: string[];
@@ -49,6 +53,14 @@ export interface ZoneCardConfig {
   last_delivered_entity?: string;
   last_duration_entity?: string;
   quality_entity?: string;
+  status_entity?: string;
+  automation_release_entity?: string;
+  archived_entity?: string;
+  coverage_entity?: string;
+  expected_flow_entity?: string;
+  actual_flow_entity?: string;
+  flow_deviation_entity?: string;
+  calculation_entity?: string;
   display_mode?: DisplayMode;
   visible_metrics?: string[];
   visible_actions?: string[];

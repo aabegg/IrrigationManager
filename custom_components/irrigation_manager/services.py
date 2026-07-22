@@ -1,8 +1,11 @@
 """Native Home Assistant actions exposed by Irrigation Manager."""
 
+from datetime import date
 from typing import Any, cast
 
 import voluptuous as vol
+from homeassistant.auth.models import User
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import config_validation as cv
@@ -45,6 +48,12 @@ ATTR_PAYLOAD = "payload"
 ATTR_ENTITY_REMAPPING = "entity_remapping"
 ATTR_ZONE_REMAPPING = "zone_remapping"
 ATTR_CONFIRM_OVERWRITE = "confirm_overwrite"
+ATTR_UNTIL = "until"
+ATTR_TASK_ID = "task_id"
+ATTR_ITEM_ID = "item_id"
+ATTR_COMPLETED = "completed"
+ATTR_KIND = "kind"
+ATTR_WATER_ATTRIBUTION = "water_attribution"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
@@ -82,6 +91,14 @@ SERVICE_PREVIEW_PROFILE_IMPACT = "preview_profile_impact"
 SERVICE_COPY_PROFILE = "copy_profile"
 SERVICE_CORRECT_PHYSICAL_METER = "correct_physical_meter"
 SERVICE_IMPORT_CONFIG = "import_config"
+SERVICE_ARCHIVE_ZONE = "archive_zone"
+SERVICE_RESTORE_ZONE = "restore_zone"
+SERVICE_SUSPEND_AUTOMATIC = "suspend_automatic"
+SERVICE_RESUME_AUTOMATIC = "resume_automatic"
+SERVICE_LIST_MAINTENANCE = "list_maintenance"
+SERVICE_COMPLETE_MAINTENANCE_TASK = "complete_maintenance_task"
+SERVICE_SNOOZE_MAINTENANCE_TASK = "snooze_maintenance_task"
+SERVICE_UPDATE_SPRING_CHECKLIST = "update_spring_checklist"
 
 
 def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
@@ -224,6 +241,10 @@ SUPERVISED_TEST_SCHEMA = vol.Schema(
             cv.ensure_list,
             [vol.In({"feedback", "flow", "weather", "external"})],
         ),
+        vol.Optional(ATTR_KIND, default="maintenance"): vol.In(
+            {"maintenance", "spring_recommission"}
+        ),
+        vol.Optional(ATTR_WATER_ATTRIBUTION, default="zone"): vol.In({"zone", "unassigned"}),
     }
 )
 CALIBRATION_SCHEMA = vol.Schema(
@@ -278,6 +299,45 @@ IMPORT_CONFIG_SCHEMA = vol.Schema(
         vol.Optional(ATTR_CONFIG_HASH): cv.string,
     }
 )
+ZONE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+    }
+)
+SUSPEND_AUTOMATIC_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_ZONE_SUBENTRY_ID): cv.string,
+        vol.Required(ATTR_UNTIL): cv.datetime,
+    }
+)
+RESUME_AUTOMATIC_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_ZONE_SUBENTRY_ID): cv.string,
+    }
+)
+MAINTENANCE_TASK_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_TASK_ID): cv.string,
+    }
+)
+SNOOZE_MAINTENANCE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_TASK_ID): cv.string,
+        vol.Required(ATTR_UNTIL): cv.date,
+    }
+)
+SPRING_CHECKLIST_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ITEM_ID): cv.string,
+        vol.Required(ATTR_COMPLETED): cv.boolean,
+    }
+)
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -289,9 +349,47 @@ async def async_register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError("The irrigation installation is not loaded")
         return manager
 
+    async def require_admin(call: ServiceCall) -> User | None:
+        """Apply Home Assistant's admin-service semantics to lifecycle mutations."""
+        user_id = call.context.user_id
+        if user_id is None:
+            return None
+        user = await hass.auth.async_get_user(user_id)
+        if user is None or not user.is_admin:
+            raise Unauthorized(context=call.context)
+        return user
+
+    async def require_manual_control(
+        call: ServiceCall,
+        manager: IrrigationManager,
+        *,
+        zone_subentry_ids: tuple[str, ...] = (),
+        request_ids: tuple[str, ...] = (),
+        execution_ids: tuple[str, ...] = (),
+        all_open_requests: bool = False,
+    ) -> None:
+        """Require control permission for every valve affected by a manual action."""
+        user_id = call.context.user_id
+        if user_id is None:
+            return
+        user = await hass.auth.async_get_user(user_id)
+        entity_ids = manager.manual_control_entity_ids(
+            zone_subentry_ids=zone_subentry_ids,
+            request_ids=request_ids,
+            execution_ids=execution_ids,
+            all_open_requests=all_open_requests,
+        )
+        if user is None or any(
+            not user.permissions.check_entity(entity_id, POLICY_CONTROL) for entity_id in entity_ids
+        ):
+            raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+
     async def request_manual(call: ServiceCall, *, wait: bool) -> dict[str, Any]:
-        return await manager_for(call).async_start_manual(
-            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
+        manager = manager_for(call)
+        zone_subentry_id = cast(str, call.data[ATTR_ZONE_SUBENTRY_ID])
+        await require_manual_control(call, manager, zone_subentry_ids=(zone_subentry_id,))
+        return await manager.async_start_manual(
+            zone_subentry_id=zone_subentry_id,
             duration_seconds=cast(float | None, call.data.get(ATTR_DURATION)),
             amount_liters=cast(float | None, call.data.get(ATTR_AMOUNT)),
             hard_time_limit_seconds=cast(float | None, call.data.get(ATTR_HARD_TIME_LIMIT)),
@@ -315,24 +413,52 @@ async def async_register_services(hass: HomeAssistant) -> None:
         }
 
     async def stop(call: ServiceCall) -> None:
-        await manager_for(call).async_stop(
-            request_id=cast(str | None, call.data.get(ATTR_REQUEST_ID)),
-            execution_id=cast(str | None, call.data.get(ATTR_EXECUTION_ID)),
+        manager = manager_for(call)
+        request_id = cast(str | None, call.data.get(ATTR_REQUEST_ID))
+        execution_id = cast(str | None, call.data.get(ATTR_EXECUTION_ID))
+        if request_id is None and execution_id is None and manager.maintenance_test_active:
+            await require_admin(call)
+        await require_manual_control(
+            call,
+            manager,
+            request_ids=(() if request_id is None else (request_id,)),
+            execution_ids=(() if execution_id is None else (execution_id,)),
+            all_open_requests=request_id is None and execution_id is None,
+        )
+        await manager.async_stop(
+            request_id=request_id,
+            execution_id=execution_id,
         )
 
     async def stop_and_skip(call: ServiceCall) -> dict[str, Any]:
-        return await manager_for(call).async_stop_and_skip(
-            request_id=cast(str | None, call.data.get(ATTR_REQUEST_ID)),
-            execution_id=cast(str | None, call.data.get(ATTR_EXECUTION_ID)),
+        manager = manager_for(call)
+        request_id = cast(str | None, call.data.get(ATTR_REQUEST_ID))
+        execution_id = cast(str | None, call.data.get(ATTR_EXECUTION_ID))
+        await require_manual_control(
+            call,
+            manager,
+            request_ids=(() if request_id is None else (request_id,)),
+            execution_ids=(() if execution_id is None else (execution_id,)),
+            all_open_requests=request_id is None and execution_id is None,
+        )
+        return await manager.async_stop_and_skip(
+            request_id=request_id,
+            execution_id=execution_id,
             now=cast(Any, call.data.get(ATTR_AT)),
         )
 
     async def cancel_request(call: ServiceCall) -> None:
-        await manager_for(call).async_cancel_request(cast(str, call.data[ATTR_REQUEST_ID]))
+        manager = manager_for(call)
+        request_id = cast(str, call.data[ATTR_REQUEST_ID])
+        await require_manual_control(call, manager, request_ids=(request_id,))
+        await manager.async_cancel_request(request_id)
 
     async def edit_request(call: ServiceCall) -> dict[str, Any]:
-        return await manager_for(call).async_edit_request(
-            request_id=cast(str, call.data[ATTR_REQUEST_ID]),
+        manager = manager_for(call)
+        request_id = cast(str, call.data[ATTR_REQUEST_ID])
+        await require_manual_control(call, manager, request_ids=(request_id,))
+        return await manager.async_edit_request(
+            request_id=request_id,
             duration_seconds=cast(float | None, call.data.get(ATTR_DURATION)),
             amount_liters=cast(float | None, call.data.get(ATTR_AMOUNT)),
             hard_time_limit_seconds=cast(float | None, call.data.get(ATTR_HARD_TIME_LIMIT)),
@@ -341,24 +467,38 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
     async def reorder_requests(call: ServiceCall) -> dict[str, Any]:
-        order = await manager_for(call).async_reorder_requests(
-            tuple(cast(list[str], call.data[ATTR_REQUEST_IDS]))
-        )
+        manager = manager_for(call)
+        request_ids = tuple(cast(list[str], call.data[ATTR_REQUEST_IDS]))
+        await require_manual_control(call, manager, request_ids=request_ids)
+        order = await manager.async_reorder_requests(request_ids)
         return {"request_ids": order}
 
     async def create_manual_plan(call: ServiceCall) -> dict[str, Any]:
-        return await manager_for(call).async_create_manual_plan(
-            items=tuple(cast(list[dict[str, object]], call.data[ATTR_ITEMS])),
+        manager = manager_for(call)
+        items = tuple(cast(list[dict[str, object]], call.data[ATTR_ITEMS]))
+        await require_manual_control(
+            call,
+            manager,
+            zone_subentry_ids=tuple(cast(str, item[ATTR_ZONE_SUBENTRY_ID]) for item in items),
+        )
+        return await manager.async_create_manual_plan(
+            items=items,
             requested_start_at=cast(Any, call.data.get(ATTR_START_AT)),
             expiry_seconds=cast(float, call.data[ATTR_EXPIRY]),
             plan_id=cast(str | None, call.data.get(ATTR_PLAN_ID)),
         )
 
     async def pause_request(call: ServiceCall) -> None:
-        await manager_for(call).async_pause_request(cast(str, call.data[ATTR_REQUEST_ID]))
+        manager = manager_for(call)
+        request_id = cast(str, call.data[ATTR_REQUEST_ID])
+        await require_manual_control(call, manager, request_ids=(request_id,))
+        await manager.async_pause_request(request_id)
 
     async def resume_request(call: ServiceCall) -> None:
-        await manager_for(call).async_resume_request(cast(str, call.data[ATTR_REQUEST_ID]))
+        manager = manager_for(call)
+        request_id = cast(str, call.data[ATTR_REQUEST_ID])
+        await require_manual_control(call, manager, request_ids=(request_id,))
+        await manager.async_resume_request(request_id)
 
     async def emergency_stop(call: ServiceCall) -> None:
         await manager_for(call).async_emergency_stop()
@@ -422,27 +562,35 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
     async def set_winter_lock(call: ServiceCall) -> None:
+        await require_admin(call)
         await manager_for(call).async_set_winter_lock()
 
     async def clear_winter_lock(call: ServiceCall) -> None:
+        await require_admin(call)
         await manager_for(call).async_clear_winter_lock()
 
     async def start_maintenance_test(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
         return await manager_for(call).async_start_maintenance_test(
             zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
             duration_seconds=cast(float, call.data[ATTR_DURATION]),
             bypass_checks=tuple(cast(list[str], call.data[ATTR_BYPASS_CHECKS])),
+            kind=cast(str, call.data[ATTR_KIND]),
+            water_attribution=cast(str, call.data[ATTR_WATER_ATTRIBUTION]),
         )
 
     async def confirm_maintenance_test(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
         return await manager_for(call).async_confirm_maintenance_test(
             test_id=cast(str, call.data[ATTR_TEST_ID])
         )
 
     async def stop_maintenance_test(call: ServiceCall) -> None:
+        await require_admin(call)
         await manager_for(call).async_stop_maintenance_test()
 
     async def start_calibration(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
         return await manager_for(call).async_start_maintenance_test(
             zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
             duration_seconds=cast(float, call.data[ATTR_DURATION]),
@@ -453,6 +601,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         return {"proposal": manager_for(call).calibration_proposal()}
 
     async def resolve_calibration(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
         return await manager_for(call).async_resolve_calibration(
             proposal_id=cast(str, call.data[ATTR_PROPOSAL_ID]),
             resolution=cast(str, call.data[ATTR_RESOLUTION]),
@@ -478,13 +627,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
     async def import_config(call: ServiceCall) -> dict[str, Any]:
-        user_id = call.context.user_id
-        user = await hass.auth.async_get_user(user_id) if user_id is not None else None
-        if user is None or not user.is_admin:
-            raise Unauthorized(
-                context=call.context,
-                config_entry_id=call.data[ATTR_CONFIG_ENTRY_ID],
-            )
+        user = await require_admin(call)
         return await manager_for(call).async_import_portable_config(
             payload=cast(dict[str, object], call.data[ATTR_PAYLOAD]),
             entity_remapping=cast(dict[str, str], call.data[ATTR_ENTITY_REMAPPING]),
@@ -495,11 +638,112 @@ async def async_register_services(hass: HomeAssistant) -> None:
             user=user,
         )
 
+    async def archive_zone(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_set_zone_archived(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]), archived=True
+        )
+
+    async def restore_zone(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_set_zone_archived(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]), archived=False
+        )
+
+    async def suspend_automatic(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_suspend_automatic(
+            until=cast(Any, call.data[ATTR_UNTIL]),
+            zone_subentry_id=cast(str | None, call.data.get(ATTR_ZONE_SUBENTRY_ID)),
+        )
+
+    async def resume_automatic(call: ServiceCall) -> None:
+        await require_admin(call)
+        await manager_for(call).async_resume_automatic(
+            zone_subentry_id=cast(str | None, call.data.get(ATTR_ZONE_SUBENTRY_ID))
+        )
+
+    async def list_maintenance(call: ServiceCall) -> dict[str, Any]:
+        return manager_for(call).list_maintenance()
+
+    async def complete_maintenance_task(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_complete_maintenance_task(
+            task_id=cast(str, call.data[ATTR_TASK_ID])
+        )
+
+    async def snooze_maintenance_task(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        until = call.data[ATTR_UNTIL]
+        return await manager_for(call).async_snooze_maintenance_task(
+            task_id=cast(str, call.data[ATTR_TASK_ID]),
+            until=until if isinstance(until, date) else date.fromisoformat(str(until)),
+        )
+
+    async def update_spring_checklist(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_update_spring_checklist(
+            item_id=cast(str, call.data[ATTR_ITEM_ID]),
+            completed=cast(bool, call.data[ATTR_COMPLETED]),
+        )
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_START_MANUAL,
         start_manual,
         schema=START_MANUAL_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    for service, handler in (
+        (SERVICE_ARCHIVE_ZONE, archive_zone),
+        (SERVICE_RESTORE_ZONE, restore_zone),
+    ):
+        hass.services.async_register(
+            DOMAIN,
+            service,
+            handler,
+            schema=ZONE_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SUSPEND_AUTOMATIC,
+        suspend_automatic,
+        schema=SUSPEND_AUTOMATIC_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESUME_AUTOMATIC,
+        resume_automatic,
+        schema=RESUME_AUTOMATIC_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_MAINTENANCE,
+        list_maintenance,
+        schema=INSTALLATION_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_COMPLETE_MAINTENANCE_TASK,
+        complete_maintenance_task,
+        schema=MAINTENANCE_TASK_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SNOOZE_MAINTENANCE_TASK,
+        snooze_maintenance_task,
+        schema=SNOOZE_MAINTENANCE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_UPDATE_SPRING_CHECKLIST,
+        update_spring_checklist,
+        schema=SPRING_CHECKLIST_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(

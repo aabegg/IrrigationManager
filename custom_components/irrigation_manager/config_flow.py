@@ -1,7 +1,7 @@
 """Config and subentry flows for Irrigation Manager."""
 
 import json
-from datetime import time
+from datetime import date, time
 from typing import Any, override
 from uuid import uuid4
 
@@ -87,6 +87,7 @@ from .const import (
     CONF_MAIN_VALVE_FEEDBACK,
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
+    CONF_MAINTENANCE_TASKS,
     CONF_MANDATORY_AMOUNT_LITERS,
     CONF_MAX_DELIVERY_RUNTIME,
     CONF_MAX_DOSE_AMOUNT,
@@ -126,10 +127,12 @@ from .const import (
     CONF_SOIL_MOISTURE_WET_THRESHOLD,
     CONF_SOIL_PROFILE,
     CONF_SOLAR_RADIATION_SENSORS,
+    CONF_SPRING_CHECKLIST,
     CONF_SUBAREAS,
     CONF_SUNSHINE_DURATION_SENSORS,
     CONF_TEMPERATURE_SENSORS,
     CONF_WATER_METER,
+    CONF_WATER_TARIFF_PER_M3,
     CONF_WATERING_MODE,
     CONF_WATERING_WINDOWS,
     CONF_WEATHER_BACKFILL_DAYS,
@@ -145,6 +148,7 @@ from .const import (
     CONF_WIND_INTERLOCK_THRESHOLD,
     CONF_WIND_MANUAL_POLICY,
     CONF_WIND_SPEED_SENSORS,
+    CONF_WINTER_REMINDER_DATE,
     CONF_ZONE_DAILY_BUDGET_LITERS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
@@ -370,6 +374,13 @@ INSTALLATION_SCHEMA = vol.Schema(
                 unit_of_measurement=UnitOfVolume.LITERS,
             )
         ),
+        vol.Optional(CONF_WATER_TARIFF_PER_M3): NumberSelector(
+            NumberSelectorConfig(min=0, max=100_000, step=0.001, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_AUTOMATION_ENABLED, default=True): BooleanSelector(),
+        vol.Optional(CONF_WINTER_REMINDER_DATE, default="10-15"): TextSelector(),
+        vol.Optional(CONF_MAINTENANCE_TASKS, default=[]): ObjectSelector(),
+        vol.Optional(CONF_SPRING_CHECKLIST, default=[]): ObjectSelector(),
         vol.Optional(CONF_PAUSE_TIMEOUT_SECONDS, default=3600): NumberSelector(
             NumberSelectorConfig(
                 min=1,
@@ -786,14 +797,58 @@ def _validate_installation_input(user_input: dict[str, Any]) -> str | None:
         return "raw_meter_requires_factor"
     if user_input.get(CONF_MAIN_VALVE_FEEDBACK) and not user_input.get(CONF_MAIN_VALVE):
         return "main_feedback_requires_main_valve"
+    try:
+        date.fromisoformat(f"2000-{user_input.get(CONF_WINTER_REMINDER_DATE, '10-15')}")
+        _validate_maintenance_configuration(user_input)
+    except TypeError, ValueError:
+        return "invalid_maintenance_configuration"
     return None
+
+
+def _validate_maintenance_configuration(user_input: dict[str, Any]) -> None:
+    """Validate stable task/checklist IDs and recurrence fields from object selectors."""
+    tasks = user_input.get(CONF_MAINTENANCE_TASKS, [])
+    checklist = user_input.get(CONF_SPRING_CHECKLIST, [])
+    if not isinstance(tasks, list) or not isinstance(checklist, list):
+        raise ValueError
+    task_ids: set[str] = set()
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise ValueError
+        task_id = task.get("id")
+        if (
+            not isinstance(task_id, str)
+            or not task_id
+            or task_id in task_ids
+            or not isinstance(task.get("name"), str)
+            or isinstance(task.get("interval_days"), bool)
+            or not isinstance(task.get("interval_days"), int | float)
+            or float(task["interval_days"]) <= 0
+            or not isinstance(task.get("first_due"), str)
+        ):
+            raise ValueError
+        date.fromisoformat(str(task["first_due"]))
+        task_ids.add(task_id)
+    checklist_ids = [item.get("id") for item in checklist if isinstance(item, dict)]
+    if (
+        len(checklist_ids) != len(checklist)
+        or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not item["id"]
+            or not isinstance(item.get("name"), str)
+            for item in checklist
+        )
+        or len(set(checklist_ids)) != len(checklist_ids)
+    ):
+        raise ValueError
 
 
 class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create and reconfigure irrigation installations."""
 
     VERSION = 1
-    MINOR_VERSION = 4
+    MINOR_VERSION = 5
 
     @override
     @staticmethod

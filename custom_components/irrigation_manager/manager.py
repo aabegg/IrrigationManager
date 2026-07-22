@@ -5,7 +5,7 @@ import csv
 import io
 import json
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -83,6 +83,7 @@ from .const import (
     CONF_MAIN_VALVE_FEEDBACK,
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
+    CONF_MAINTENANCE_TASKS,
     CONF_MANDATORY_AMOUNT_LITERS,
     CONF_MAX_DELIVERY_RUNTIME,
     CONF_MAX_DOSE_AMOUNT,
@@ -121,10 +122,12 @@ from .const import (
     CONF_SOIL_MOISTURE_WET_THRESHOLD,
     CONF_SOIL_PROFILE,
     CONF_SOLAR_RADIATION_SENSORS,
+    CONF_SPRING_CHECKLIST,
     CONF_SUBAREAS,
     CONF_SUNSHINE_DURATION_SENSORS,
     CONF_TEMPERATURE_SENSORS,
     CONF_WATER_METER,
+    CONF_WATER_TARIFF_PER_M3,
     CONF_WATERING_MODE,
     CONF_WATERING_WINDOWS,
     CONF_WEATHER_BACKFILL_DAYS,
@@ -138,6 +141,7 @@ from .const import (
     CONF_WIND_INTERLOCK_THRESHOLD,
     CONF_WIND_MANUAL_POLICY,
     CONF_WIND_SPEED_SENSORS,
+    CONF_WINTER_REMINDER_DATE,
     CONF_ZONE_DAILY_BUDGET_LITERS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
@@ -550,6 +554,7 @@ class IrrigationManager:
 
     async def _async_scheduled_weather_tick(self, now: datetime) -> None:
         """Run idempotent due work without depending on one local wall-clock minute."""
+        await self._async_check_operational_reminders(now)
         if not self._weather_model_configured:
             return
         finalized = await self._async_backfill_weather_days(now)
@@ -665,7 +670,28 @@ class IrrigationManager:
             await self._async_reconcile_meter_source()
         if self._stored_state.maintenance_test is not None:
             interrupted_test = self._stored_state.maintenance_test
-            self._stored_state = replace(self._stored_state, maintenance_test=None)
+            interrupted_record: dict[str, object] = {
+                "test_id": interrupted_test.test_id,
+                "kind": interrupted_test.kind,
+                "zone_id": interrupted_test.zone_id,
+                "water_attribution": interrupted_test.water_attribution,
+                "started_at": interrupted_test.started_at,
+                "ended_at": datetime.now(UTC).isoformat(),
+                "result": "restart",
+            }
+            self._stored_state = replace(
+                self._stored_state,
+                maintenance_test=None,
+                maintenance_test_history=(
+                    *self._stored_state.maintenance_test_history,
+                    interrupted_record,
+                )[-500:],
+                spring_test_status=(
+                    "failed"
+                    if interrupted_test.kind == "spring_recommission"
+                    else self._stored_state.spring_test_status
+                ),
+            )
             await self._store.async_save(self._stored_state)
             self._events.fire(
                 "maintenance_ended",
@@ -685,6 +711,7 @@ class IrrigationManager:
         await self._async_expire_requests()
         await self._async_initialize_zone_balances()
         await self._async_ensure_idle_meter_baseline()
+        await self._async_check_operational_reminders(dt_util.now())
         for entity_id in self._supervised_feedback_entities():
             self._state_unsubscribers.append(
                 async_track_state_change_event(self._hass, entity_id, self._actuator_state_changed)
@@ -1629,6 +1656,7 @@ class IrrigationManager:
             zone_id=None,
             source=origin,
             quality=quality,
+            tariff_per_m3=self._optional_float(self._installation_data, CONF_WATER_TARIFF_PER_M3),
         )
         try:
             await self._store.async_save(self._stored_state)
@@ -1827,12 +1855,19 @@ class IrrigationManager:
             delivered_liters = delivered_duration_seconds * active.estimated_flow_l_min / 60
             quality = "estimated"
 
+        maintenance = self._stored_state.maintenance_test
+        attributed_zone_id = (
+            None
+            if maintenance is not None and maintenance.water_attribution == "unassigned"
+            else active.zone_id
+        )
         zone_totals = dict(self._stored_state.zone_totals_liters)
-        zone_totals[active.zone_id] = zone_totals.get(active.zone_id, 0.0) + delivered_liters
+        if attributed_zone_id is not None:
+            zone_totals[active.zone_id] = zone_totals.get(active.zone_id, 0.0) + delivered_liters
         measurement_quality = dict(self._stored_state.zone_measurement_quality)
         last_delivered = dict(self._stored_state.zone_last_delivered_liters)
         last_duration = dict(self._stored_state.zone_last_duration_seconds)
-        if recovery_started_at is not None:
+        if recovery_started_at is not None and attributed_zone_id is not None:
             measurement_quality[active.zone_id] = quality
             last_delivered[active.zone_id] = delivered_liters
             last_duration[active.zone_id] = delivered_duration_seconds
@@ -1918,17 +1953,24 @@ class IrrigationManager:
                 )
             if completed or expired:
                 terminal_request_id = request.request_id
-        deficits, last_effective = self._balance_after_delivery(
-            zone_id=active.zone_id,
-            delivered_liters=delivered_liters,
-            effective_delivery=effective_delivery,
-            delivered_at=recovered_at,
-            area_m2=active.balance_area_m2,
-            application_efficiency=active.balance_application_efficiency,
-            maximum_deficit_mm=active.balance_maximum_deficit_mm,
+        deficits, last_effective = (
+            self._balance_after_delivery(
+                zone_id=active.zone_id,
+                delivered_liters=delivered_liters,
+                effective_delivery=effective_delivery,
+                delivered_at=recovered_at,
+                area_m2=active.balance_area_m2,
+                application_efficiency=active.balance_application_efficiency,
+                maximum_deficit_mm=active.balance_maximum_deficit_mm,
+            )
+            if attributed_zone_id is not None
+            else (
+                dict(self._stored_state.zone_deficit_mm),
+                dict(self._stored_state.zone_last_effective_irrigation),
+            )
         )
         uncredited_deliveries = self._stored_state.uncredited_balance_deliveries
-        if delivered_liters > 0 and balance_snapshot is None:
+        if delivered_liters > 0 and balance_snapshot is None and attributed_zone_id is not None:
             uncredited_deliveries = (
                 *uncredited_deliveries,
                 self._uncredited_balance_delivery(
@@ -1948,28 +1990,51 @@ class IrrigationManager:
             zone_measurement_quality=measurement_quality,
             zone_last_delivered_liters=last_delivered,
             zone_last_duration_seconds=last_duration,
+            unassigned_total_liters=(
+                self._stored_state.unassigned_total_liters
+                + (delivered_liters if attributed_zone_id is None else 0.0)
+            ),
+            unassigned_available_liters=(
+                self._stored_state.unassigned_available_liters
+                + (delivered_liters if attributed_zone_id is None else 0.0)
+            ),
+            unassigned_measurement_quality=(
+                quality
+                if attributed_zone_id is None
+                else self._stored_state.unassigned_measurement_quality
+            ),
+            unassigned_measurement_origin=(
+                self._measurement_origin(quality)
+                if attributed_zone_id is None
+                else self._stored_state.unassigned_measurement_origin
+            ),
             active_execution=None,
             manual_requests=requests,
             irrigation_executions=executions,
             zone_deficit_mm=deficits,
             zone_last_effective_irrigation=last_effective,
             uncredited_balance_deliveries=uncredited_deliveries,
-            budget_usage_liters=self._budget_usage_after_delivery(
-                self._stored_state.budget_usage_liters,
-                zone_id=active.zone_id,
-                delivered_liters=delivered_liters,
-                delivered_at=recovered_at,
+            budget_usage_liters=(
+                self._budget_usage_after_delivery(
+                    self._stored_state.budget_usage_liters,
+                    zone_id=active.zone_id,
+                    delivered_liters=delivered_liters,
+                    delivered_at=recovered_at,
+                )
+                if attributed_zone_id is not None
+                else dict(self._stored_state.budget_usage_liters)
             ),
         )
         recovered_state = self._with_consumption_record(
             self._with_meter_continuity(recovered_state),
             amount_liters=delivered_liters,
-            zone_id=active.zone_id,
+            zone_id=attributed_zone_id,
             source="restart_recovery",
             quality=quality,
             request_id=active.request_id,
             execution_id=active.execution_id,
             dose_number=active.dose_number,
+            tariff_per_m3=self._optional_float(self._installation_data, CONF_WATER_TARIFF_PER_M3),
         )
         await self._store.async_save(recovered_state)
         self._stored_state = recovered_state
@@ -2236,6 +2301,23 @@ class IrrigationManager:
             )
             await self._store.async_save(self._stored_state)
 
+    @staticmethod
+    def _deadline_active(value: str | None, now: datetime) -> bool:
+        """Return whether one durable UTC deadline still suspends automatic work."""
+        return value is not None and now.astimezone(UTC) < datetime.fromisoformat(value)
+
+    def _automatic_suspension_active(self, zone_id: str, now: datetime) -> bool:
+        """Resolve installation and zone suspension without requiring expiry writes."""
+        return self._deadline_active(self._stored_state.automatic_suspended_until, now) or (
+            self._deadline_active(
+                self._stored_state.zone_automatic_suspended_until.get(zone_id), now
+            )
+        )
+
+    def _zone_archived(self, zone_id: str) -> bool:
+        """Return whether a stable zone identity is retained as archived."""
+        return zone_id in self._stored_state.archived_zones
+
     def _effective_zone_profile(self, data: Mapping[str, Any], day: date) -> EffectiveZoneProfile:
         """Resolve one immutable effective profile from current config."""
         return resolve_effective_zone_profile(
@@ -2390,7 +2472,11 @@ class IrrigationManager:
                 relative_need=deficit / maximum_deficit if maximum_deficit > 0 else 0.0,
                 priority=int(self._number(data, CONF_ZONE_PRIORITY, 0.0)),
                 window_end=now,
-                enabled=bool(data.get(CONF_AUTOMATION_ENABLED, False)),
+                enabled=(
+                    bool(self._installation_data.get(CONF_AUTOMATION_ENABLED, True))
+                    and bool(data.get(CONF_AUTOMATION_ENABLED, False))
+                    and not self._zone_archived(zone_id)
+                ),
                 blocked=(
                     self._stored_state.emergency_stop
                     or self._stored_state.winter_lock
@@ -2409,6 +2495,7 @@ class IrrigationManager:
                         and str(data.get(CONF_SOIL_MOISTURE_ROLE)) == SOIL_MOISTURE_ROLE_INHIBIT
                         and moisture.safety_blocked
                     )
+                    or self._automatic_suspension_active(zone_id, now)
                 ),
             )
             last_value = self._stored_state.zone_last_effective_irrigation.get(zone_id)
@@ -2433,6 +2520,10 @@ class IrrigationManager:
                 minimum_trigger_liters=self._number(data, CONF_MINIMUM_TRIGGER_LITERS, 1.0),
                 sun_resolver=self._sun_event,
             )
+            if self._zone_archived(zone_id):
+                decision = replace(decision, order=None, reason="archived")
+            elif self._automatic_suspension_active(zone_id, now):
+                decision = replace(decision, order=None, reason="automatic_suspended")
             if (
                 budget_remaining is not None
                 and budget_remaining < self._number(data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1)
@@ -2909,6 +3000,8 @@ class IrrigationManager:
             subentry = self._zone_configs_by_subentry_id.get(zone_subentry_id)
             if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
                 raise HomeAssistantError("The irrigation zone does not exist")
+            if self._zone_archived(subentry.unique_id or subentry.subentry_id):
+                raise HomeAssistantError("The irrigation zone is archived")
             raw_windows = subentry.data.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])
             windows = (
                 [str(value) for value in raw_windows]
@@ -3373,10 +3466,13 @@ class IrrigationManager:
                 await asyncio.sleep(60)
 
     def _seconds_until_next_automatic_change(self) -> float:
-        """Return a bounded delay to the next start or end of a configured window."""
+        """Return the exact delay to the next window or suspension transition."""
         now = dt_util.now()
         boundaries: list[datetime] = []
+        configured_zone_ids: set[str] = set()
         for subentry in self._zone_configs:
+            zone_id = subentry.unique_id or subentry.subentry_id
+            configured_zone_ids.add(zone_id)
             raw = subentry.data.get(CONF_WATERING_WINDOWS, ["04:00-06:00"])
             values = [str(value) for value in raw] if isinstance(raw, list | tuple) else [str(raw)]
             active, next_start = active_and_next_window(
@@ -3386,9 +3482,24 @@ class IrrigationManager:
                 boundaries.append(active.end)
             if next_start is not None:
                 boundaries.append(next_start)
+        suspension_deadlines = (
+            self._stored_state.automatic_suspended_until,
+            *(
+                deadline
+                for zone_id, deadline in self._stored_state.zone_automatic_suspended_until.items()
+                if zone_id in configured_zone_ids
+            ),
+        )
+        for value in suspension_deadlines:
+            if value is None:
+                continue
+            with suppress(ValueError):
+                deadline = datetime.fromisoformat(value)
+                if deadline > now:
+                    boundaries.append(deadline)
         if not boundaries:
             return 3_600.0
-        return max(0.1, min((boundary - now).total_seconds() for boundary in boundaries))
+        return max(0.0, min((boundary - now).total_seconds() for boundary in boundaries))
 
     def _weather_snapshot(self) -> dict[str, object] | None:
         """Expose configured native weather state as planning context without templates."""
@@ -3428,6 +3539,8 @@ class IrrigationManager:
             subentry = self._zone_configs_by_subentry_id.get(zone_subentry_id)
             if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
                 raise HomeAssistantError("The irrigation zone does not exist")
+            if self._zone_archived(subentry.unique_id or subentry.subentry_id):
+                raise HomeAssistantError("The irrigation zone is archived")
             if amount_liters is not None and not self._has_meter:
                 raise HomeAssistantError("Volume irrigation requires a configured cumulative meter")
             meter_rounding: dict[str, object] | None = None
@@ -3607,6 +3720,8 @@ class IrrigationManager:
                 subentry = self._zone_configs_by_subentry_id.get(zone_subentry_id)
                 if subentry is None:
                     raise HomeAssistantError("A plan irrigation zone does not exist")
+                if self._zone_archived(subentry.unique_id or subentry.subentry_id):
+                    raise HomeAssistantError("A plan irrigation zone is archived")
                 if amount is not None and not self._has_meter:
                     raise HomeAssistantError("Volume irrigation requires a cumulative meter")
                 meter_rounding: dict[str, object] | None = None
@@ -4027,6 +4142,16 @@ class IrrigationManager:
         subentry = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
         if subentry is None:
             return request
+        if self._zone_archived(request.zone_id) or self._automatic_suspension_active(
+            request.zone_id, dt_util.now()
+        ):
+            cancelled = replace(request, status="cancelled", revision=request.revision + 1)
+            self._stored_state = replace(
+                self._stored_state, manual_requests=self._with_request(cancelled)
+            )
+            await self._store.async_save(self._stored_state)
+            self._planning_event.set()
+            return None
         remaining_liters = self._automatic_budget_remaining_liters(
             zone_id=request.zone_id,
             data=subentry.data,
@@ -4311,6 +4436,7 @@ class IrrigationManager:
             execution_id=execution.execution_id,
             dose_number=execution.dose_number,
             warnings=(() if result.safety_violation is None else (result.safety_violation,)),
+            tariff_per_m3=self._optional_float(self._installation_data, CONF_WATER_TARIFF_PER_M3),
         )
         try:
             await self._store.async_save(next_state)
@@ -4822,11 +4948,13 @@ class IrrigationManager:
         execution_id: str | None = None,
         dose_number: int | None = None,
         warnings: tuple[str, ...] = (),
+        tariff_per_m3: float | None = None,
     ) -> StoredInstallationState:
         """Append one bounded immutable contribution without creating another total."""
         if amount_liters <= 0:
             return state
         now = datetime.now(UTC)
+        cost = amount_liters * tariff_per_m3 / 1_000 if tariff_per_m3 is not None else None
         record = WaterConsumptionRecord(
             recorded_at=now.isoformat(),
             amount_liters=amount_liters,
@@ -4837,6 +4965,7 @@ class IrrigationManager:
             execution_id=execution_id,
             dose_number=dose_number,
             warnings=warnings,
+            cost=cost,
         )
         horizon = now.replace(
             month=1,
@@ -4854,10 +4983,20 @@ class IrrigationManager:
         cap_reached = len(retained) > WATER_HISTORY_MAX_RECORDS
         if cap_reached:
             retained = retained[-WATER_HISTORY_MAX_RECORDS:]
+        zone_costs = dict(state.zone_costs)
+        unassigned_cost = state.unassigned_cost
+        if cost is not None:
+            if zone_id is None:
+                unassigned_cost += cost
+            else:
+                zone_costs[zone_id] = zone_costs.get(zone_id, 0.0) + cost
         return replace(
             state,
             water_consumption_history=retained,
             water_history_incomplete=state.water_history_incomplete or cap_reached,
+            installation_cost=state.installation_cost + (cost or 0.0),
+            zone_costs=zone_costs,
+            unassigned_cost=unassigned_cost,
         )
 
     def _water_period_totals(self, now: datetime) -> dict[str, float]:
@@ -4940,6 +5079,11 @@ class IrrigationManager:
             CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
             CONF_INSTALLATION_DAILY_BUDGET_LITERS,
             CONF_INSTALLATION_WEEKLY_BUDGET_LITERS,
+            CONF_WATER_TARIFF_PER_M3,
+            CONF_AUTOMATION_ENABLED,
+            CONF_WINTER_REMINDER_DATE,
+            CONF_MAINTENANCE_TASKS,
+            CONF_SPRING_CHECKLIST,
             CONF_PAUSE_TIMEOUT_SECONDS,
             CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
             CONF_ACTUATOR_FEEDBACK_MAX_AGE_SECONDS,
@@ -5422,6 +5566,11 @@ class IrrigationManager:
                     "measurement_origin": execution.measurement_origin,
                     "measurement_quality": execution.measurement_quality,
                     "warnings": list(execution.warnings),
+                    "cost": sum(
+                        record.cost or 0.0
+                        for record in self._stored_state.water_consumption_history
+                        if record.execution_id == execution.execution_id
+                    ),
                 }
             )
         if export_format == "json":
@@ -5444,6 +5593,7 @@ class IrrigationManager:
                 "measurement_origin",
                 "measurement_quality",
                 "warnings",
+                "cost",
             ]
         )
         writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
@@ -5475,6 +5625,22 @@ class IrrigationManager:
             "emergency_stop": self._stored_state.emergency_stop,
             "winter_lock": self._stored_state.winter_lock,
             "maintenance_active": self._stored_state.maintenance_test is not None,
+            "automatic_suspension": {
+                "installation_until": self._stored_state.automatic_suspended_until,
+                "zone_deadlines": dict(self._stored_state.zone_automatic_suspended_until),
+            },
+            "archived_zone_ids": sorted(self._stored_state.archived_zones),
+            "maintenance": self.list_maintenance(now=now),
+            "cost_accounting": {
+                "configured": self._optional_float(
+                    self._installation_data, CONF_WATER_TARIFF_PER_M3
+                )
+                is not None,
+                "records_with_cost": sum(
+                    record.cost is not None
+                    for record in self._stored_state.water_consumption_history
+                ),
+            },
             "calibration_proposal_status": (
                 self._stored_state.calibration_proposal.status
                 if self._stored_state.calibration_proposal is not None
@@ -5871,6 +6037,12 @@ class IrrigationManager:
         subentry = self._zone_configs_by_subentry_id.get(manual_request.zone_subentry_id)
         if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
             raise HomeAssistantError("The irrigation zone does not exist")
+        if self._zone_archived(manual_request.zone_id):
+            raise HomeAssistantError("The irrigation zone is archived")
+        if manual_request.source == "automatic" and self._automatic_suspension_active(
+            manual_request.zone_id, datetime.now(UTC)
+        ):
+            raise _StaleRequestClaimError("Automatic irrigation is suspended")
         manual_request = self._with_balance_snapshot(manual_request, subentry.data)
         zone_id = manual_request.zone_id
         await self._async_preflight(
@@ -6298,13 +6470,351 @@ class IrrigationManager:
             "suppressed": opportunity_id is not None,
         }
 
+    def _zone_for_subentry(self, zone_subentry_id: str) -> _ZoneConfigSnapshot:
+        """Resolve one configured zone or raise a stable service error."""
+        zone = self._zone_configs_by_subentry_id.get(zone_subentry_id)
+        if zone is None or zone.subentry_type != SUBENTRY_TYPE_ZONE:
+            raise HomeAssistantError("The irrigation zone does not exist")
+        return zone
+
+    def manual_control_entity_ids(
+        self,
+        *,
+        zone_subentry_ids: Iterable[str] = (),
+        request_ids: Iterable[str] = (),
+        execution_ids: Iterable[str] = (),
+        all_open_requests: bool = False,
+    ) -> tuple[str, ...]:
+        """Resolve physical entities affected by manual runtime controls."""
+        selected_zone_ids = {
+            zone.unique_id or zone.subentry_id
+            for subentry_id in zone_subentry_ids
+            if (zone := self._zone_configs_by_subentry_id.get(subentry_id)) is not None
+        }
+        selected_requests = set(request_ids)
+        selected_executions = set(execution_ids)
+        for execution in self._stored_state.irrigation_executions:
+            if execution.execution_id in selected_executions:
+                selected_requests.add(execution.request_id)
+        for request in self._stored_state.manual_requests:
+            if request.request_id in selected_requests or (
+                all_open_requests and request.status not in {"completed", "cancelled", "expired"}
+            ):
+                selected_zone_ids.add(request.zone_id)
+        entities = {
+            str(zone.data[CONF_ZONE_VALVE])
+            for zone in self._zone_configs
+            if (zone.unique_id or zone.subentry_id) in selected_zone_ids
+        }
+        if entities and isinstance(main_valve := self._installation_data.get(CONF_MAIN_VALVE), str):
+            entities.add(main_valve)
+        return tuple(sorted(entities))
+
+    @property
+    def maintenance_test_active(self) -> bool:
+        """Return whether a supervised maintenance or recommission test is active."""
+        return self._stored_state.maintenance_test is not None
+
+    async def async_set_zone_archived(
+        self, *, zone_subentry_id: str, archived: bool
+    ) -> dict[str, object]:
+        """Archive or restore a zone only at complete idle while retaining its identity."""
+        async with self._command_lock:
+            if not self._is_complete_idle() or self._stored_state.maintenance_test is not None:
+                raise HomeAssistantError("The irrigation installation must be completely idle")
+            zone = self._zone_for_subentry(zone_subentry_id)
+            zone_id = zone.unique_id or zone.subentry_id
+            archived_zones = dict(self._stored_state.archived_zones)
+            if archived:
+                archived_zones.setdefault(zone_id, datetime.now(UTC).isoformat())
+            else:
+                archived_zones.pop(zone_id, None)
+            self._stored_state = replace(self._stored_state, archived_zones=archived_zones)
+            await self._store.async_save(self._stored_state)
+            self._publish(status="idle", active_zone_id=None)
+        self._planning_event.set()
+        self._events.fire(
+            "zone_archived" if archived else "zone_restored",
+            reason="user_confirmed",
+            target=self._events.zone_target(zone_id),
+            context={"archived": archived},
+        )
+        return {"zone_id": zone_id, "archived": archived}
+
+    async def async_suspend_automatic(
+        self, *, until: datetime, zone_subentry_id: str | None = None
+    ) -> dict[str, object]:
+        """Persist a bounded automatic suspension and stop affected automatic work."""
+        deadline = until.astimezone(UTC)
+        if deadline <= datetime.now(UTC):
+            raise HomeAssistantError("The automatic suspension must end in the future")
+        zone_id: str | None = None
+        async with self._command_lock:
+            zone_suspensions = dict(self._stored_state.zone_automatic_suspended_until)
+            installation_until = self._stored_state.automatic_suspended_until
+            if zone_subentry_id is None:
+                installation_until = deadline.isoformat()
+            else:
+                zone = self._zone_for_subentry(zone_subentry_id)
+                zone_id = zone.unique_id or zone.subentry_id
+                if self._zone_archived(zone_id):
+                    raise HomeAssistantError("The irrigation zone is archived")
+                zone_suspensions[zone_id] = deadline.isoformat()
+            self._stored_state = replace(
+                self._stored_state,
+                automatic_suspended_until=installation_until,
+                zone_automatic_suspended_until=zone_suspensions,
+            )
+            await self._store.async_save(self._stored_state)
+            affected = [
+                request.request_id
+                for request in self._stored_state.manual_requests
+                if request.source == "automatic"
+                and request.status in {"pending", "executing", "soaking", "paused"}
+                and (zone_id is None or request.zone_id == zone_id)
+            ]
+        for request_id in affected:
+            with suppress(HomeAssistantError):
+                await self.async_cancel_request(request_id)
+        self._publish(status=self._coordinator.data.status, active_zone_id=None)
+        self._planning_event.set()
+        return {"zone_id": zone_id, "until": deadline.isoformat()}
+
+    async def async_resume_automatic(self, *, zone_subentry_id: str | None = None) -> None:
+        """Explicitly clear one installation or zone automatic suspension."""
+        async with self._command_lock:
+            zone_suspensions = dict(self._stored_state.zone_automatic_suspended_until)
+            installation_until = self._stored_state.automatic_suspended_until
+            if zone_subentry_id is None:
+                installation_until = None
+            else:
+                zone = self._zone_for_subentry(zone_subentry_id)
+                zone_suspensions.pop(zone.unique_id or zone.subentry_id, None)
+            self._stored_state = replace(
+                self._stored_state,
+                automatic_suspended_until=installation_until,
+                zone_automatic_suspended_until=zone_suspensions,
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+        self._planning_event.set()
+
+    def _configured_maintenance_tasks(self) -> list[dict[str, object]]:
+        """Return validated task objects from the Config Flow owned configuration."""
+        raw = self._installation_data.get(CONF_MAINTENANCE_TASKS, [])
+        return (
+            [dict(value) for value in raw if isinstance(value, dict)]
+            if isinstance(raw, list)
+            else []
+        )
+
+    def list_maintenance(self, *, now: datetime | None = None) -> dict[str, object]:
+        """Return recurring task due state, completion history, and spring progress."""
+        current = (now or dt_util.now()).date()
+        tasks: list[dict[str, object]] = []
+        for configured in self._configured_maintenance_tasks():
+            task_id = str(configured["id"])
+            state = self._stored_state.maintenance_task_state.get(task_id, {})
+            due_value = state.get("next_due", configured.get("first_due"))
+            due = date.fromisoformat(str(due_value))
+            snoozed_value = state.get("snoozed_until")
+            effective_due = (
+                max(due, date.fromisoformat(str(snoozed_value))) if snoozed_value else due
+            )
+            tasks.append(
+                {
+                    **configured,
+                    **state,
+                    "due": effective_due.isoformat(),
+                    "overdue": effective_due <= current,
+                }
+            )
+        checklist = self._installation_data.get(CONF_SPRING_CHECKLIST, [])
+        configured_checklist = checklist if isinstance(checklist, list) else []
+        completed = set(self._stored_state.spring_checklist_completed)
+        return {
+            "tasks": tasks,
+            "history": [dict(value) for value in self._stored_state.maintenance_history],
+            "test_history": [dict(value) for value in self._stored_state.maintenance_test_history],
+            "spring_checklist": [
+                {**item, "completed": item.get("id") in completed}
+                for item in configured_checklist
+                if isinstance(item, dict)
+            ],
+            "spring_test_status": self._stored_state.spring_test_status,
+        }
+
+    async def async_complete_maintenance_task(self, *, task_id: str) -> dict[str, object]:
+        """Complete one configured task and advance its recurrence from completion."""
+        configured = next(
+            (task for task in self._configured_maintenance_tasks() if task.get("id") == task_id),
+            None,
+        )
+        if configured is None:
+            raise HomeAssistantError("The maintenance task does not exist")
+        now = dt_util.now()
+        next_due = now.date() + timedelta(days=self._number(configured, "interval_days", 0))
+        async with self._command_lock:
+            states = {
+                key: dict(value) for key, value in self._stored_state.maintenance_task_state.items()
+            }
+            states[task_id] = {
+                "last_completed_at": now.isoformat(),
+                "next_due": next_due.isoformat(),
+            }
+            history_record: dict[str, object] = {
+                "task_id": task_id,
+                "action": "completed",
+                "at": now.isoformat(),
+                "next_due": next_due.isoformat(),
+            }
+            history = (*self._stored_state.maintenance_history, history_record)[-500:]
+            self._stored_state = replace(
+                self._stored_state, maintenance_task_state=states, maintenance_history=history
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+        self._events.dismiss(f"maintenance_task_{task_id}")
+        return states[task_id]
+
+    async def async_snooze_maintenance_task(
+        self, *, task_id: str, until: date
+    ) -> dict[str, object]:
+        """Snooze one configured task without erasing its original due date or history."""
+        if not any(task.get("id") == task_id for task in self._configured_maintenance_tasks()):
+            raise HomeAssistantError("The maintenance task does not exist")
+        if until <= dt_util.now().date():
+            raise HomeAssistantError("The snooze date must be in the future")
+        async with self._command_lock:
+            states = {
+                key: dict(value) for key, value in self._stored_state.maintenance_task_state.items()
+            }
+            states.setdefault(task_id, {})["snoozed_until"] = until.isoformat()
+            history_record: dict[str, object] = {
+                "task_id": task_id,
+                "action": "snoozed",
+                "at": dt_util.now().isoformat(),
+                "until": until.isoformat(),
+            }
+            history = (*self._stored_state.maintenance_history, history_record)[-500:]
+            self._stored_state = replace(
+                self._stored_state, maintenance_task_state=states, maintenance_history=history
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+        self._events.dismiss(f"maintenance_task_{task_id}")
+        return states[task_id]
+
+    async def async_update_spring_checklist(
+        self, *, item_id: str, completed: bool
+    ) -> dict[str, object]:
+        """Persist one configured spring recommission checklist decision."""
+        raw = self._installation_data.get(CONF_SPRING_CHECKLIST, [])
+        items = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        if not any(item.get("id") == item_id for item in items):
+            raise HomeAssistantError("The spring checklist item does not exist")
+        values = set(self._stored_state.spring_checklist_completed)
+        values.add(item_id) if completed else values.discard(item_id)
+        async with self._command_lock:
+            self._stored_state = replace(
+                self._stored_state, spring_checklist_completed=tuple(sorted(values))
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status=self._coordinator.data.status, active_zone_id=None)
+        if len(values) == len(items) and self._stored_state.spring_test_status == "completed":
+            self._events.dismiss("spring_recommission")
+        return {"item_id": item_id, "completed": completed}
+
+    @staticmethod
+    def _forecast_reaches_frost(forecast: object, threshold: float) -> bool:
+        """Evaluate only numeric temperatures supplied by a forecast provider."""
+        if not isinstance(forecast, list):
+            return False
+        for item in forecast:
+            if not isinstance(item, dict):
+                continue
+            value = item.get("templow", item.get("temperature"))
+            if (
+                isinstance(value, int | float)
+                and not isinstance(value, bool)
+                and float(value) <= threshold
+            ):
+                return True
+        return False
+
+    async def _async_frost_forecast_due(self) -> bool:
+        """Use only a provider-exposed forecast; never invent a forecast value."""
+        entity_id = self._installation_data.get(CONF_WEATHER_ENTITY)
+        state = self._hass.states.get(entity_id) if isinstance(entity_id, str) else None
+        forecast = state.attributes.get("forecast") if state is not None else None
+        threshold = self._number(self._installation_data, CONF_FROST_THRESHOLD, 2)
+        if self._forecast_reaches_frost(forecast, threshold):
+            return True
+        if not isinstance(entity_id, str) or not self._hass.services.has_service(
+            "weather", "get_forecasts"
+        ):
+            return False
+        try:
+            response = await self._hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"entity_id": entity_id, "type": "daily"},
+                blocking=True,
+                return_response=True,
+            )
+        except HomeAssistantError:
+            return False
+        entity_response = response.get(entity_id) if isinstance(response, dict) else None
+        return self._forecast_reaches_frost(
+            entity_response.get("forecast") if isinstance(entity_response, dict) else None,
+            threshold,
+        )
+
+    async def _async_check_operational_reminders(self, now: datetime) -> None:
+        """Create deduplicated persistent winter and recurring maintenance reminders."""
+        local_date = dt_util.as_local(now).date()
+        reminder = str(self._installation_data.get(CONF_WINTER_REMINDER_DATE, "10-15"))
+        date_due = local_date.strftime("%m-%d") >= reminder
+        if (
+            not self._stored_state.winter_lock
+            and self._stored_state.winter_reminder_last_year != local_date.year
+            and (date_due or await self._async_frost_forecast_due())
+        ):
+            self._stored_state = replace(
+                self._stored_state, winter_reminder_last_year=local_date.year
+            )
+            await self._store.async_save(self._stored_state)
+            await self._events.async_critical(
+                "winter_reminder",
+                title="Irrigation winter preparation due",
+                message=(
+                    f"Prepare and drain {self._events.installation_name}; the configured date "
+                    "or an available frost forecast has reached the reminder threshold."
+                ),
+            )
+        maintenance = self.list_maintenance(now=now)
+        for task in cast(list[dict[str, object]], maintenance["tasks"]):
+            if task["overdue"]:
+                await self._events.async_critical(
+                    f"maintenance_task_{task['id']}",
+                    title="Irrigation maintenance due",
+                    message=f"{task['name']} is due on {task['due']}.",
+                )
+
     async def async_set_winter_lock(self) -> None:
         """Persist the winter lock before closing and cancelling every water path."""
         async with self._command_lock:
-            self._stored_state = replace(self._stored_state, winter_lock=True)
+            self._stored_state = replace(
+                self._stored_state,
+                winter_lock=True,
+            )
             await self._store.async_save(self._stored_state)
             self._publish(status="winter_lock", active_zone_id=None)
         closure_errors: list[Exception] = []
+        try:
+            await self.async_stop_maintenance_test(reason="winter_lock", require_active=False)
+        except Exception as err:  # noqa: BLE001
+            closure_errors.append(err)
         try:
             await self._async_close_entities(
                 self._all_known_valves(),
@@ -6323,12 +6833,21 @@ class IrrigationManager:
             )
         except Exception as err:  # noqa: BLE001
             closure_errors.append(err)
+        async with self._command_lock:
+            self._stored_state = replace(
+                self._stored_state,
+                spring_checklist_completed=(),
+                spring_test_status="not_started",
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status="winter_lock", active_zone_id=None)
         self._events.fire(
             "winter_lock_activated",
             reason="winter_lock_enforced",
             target=self._events.installation_target(),
             context={"lock_active": True},
         )
+        self._events.dismiss("winter_reminder")
         await self._events.async_critical(
             "winter_lock",
             title="Irrigation winter lock active",
@@ -6363,6 +6882,15 @@ class IrrigationManager:
             context={"lock_active": False},
         )
         self._events.dismiss("winter_lock")
+        if self._installation_data.get(CONF_SPRING_CHECKLIST):
+            await self._events.async_critical(
+                "spring_recommission",
+                title="Irrigation spring recommission pending",
+                message=(
+                    f"Complete the configured checklist and supervised recommission test for "
+                    f"{self._events.installation_name}."
+                ),
+            )
         self._planning_event.set()
 
     async def async_start_maintenance_test(
@@ -6372,6 +6900,7 @@ class IrrigationManager:
         duration_seconds: float,
         bypass_checks: tuple[str, ...] = (),
         kind: str = "maintenance",
+        water_attribution: str = "zone",
     ) -> dict[str, object]:
         """Start exactly one bounded, supervised valve test and return immediately."""
         allowed_bypasses = {"feedback", "flow", "weather", "external"}
@@ -6380,10 +6909,14 @@ class IrrigationManager:
             raise HomeAssistantError(
                 f"Unsupported maintenance bypass checks: {', '.join(sorted(unknown_bypasses))}"
             )
-        if kind not in {"maintenance", "calibration"}:
+        if kind not in {"maintenance", "calibration", "spring_recommission"}:
             raise HomeAssistantError("Unsupported supervised test kind")
+        if water_attribution not in {"zone", "unassigned"}:
+            raise HomeAssistantError("Unsupported maintenance water attribution")
         if kind == "calibration" and bypass_checks:
             raise HomeAssistantError("Calibration cannot bypass measurement checks")
+        if kind == "calibration" and water_attribution != "zone":
+            raise HomeAssistantError("Calibration water must be attributed to its zone")
         async with self._command_lock:
             if not self._is_complete_idle() or self._stored_state.maintenance_test is not None:
                 raise HomeAssistantError("The irrigation installation is busy")
@@ -6422,12 +6955,18 @@ class IrrigationManager:
                     now + timedelta(seconds=min(max_duration, confirmation_interval))
                 ).isoformat(),
                 bypass_checks=tuple(sorted(set(bypass_checks))),
+                water_attribution=water_attribution,
             )
             meter_baseline = await self._meter.read_raw_liters() if self._has_meter else None
             profile = self._effective_zone_profile(subentry.data, now.date())
             self._stored_state = replace(
                 self._stored_state,
                 maintenance_test=test,
+                spring_test_status=(
+                    "in_progress"
+                    if kind == "spring_recommission"
+                    else self._stored_state.spring_test_status
+                ),
                 active_execution=ActiveExecutionState(
                     zone_id=test.zone_id,
                     zone_valve=str(subentry.data[CONF_ZONE_VALVE]),
@@ -6471,6 +7010,7 @@ class IrrigationManager:
                 "test_id": test.test_id,
                 "kind": kind,
                 "bypass_checks": list(test.bypass_checks),
+                "water_attribution": test.water_attribution,
             },
         )
         await self._events.async_critical(
@@ -6638,16 +7178,22 @@ class IrrigationManager:
         result: ExecutionResult,
     ) -> None:
         """Book real water, preserve safety violations, and create a review-only proposal."""
-        if self._stored_state.maintenance_test is None:
+        current_test = self._stored_state.maintenance_test
+        if current_test is None or current_test.test_id != test.test_id:
             return
+        attributed_zone_id = test.zone_id if test.water_attribution == "zone" else None
         zone_totals = dict(self._stored_state.zone_totals_liters)
-        zone_totals[test.zone_id] = zone_totals.get(test.zone_id, 0.0) + result.delivered_liters
+        if attributed_zone_id is not None:
+            zone_totals[test.zone_id] = zone_totals.get(test.zone_id, 0.0) + result.delivered_liters
         qualities = dict(self._stored_state.zone_measurement_quality)
-        qualities[test.zone_id] = result.measurement_quality
+        if attributed_zone_id is not None:
+            qualities[test.zone_id] = result.measurement_quality
         last_delivered = dict(self._stored_state.zone_last_delivered_liters)
-        last_delivered[test.zone_id] = result.delivered_liters
+        if attributed_zone_id is not None:
+            last_delivered[test.zone_id] = result.delivered_liters
         last_duration = dict(self._stored_state.zone_last_duration_seconds)
-        last_duration[test.zone_id] = result.duration_seconds
+        if attributed_zone_id is not None:
+            last_duration[test.zone_id] = result.duration_seconds
         zone_locks = dict(self._stored_state.zone_safety_locks)
         installation_lock = self._stored_state.installation_safety_lock
         if result.safety_scope == "zone" and result.safety_violation:
@@ -6655,20 +7201,27 @@ class IrrigationManager:
         if result.safety_scope == "installation" and result.safety_violation:
             installation_lock = result.safety_violation
         profile = self._effective_zone_profile(subentry.data, datetime.now(UTC).date())
-        deficits, last_effective = self._balance_after_delivery(
-            zone_id=test.zone_id,
-            delivered_liters=result.delivered_liters,
-            effective_delivery=self._crosses_effective_threshold(
-                previous_liters=0.0,
+        deficits, last_effective = (
+            self._balance_after_delivery(
+                zone_id=test.zone_id,
                 delivered_liters=result.delivered_liters,
-                minimum_effective_liters=self._number(
-                    subentry.data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1
+                effective_delivery=self._crosses_effective_threshold(
+                    previous_liters=0.0,
+                    delivered_liters=result.delivered_liters,
+                    minimum_effective_liters=self._number(
+                        subentry.data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1
+                    ),
                 ),
-            ),
-            delivered_at=datetime.now(UTC),
-            area_m2=profile.area_m2,
-            application_efficiency=profile.application_efficiency,
-            maximum_deficit_mm=profile.maximum_deficit_mm,
+                delivered_at=datetime.now(UTC),
+                area_m2=profile.area_m2,
+                application_efficiency=profile.application_efficiency,
+                maximum_deficit_mm=profile.maximum_deficit_mm,
+            )
+            if attributed_zone_id is not None
+            else (
+                dict(self._stored_state.zone_deficit_mm),
+                dict(self._stored_state.zone_last_effective_irrigation),
+            )
         )
         proposal = self._stored_state.calibration_proposal
         successful = (
@@ -6701,6 +7254,21 @@ class IrrigationManager:
             if result.safety_violation
             else "completed"
         )
+        test_history = (
+            *self._stored_state.maintenance_test_history,
+            {
+                "test_id": test.test_id,
+                "kind": test.kind,
+                "zone_id": test.zone_id,
+                "water_attribution": test.water_attribution,
+                "started_at": test.started_at,
+                "ended_at": datetime.now(UTC).isoformat(),
+                "result": reason,
+                "delivered_liters": result.delivered_liters,
+                "duration_seconds": result.duration_seconds,
+                "measurement_quality": result.measurement_quality,
+            },
+        )[-500:]
         self._stored_state = replace(
             self._stored_state,
             installation_total_liters=(
@@ -6714,23 +7282,54 @@ class IrrigationManager:
             installation_safety_lock=installation_lock,
             zone_deficit_mm=deficits,
             zone_last_effective_irrigation=last_effective,
+            unassigned_total_liters=(
+                self._stored_state.unassigned_total_liters
+                + (result.delivered_liters if attributed_zone_id is None else 0.0)
+            ),
+            unassigned_available_liters=(
+                self._stored_state.unassigned_available_liters
+                + (result.delivered_liters if attributed_zone_id is None else 0.0)
+            ),
+            unassigned_measurement_quality=(
+                result.measurement_quality
+                if attributed_zone_id is None
+                else self._stored_state.unassigned_measurement_quality
+            ),
+            unassigned_measurement_origin=(
+                self._measurement_origin(result.measurement_quality)
+                if attributed_zone_id is None
+                else self._stored_state.unassigned_measurement_origin
+            ),
             maintenance_test=None,
             active_execution=None,
             calibration_proposal=proposal,
-            budget_usage_liters=self._budget_usage_after_delivery(
-                self._stored_state.budget_usage_liters,
-                zone_id=test.zone_id,
-                delivered_liters=result.delivered_liters,
-                delivered_at=datetime.now(UTC),
+            budget_usage_liters=(
+                self._budget_usage_after_delivery(
+                    self._stored_state.budget_usage_liters,
+                    zone_id=test.zone_id,
+                    delivered_liters=result.delivered_liters,
+                    delivered_at=datetime.now(UTC),
+                )
+                if attributed_zone_id is not None
+                else dict(self._stored_state.budget_usage_liters)
+            ),
+            maintenance_test_history=test_history,
+            spring_test_status=(
+                "completed"
+                if test.kind == "spring_recommission" and successful
+                else "failed"
+                if test.kind == "spring_recommission"
+                else self._stored_state.spring_test_status
             ),
         )
         self._stored_state = self._with_consumption_record(
             self._with_meter_continuity(self._stored_state),
             amount_liters=result.delivered_liters,
-            zone_id=test.zone_id,
+            zone_id=attributed_zone_id,
             source=test.kind,
             quality=result.measurement_quality,
             warnings=(() if result.safety_violation is None else (result.safety_violation,)),
+            tariff_per_m3=self._optional_float(self._installation_data, CONF_WATER_TARIFF_PER_M3),
         )
         await self._store.async_save(self._stored_state)
         self._watering = False
@@ -6956,6 +7555,15 @@ class IrrigationManager:
         profile = self._effective_zone_profile(subentry.data, datetime.now(UTC).date())
         zone_totals = dict(self._stored_state.zone_totals_liters)
         zone_totals[zone_id] = zone_totals.get(zone_id, 0.0) + amount_liters
+        assigned_cost = (
+            self._stored_state.unassigned_cost
+            * amount_liters
+            / self._stored_state.unassigned_available_liters
+            if self._stored_state.unassigned_available_liters > 0
+            else 0.0
+        )
+        zone_costs = dict(self._stored_state.zone_costs)
+        zone_costs[zone_id] = zone_costs.get(zone_id, 0.0) + assigned_cost
         deficits, last_effective = self._balance_after_delivery(
             zone_id=zone_id,
             delivered_liters=amount_liters,
@@ -6974,6 +7582,8 @@ class IrrigationManager:
         self._stored_state = replace(
             self._stored_state,
             zone_totals_liters=zone_totals,
+            zone_costs=zone_costs,
+            unassigned_cost=max(0.0, self._stored_state.unassigned_cost - assigned_cost),
             unassigned_available_liters=(
                 self._stored_state.unassigned_available_liters - amount_liters
             ),
@@ -7057,6 +7667,85 @@ class IrrigationManager:
             self._execution(selected_request.execution_id) if selected_request is not None else None
         )
         schedule_decisions = self._zone_schedule_decisions(now=dt_util.now())
+        now = dt_util.now()
+        queued = sorted(
+            (
+                request
+                for request in self._stored_state.manual_requests
+                if request.status in {"pending", "soaking", "paused"}
+                and not self._zone_archived(request.zone_id)
+            ),
+            key=lambda request: (
+                datetime.fromisoformat(request.requested_start_at or request.created_at),
+                request.sequence,
+                request.request_id,
+            ),
+        )
+        next_request = queued[0] if queued else None
+        expected_flows: dict[str, float] = {}
+        actual_flows: dict[str, float] = {}
+        deviations: dict[str, float] = {}
+        coverage: dict[str, float] = {}
+        zone_priorities: dict[str, int] = {}
+        zone_status: dict[str, str] = {}
+        for zone in self._zone_configs:
+            zone_id = zone.unique_id or zone.subentry_id
+            expected = self._estimated_flow(zone.data)
+            if expected is not None:
+                expected_flows[zone_id] = expected
+            delivered = self._stored_state.zone_last_delivered_liters.get(zone_id)
+            duration = self._stored_state.zone_last_duration_seconds.get(zone_id)
+            if delivered is not None and duration is not None and duration > 0:
+                actual = delivered * 60 / duration
+                actual_flows[zone_id] = actual
+                if expected is not None and expected > 0:
+                    deviations[zone_id] = (actual - expected) * 100 / expected
+            latest = next(
+                (
+                    execution
+                    for execution in reversed(self._stored_state.irrigation_executions)
+                    if execution.zone_id == zone_id and execution.ended_at is not None
+                ),
+                None,
+            )
+            if latest is not None and latest.target_value > 0:
+                delivered_target = (
+                    latest.delivered_liters
+                    if latest.target_type == "volume"
+                    else latest.delivered_duration_seconds
+                )
+                coverage[zone_id] = min(100.0, delivered_target * 100 / latest.target_value)
+            zone_priorities[zone_id] = int(self._number(zone.data, CONF_ZONE_PRIORITY, 0))
+            zone_status[zone_id] = (
+                "archived"
+                if self._zone_archived(zone_id)
+                else "watering"
+                if active_zone_id == zone_id
+                else "suspended"
+                if self._automatic_suspension_active(zone_id, now)
+                else "safety_lock"
+                if zone_id in self._stored_state.zone_safety_locks
+                else "watering_needed"
+                if any(
+                    planning.zone_id == zone_id and decision.needed
+                    for _, planning, decision in schedule_decisions
+                )
+                else "idle"
+            )
+        maintenance = self.list_maintenance(now=now)
+        maintenance_tasks = cast(list[dict[str, object]], maintenance["tasks"])
+        due_tasks = [task for task in maintenance_tasks if task["overdue"] is True]
+        checklist = cast(list[dict[str, object]], maintenance["spring_checklist"])
+        active_installation_suspension = (
+            self._stored_state.automatic_suspended_until
+            if self._deadline_active(self._stored_state.automatic_suspended_until, now)
+            else None
+        )
+        active_zone_suspensions = {
+            zone_id: deadline
+            for zone_id, deadline in self._stored_state.zone_automatic_suspended_until.items()
+            if self._deadline_active(deadline, now)
+        }
         weather = self._weather_safety()
         self._coordinator.set_snapshot(
             InstallationSnapshot(
@@ -7205,6 +7894,65 @@ class IrrigationManager:
                 zone_hardware_health={
                     key: dict(value) for key, value in self._zone_hardware_health.items()
                 },
+                installation_cost=(
+                    self._stored_state.installation_cost
+                    if self._optional_float(self._installation_data, CONF_WATER_TARIFF_PER_M3)
+                    is not None
+                    else None
+                ),
+                zone_costs=dict(self._stored_state.zone_costs),
+                unassigned_cost=(
+                    self._stored_state.unassigned_cost
+                    if self._optional_float(self._installation_data, CONF_WATER_TARIFF_PER_M3)
+                    is not None
+                    else None
+                ),
+                water_tariff_per_m3=self._optional_float(
+                    self._installation_data, CONF_WATER_TARIFF_PER_M3
+                ),
+                automation_enabled=bool(self._installation_data.get(CONF_AUTOMATION_ENABLED, True)),
+                automatic_suspended_until=active_installation_suspension,
+                zone_automatic_suspended_until=active_zone_suspensions,
+                zone_automation_enabled={
+                    zone.unique_id or zone.subentry_id: bool(
+                        zone.data.get(CONF_AUTOMATION_ENABLED, False)
+                    )
+                    for zone in self._zone_configs
+                },
+                archived_zones=dict(self._stored_state.archived_zones),
+                next_zone_id=next_request.zone_id if next_request is not None else None,
+                next_start_at=(
+                    next_request.requested_start_at or next_request.created_at
+                    if next_request is not None
+                    else None
+                ),
+                zone_status=zone_status,
+                zone_priority=zone_priorities,
+                zone_last_effective_irrigation=dict(
+                    self._stored_state.zone_last_effective_irrigation
+                ),
+                zone_coverage_percent=coverage,
+                zone_expected_flow_l_min=expected_flows,
+                zone_actual_flow_l_min=actual_flows,
+                zone_flow_deviation_percent=deviations,
+                maintenance_due_count=len(due_tasks),
+                maintenance_next_due=(
+                    min(str(task["due"]) for task in maintenance_tasks)
+                    if maintenance_tasks
+                    else None
+                ),
+                spring_checklist_status=(
+                    "not_configured"
+                    if not checklist
+                    else "complete"
+                    if all(item["completed"] is True for item in checklist)
+                    else "incomplete"
+                ),
+                spring_test_status=self._stored_state.spring_test_status,
+                recent_history=tuple(
+                    execution.as_dict()
+                    for execution in self._stored_state.irrigation_executions[-10:]
+                ),
             )
         )
         self._refresh_complete_idle_event()

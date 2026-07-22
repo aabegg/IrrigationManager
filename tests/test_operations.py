@@ -1,6 +1,7 @@
 """Operational events, diagnostics, export, and reconciliation tests."""
 
 from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
 
 import pytest
@@ -239,6 +240,141 @@ async def test_import_config_service_requires_admin_user(hass: HomeAssistant) ->
         )
 
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("service", "data"),
+    [
+        ("archive_zone", {"zone_subentry_id": "subentry-1"}),
+        ("restore_zone", {"zone_subentry_id": "subentry-1"}),
+        ("suspend_automatic", {"until": datetime.now(UTC) + timedelta(hours=1)}),
+        ("resume_automatic", {}),
+        ("complete_maintenance_task", {"task_id": "filter"}),
+        (
+            "snooze_maintenance_task",
+            {"task_id": "filter", "until": date.today() + timedelta(days=1)},
+        ),
+        (
+            "update_spring_checklist",
+            {"item_id": "valves", "completed": True},
+        ),
+        ("set_winter_lock", {}),
+        ("clear_winter_lock", {}),
+        (
+            "start_maintenance_test",
+            {
+                "zone_subentry_id": "subentry-1",
+                "duration": 1,
+                "kind": "spring_recommission",
+            },
+        ),
+        ("confirm_maintenance_test", {"test_id": "test-1"}),
+        ("stop_maintenance_test", {}),
+    ],
+)
+async def test_lifecycle_mutations_require_admin(
+    hass: HomeAssistant, service: str, data: dict[str, object]
+) -> None:
+    """Reject every configuration and lifecycle mutation from a non-admin user."""
+    entry, _ = await _setup_installation(hass)
+    user = MockUser().add_to_hass(hass)
+
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            service,
+            {"config_entry_id": entry.entry_id, **data},
+            blocking=True,
+            context=Context(user_id=user.id),
+        )
+
+
+async def test_admin_can_suspend_and_resume_automatic_irrigation(
+    hass: HomeAssistant,
+) -> None:
+    """Allow lifecycle controls for an authenticated administrator."""
+    entry, _ = await _setup_installation(hass)
+    user = MockUser(is_owner=True).add_to_hass(hass)
+    context = Context(user_id=user.id)
+
+    await hass.services.async_call(
+        DOMAIN,
+        "suspend_automatic",
+        {
+            "config_entry_id": entry.entry_id,
+            "until": datetime.now(UTC) + timedelta(hours=1),
+        },
+        blocking=True,
+        context=context,
+    )
+    await hass.services.async_call(
+        DOMAIN,
+        "resume_automatic",
+        {"config_entry_id": entry.entry_id},
+        blocking=True,
+        context=context,
+    )
+    assert entry.runtime_data.manager._stored_state.automatic_suspended_until is None
+
+
+async def test_manual_irrigation_requires_control_permission_for_its_valve(
+    hass: HomeAssistant,
+) -> None:
+    """Use normal entity permissions for runtime watering without requiring admin."""
+    entry, subentry = await _setup_installation(hass)
+    denied = MockUser().add_to_hass(hass)
+
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            "start_manual",
+            {
+                "config_entry_id": entry.entry_id,
+                "zone_subentry_id": subentry.subentry_id,
+                "duration": 0.001,
+            },
+            blocking=True,
+            context=Context(user_id=denied.id),
+        )
+
+    allowed = MockUser().add_to_hass(hass)
+    allowed.mock_policy({"entities": True})
+    await hass.services.async_call(
+        DOMAIN,
+        "start_manual",
+        {
+            "config_entry_id": entry.entry_id,
+            "zone_subentry_id": subentry.subentry_id,
+            "duration": 0.001,
+        },
+        blocking=True,
+        context=Context(user_id=allowed.id),
+    )
+
+
+async def test_generic_stop_cannot_bypass_maintenance_admin_requirement(
+    hass: HomeAssistant,
+) -> None:
+    """Keep supervised-test lifecycle protection on the generic stop path."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    user = MockUser().add_to_hass(hass)
+    await manager.async_start_maintenance_test(
+        zone_subentry_id=subentry.subentry_id,
+        duration_seconds=1,
+    )
+
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            "stop",
+            {"config_entry_id": entry.entry_id},
+            blocking=True,
+            context=Context(user_id=user.id),
+        )
+
+    assert manager.maintenance_test_active is True
+    await manager.async_stop_maintenance_test()
 
 
 async def test_import_hash_covers_source_and_current_target_zone(hass: HomeAssistant) -> None:

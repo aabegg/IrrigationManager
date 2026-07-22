@@ -305,6 +305,7 @@ class WaterConsumptionRecord:
     execution_id: str | None = None
     dose_number: int | None = None
     warnings: tuple[str, ...] = ()
+    cost: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> WaterConsumptionRecord:
@@ -332,6 +333,7 @@ class WaterConsumptionRecord:
             execution_id=cast(str | None, optional_strings[2]),
             dose_number=dose_number,
             warnings=_stored_string_tuple(data, "warnings"),
+            cost=_optional_stored_float(data, "cost"),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -346,6 +348,7 @@ class WaterConsumptionRecord:
             "execution_id": self.execution_id,
             "dose_number": self.dose_number,
             "warnings": list(self.warnings),
+            "cost": self.cost,
         }
 
 
@@ -451,6 +454,29 @@ class InstallationSnapshot:
     zone_effective_profiles: dict[str, dict[str, object]] = field(default_factory=dict)
     zone_soil_moisture: dict[str, dict[str, object]] = field(default_factory=dict)
     zone_hardware_health: dict[str, dict[str, object]] = field(default_factory=dict)
+    installation_cost: float | None = None
+    zone_costs: dict[str, float] = field(default_factory=dict)
+    unassigned_cost: float | None = None
+    water_tariff_per_m3: float | None = None
+    automation_enabled: bool = True
+    automatic_suspended_until: str | None = None
+    zone_automatic_suspended_until: dict[str, str] = field(default_factory=dict)
+    zone_automation_enabled: dict[str, bool] = field(default_factory=dict)
+    archived_zones: dict[str, str] = field(default_factory=dict)
+    next_zone_id: str | None = None
+    next_start_at: str | None = None
+    zone_status: dict[str, str] = field(default_factory=dict)
+    zone_priority: dict[str, int] = field(default_factory=dict)
+    zone_last_effective_irrigation: dict[str, str] = field(default_factory=dict)
+    zone_coverage_percent: dict[str, float] = field(default_factory=dict)
+    zone_expected_flow_l_min: dict[str, float] = field(default_factory=dict)
+    zone_actual_flow_l_min: dict[str, float] = field(default_factory=dict)
+    zone_flow_deviation_percent: dict[str, float] = field(default_factory=dict)
+    maintenance_due_count: int = 0
+    maintenance_next_due: str | None = None
+    spring_checklist_status: str = "not_configured"
+    spring_test_status: str = "not_started"
+    recent_history: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,6 +616,7 @@ class MaintenanceTestState:
     expires_at: str
     confirmation_deadline: str
     bypass_checks: tuple[str, ...] = ()
+    water_attribution: str = "zone"
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> MaintenanceTestState:
@@ -619,6 +646,7 @@ class MaintenanceTestState:
             expires_at=str(data["expires_at"]),
             confirmation_deadline=str(data["confirmation_deadline"]),
             bypass_checks=tuple(raw_bypass),
+            water_attribution=str(data.get("water_attribution", "zone")),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -632,6 +660,7 @@ class MaintenanceTestState:
             "expires_at": self.expires_at,
             "confirmation_deadline": self.confirmation_deadline,
             "bypass_checks": list(self.bypass_checks),
+            "water_attribution": self.water_attribution,
         }
 
 
@@ -739,6 +768,18 @@ class StoredInstallationState:
     meter_source_liters_per_count: float | None = None
     water_consumption_history: tuple[WaterConsumptionRecord, ...] = ()
     water_history_incomplete: bool = False
+    installation_cost: float = 0.0
+    zone_costs: dict[str, float] = field(default_factory=dict)
+    unassigned_cost: float = 0.0
+    archived_zones: dict[str, str] = field(default_factory=dict)
+    automatic_suspended_until: str | None = None
+    zone_automatic_suspended_until: dict[str, str] = field(default_factory=dict)
+    maintenance_task_state: dict[str, dict[str, object]] = field(default_factory=dict)
+    maintenance_history: tuple[dict[str, object], ...] = ()
+    maintenance_test_history: tuple[dict[str, object], ...] = ()
+    spring_checklist_completed: tuple[str, ...] = ()
+    spring_test_status: str = "not_started"
+    winter_reminder_last_year: int | None = None
 
     @staticmethod
     def _float(value: object) -> float:
@@ -878,6 +919,39 @@ class StoredInstallationState:
         water_history_incomplete = data.get("water_history_incomplete", False)
         if not isinstance(water_history_incomplete, bool):
             raise ValueError("Stored water history quality is malformed")
+        raw_zone_costs = data.get("zone_costs", {})
+        raw_archived_zones = data.get("archived_zones", {})
+        raw_zone_suspensions = data.get("zone_automatic_suspended_until", {})
+        raw_task_state = data.get("maintenance_task_state", {})
+        automatic_suspended_until = data.get("automatic_suspended_until")
+        spring_test_status = data.get("spring_test_status", "not_started")
+        winter_reminder_last_year = data.get("winter_reminder_last_year")
+        if not isinstance(raw_zone_costs, dict):
+            raise ValueError("Stored zone costs are malformed")
+        if not isinstance(raw_archived_zones, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_archived_zones.items()
+        ):
+            raise ValueError("Stored archived zones are malformed")
+        if not isinstance(raw_zone_suspensions, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_zone_suspensions.items()
+        ):
+            raise ValueError("Stored zone suspensions are malformed")
+        if not isinstance(raw_task_state, dict) or not all(
+            isinstance(key, str) and isinstance(value, dict)
+            for key, value in raw_task_state.items()
+        ):
+            raise ValueError("Stored maintenance task state is malformed")
+        if automatic_suspended_until is not None and not isinstance(automatic_suspended_until, str):
+            raise ValueError("Stored installation suspension is malformed")
+        if not isinstance(spring_test_status, str):
+            raise ValueError("Stored spring test status is malformed")
+        if winter_reminder_last_year is not None and (
+            isinstance(winter_reminder_last_year, bool)
+            or not isinstance(winter_reminder_last_year, int)
+        ):
+            raise ValueError("Stored winter reminder year is malformed")
         return cls(
             installation_total_liters=cls._float(data.get("installation_total_liters", 0.0)),
             zone_totals_liters=zone_totals,
@@ -948,6 +1022,20 @@ class StoredInstallationState:
                 WaterConsumptionRecord.from_dict(value) for value in raw_consumption_history
             ),
             water_history_incomplete=water_history_incomplete,
+            installation_cost=cls._float(data.get("installation_cost", 0.0)),
+            zone_costs={str(key): cls._float(value) for key, value in raw_zone_costs.items()},
+            unassigned_cost=cls._float(data.get("unassigned_cost", 0.0)),
+            archived_zones=dict(raw_archived_zones),
+            automatic_suspended_until=automatic_suspended_until,
+            zone_automatic_suspended_until=dict(raw_zone_suspensions),
+            maintenance_task_state={
+                str(key): deepcopy(value) for key, value in raw_task_state.items()
+            },
+            maintenance_history=_stored_object_tuple(data, "maintenance_history"),
+            maintenance_test_history=_stored_object_tuple(data, "maintenance_test_history"),
+            spring_checklist_completed=_stored_string_tuple(data, "spring_checklist_completed"),
+            spring_test_status=spring_test_status,
+            winter_reminder_last_year=winter_reminder_last_year,
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -1006,4 +1094,18 @@ class StoredInstallationState:
                 record.as_dict() for record in self.water_consumption_history
             ],
             "water_history_incomplete": self.water_history_incomplete,
+            "installation_cost": self.installation_cost,
+            "zone_costs": self.zone_costs,
+            "unassigned_cost": self.unassigned_cost,
+            "archived_zones": self.archived_zones,
+            "automatic_suspended_until": self.automatic_suspended_until,
+            "zone_automatic_suspended_until": self.zone_automatic_suspended_until,
+            "maintenance_task_state": self.maintenance_task_state,
+            "maintenance_history": [deepcopy(value) for value in self.maintenance_history],
+            "maintenance_test_history": [
+                deepcopy(value) for value in self.maintenance_test_history
+            ],
+            "spring_checklist_completed": list(self.spring_checklist_completed),
+            "spring_test_status": self.spring_test_status,
+            "winter_reminder_last_year": self.winter_reminder_last_year,
         }

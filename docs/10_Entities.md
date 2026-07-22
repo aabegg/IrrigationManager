@@ -2,6 +2,10 @@
 
 Exakte Entity IDs werden aus stabilen Unique IDs erzeugt und sind nicht Teil des fachlichen Vertrags. Kernwerte sind standardmäßig aktiv; technische Diagnosewerte standardmäßig deaktiviert.
 
+Die Implementierung veröffentlicht nur Werte aus Konfiguration, persistentem Accounting,
+Schedulerentscheidungen oder abgeschlossenen Vorgängen. Fehlende Mess- oder Historienwerte
+bleiben `unknown`; es werden keine Ersatzwerte nur für die Anzeige erzeugt.
+
 ## Gerätetopologie
 
 - ein Home-Assistant-Gerät pro Bewässerungsanlage
@@ -36,6 +40,10 @@ Exakte Entity IDs werden aus stabilen Unique IDs erzeugt und sind nicht Teil des
 - physischer korrigierter Zählerstand
 - optionale Kosten
 
+Bei konfiguriertem Tarif werden kumulative Anlagen- und Zonenkosten mit dem zum
+Lieferzeitpunkt gültigen Preis fortgeschrieben. Eine Tarifänderung bewertet historische
+Lieferungen nicht rückwirkend neu.
+
 Gesamt-, Zonen- und unzugeordnete Verbrauchssensoren sind monotone
 `total_increasing`-Wassersensoren in Litern. `Heute`, `Woche`, `Monat` und `Jahr`
 sind abgeleitete Periodensensoren. Aktueller Durchfluss, korrigierter physischer
@@ -50,6 +58,9 @@ Zählerstand und Messqualität werden separat veröffentlicht.
 - Trockenlauf
 - Winterstatus setzen beziehungsweise freigeben
 - Anlagenprüflauf starten
+- Automatik global bis zu einem Zeitpunkt aussetzen oder ausdrücklich fortsetzen
+- fällige Wartungsaufgaben auflisten, abschließen oder verschieben
+- Punkte der Frühjahrs-Inbetriebnahmecheckliste bestätigen
 
 ## Zone
 
@@ -97,6 +108,30 @@ Zählerstand und Messqualität werden separat veröffentlicht.
 - einmal überspringen
 - Bilanz korrigieren
 - Kalibrierung starten
+- Zone im vollständigen Leerlauf archivieren oder wiederherstellen
+- Zonenautomatik bis zu einem Zeitpunkt aussetzen oder ausdrücklich fortsetzen
+
+## Produktionszuordnung der Kernentities
+
+Die folgenden stabilen Unique-ID-Suffixe konkretisieren den Vertrag. Die daraus durch
+Home Assistant erzeugte Entity ID bleibt weiterhin umbenennbar:
+
+| Vertrag | Unique-ID-Suffix / Quelle |
+| --- | --- |
+| globale Automatikfreigabe | `automation_release`; Konfiguration plus aktive Aussetzung |
+| nächste Zone / nächster Start | `next_zone`, `next_start`; nächster persistenter Auftrag |
+| offene Aufträge | `pending_requests`; offene persistente Aufträge einschließlich Sickerpause |
+| Zonenstatus / Priorität | `zone_status`, `zone_priority`; Runtime und Zonenkonfiguration |
+| letzte wirksame Bewässerung | `last_effective_irrigation`; persistente Wasserbilanz |
+| Bedarfsdeckung | `demand_coverage`; letzter abgeschlossener Vorgang gegen sein unveränderliches Ziel |
+| erwarteter / tatsächlicher Durchfluss | `expected_flow`, `actual_flow`; Profilmittel bzw. gelieferte Menge pro Lieferdauer |
+| Durchflussabweichung | `flow_deviation`; tatsächlicher gegen erwarteten Durchfluss |
+| optionale Kosten | `water_cost`; Tarif-am-Lieferzeitpunkt-Accounting |
+| Archivstatus | `archived`; persistenter Zonenlebenszyklus bei unveränderlicher Geräteidentität |
+
+Die Zonenkarte kann diese Entities sowie die reale Kurz-Historie der kumulativen
+Zonenverbrauchsentity anzeigen. Die Übersichtskarte kann Winter-, Wartungs- und
+Aussetzungsstatus sowie fällige Wartung darstellen.
 
 ## Technische Diagnoseentities
 
@@ -110,6 +145,10 @@ Standardmäßig deaktiviert:
 - Vorabschaltung und Nachlauf
 - Teilflächenbeiträge zum effektiven Profil
 - Sperr- und Preflight-Details
+
+Diagnoseentities setzen `entity_registry_enabled_default = false`. Kernentities wie
+Status, Bilanz, Planung, Verbrauch, Kosten und die vertraglichen Durchflusswerte bleiben
+standardmäßig aktiv.
 
 ## Kalender
 

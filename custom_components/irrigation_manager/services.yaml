@@ -524,6 +524,22 @@ start_maintenance_test:
             - flow
             - weather
             - external
+    kind:
+      required: false
+      default: maintenance
+      selector:
+        select:
+          options:
+            - maintenance
+            - spring_recommission
+    water_attribution:
+      required: false
+      default: zone
+      selector:
+        select:
+          options:
+            - zone
+            - unassigned
 confirm_maintenance_test:
   fields:
     config_entry_id:
@@ -628,3 +644,68 @@ copy_profile:
       required: false
       selector:
         text:
+archive_zone:
+  fields:
+    config_entry_id: &installation
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id: &zone
+      required: true
+      selector:
+        text:
+restore_zone:
+  fields:
+    config_entry_id: *installation
+    zone_subentry_id: *zone
+suspend_automatic:
+  fields:
+    config_entry_id: *installation
+    zone_subentry_id:
+      required: false
+      selector:
+        text:
+    until:
+      required: true
+      selector:
+        datetime:
+resume_automatic:
+  fields:
+    config_entry_id: *installation
+    zone_subentry_id:
+      required: false
+      selector:
+        text:
+list_maintenance:
+  fields:
+    config_entry_id: *installation
+complete_maintenance_task:
+  fields:
+    config_entry_id: *installation
+    task_id:
+      required: true
+      selector:
+        text:
+snooze_maintenance_task:
+  fields:
+    config_entry_id: *installation
+    task_id:
+      required: true
+      selector:
+        text:
+    until:
+      required: true
+      selector:
+        date:
+update_spring_checklist:
+  fields:
+    config_entry_id: *installation
+    item_id:
+      required: true
+      selector:
+        text:
+    completed:
+      required: true
+      selector:
+        boolean:

@@ -113,6 +113,7 @@ async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant
     hass.config_entries.async_add_subentry(entry, zone)
 
     assert await async_migrate_entry(hass, entry)
-    assert entry.minor_version == 4
+    assert entry.minor_version == 5
+    assert entry.data["automation_enabled"] is True
     assert entry.data["external_failure_policy"] == "fail_safe"
     assert entry.subentries["zone-1"].data["external_failure_policy"] == "fail_safe"

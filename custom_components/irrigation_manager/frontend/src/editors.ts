@@ -18,6 +18,10 @@ const overviewFields = [
   ["today_consumption_entity", "Today's consumption"],
   ["month_consumption_entity", "Monthly consumption"],
   ["model_quality_entity", "Model quality"],
+  ["winter_entity", "Winter lock"],
+  ["maintenance_entity", "Maintenance mode"],
+  ["automation_release_entity", "Automatic release"],
+  ["maintenance_due_entity", "Maintenance due"],
 ] as const;
 
 const zoneFields = [
@@ -33,6 +37,14 @@ const zoneFields = [
   ["last_delivered_entity", "Last delivered amount"],
   ["last_duration_entity", "Last duration"],
   ["quality_entity", "Measurement quality"],
+  ["status_entity", "Zone status"],
+  ["automation_release_entity", "Automatic release"],
+  ["archived_entity", "Archived"],
+  ["coverage_entity", "Demand coverage"],
+  ["expected_flow_entity", "Expected flow"],
+  ["actual_flow_entity", "Actual flow"],
+  ["flow_deviation_entity", "Flow deviation"],
+  ["calculation_entity", "Calculation"],
 ] as const;
 
 const germanLabels: Record<string, string> = {
@@ -59,10 +71,10 @@ const germanLabels: Record<string, string> = {
   "Measurement quality": "Messqualität",
 };
 
-const overviewMetrics = ["active", "pending", "next", "today", "month", "quality"];
-const overviewActions = ["stop", "emergency"];
-const zoneMetrics = ["balance", "next", "total", "recent", "quality"];
-const zoneActions = ["create", "start", "pause", "resume", "stop", "stop_skip"];
+const overviewMetrics = ["active", "pending", "next", "today", "month", "quality", "maintenance"];
+const overviewActions = ["stop", "emergency", "suspend", "resume"];
+const zoneMetrics = ["status", "balance", "next", "total", "recent", "quality", "calculation", "flow", "history"];
+const zoneActions = ["create", "start", "pause", "resume", "stop", "stop_skip", "suspend", "resume_auto", "archive", "restore"];
 
 abstract class BaseEditor<T extends CardConfig> extends LitElement {
   static styles = editorStyles;

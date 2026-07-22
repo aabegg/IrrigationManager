@@ -28,6 +28,8 @@ from custom_components.irrigation_manager.weather import DailyWeather, RainForec
 
 async def _setup_automatic_zone(
     hass: HomeAssistant,
+    *,
+    watering_windows: list[str] | None = None,
 ) -> tuple[MockConfigEntry, ConfigSubentry]:
     async def turn_off(call) -> None:
         hass.states.async_set(call.data["entity_id"], STATE_OFF)
@@ -64,7 +66,7 @@ async def _setup_automatic_zone(
                 "maximum_target_liters": 100,
                 "automatic_max_duration": 3600,
                 "zone_priority": 1,
-                "watering_windows": ["03:00-05:00", "22:00-02:00"],
+                "watering_windows": watering_windows or ["03:00-05:00", "22:00-02:00"],
             }
         ),
         subentry_id="subentry-lawn",
@@ -119,6 +121,52 @@ async def test_automatic_planning_is_idempotent_across_repeated_persisted_plans(
     assert automatic[0].request_id == "automatic:zone-lawn:2026-07-21T03:00:00+00:00"
     assert first["created_request_ids"] == [automatic[0].request_id]
     assert second["created_request_ids"] == []
+
+
+async def test_zone_suspension_expiry_replans_inside_active_window_without_resume(
+    hass: HomeAssistant,
+) -> None:
+    """Wake at a durable suspension deadline and create its opportunity only once."""
+    entry, subentry = await _setup_automatic_zone(hass, watering_windows=["00:00-23:59"])
+    manager = entry.runtime_data.manager
+    now = dt_util.now()
+    _make_zone_due(entry, now)
+    deadline = datetime.now(UTC) + timedelta(milliseconds=100)
+    await manager.async_suspend_automatic(until=deadline, zone_subentry_id=subentry.subentry_id)
+
+    manager._queue_event.clear()
+    manager._automatic_planner_task = hass.async_create_task(manager._async_automatic_planner())
+    await asyncio.wait_for(manager._queue_event.wait(), timeout=2)
+
+    await asyncio.sleep(0.1)
+    automatic = [
+        request
+        for request in manager._stored_state.manual_requests
+        if request.source == "automatic"
+    ]
+    assert len(automatic) == 1
+    assert manager._stored_state.zone_automatic_suspended_until["zone-lawn"] == (
+        deadline.isoformat()
+    )
+    await _stop_background_planning(entry)
+
+
+async def test_next_automatic_change_includes_global_and_zone_suspensions(
+    hass: HomeAssistant,
+) -> None:
+    """Choose the earliest relevant suspension even when no window changes then."""
+    entry, _ = await _setup_automatic_zone(hass, watering_windows=["00:00-23:59"])
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
+    manager._stored_state = replace(
+        manager._stored_state,
+        automatic_suspended_until=(now + timedelta(seconds=20)).isoformat(),
+        zone_automatic_suspended_until={"zone-lawn": (now + timedelta(seconds=10)).isoformat()},
+    )
+    with patch("custom_components.irrigation_manager.manager.dt_util.now", return_value=now):
+        assert manager._seconds_until_next_automatic_change() == pytest.approx(10)
+        manager._stored_state = replace(manager._stored_state, zone_automatic_suspended_until={})
+        assert manager._seconds_until_next_automatic_change() == pytest.approx(20)
 
 
 async def test_restart_does_not_duplicate_a_persisted_window_opportunity(

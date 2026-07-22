@@ -104,7 +104,9 @@
         "config_entry_id": {"name": "Irrigation installation"},
         "zone_subentry_id": {"name": "Irrigation zone"},
         "duration": {"name": "Hard test duration"},
-        "bypass_checks": {"name": "Bypassed checks", "description": "Only selected implemented sensor checks are bypassed. Valve feedback and exclusivity remain mandatory."}
+        "bypass_checks": {"name": "Bypassed checks", "description": "Only selected implemented sensor checks are bypassed. Valve feedback and exclusivity remain mandatory."},
+        "kind": {"name": "Test purpose"},
+        "water_attribution": {"name": "Water attribution", "description": "Attribute measured water to the selected zone or to unassigned consumption."}
       }
     },
     "confirm_maintenance_test": {"name": "Confirm maintenance supervision", "description": "Refresh the dead-man deadline without extending the fixed test timeout."},
@@ -122,7 +124,15 @@
     "resolve_calibration": {"name": "Resolve calibration proposal", "description": "Explicitly accept or discard a pending calibration proposal."},
     "list_profiles": {"name": "List irrigation profiles", "description": "Return versioned immutable built-ins and user-owned profile copies.", "fields": {"config_entry_id": {"name": "Irrigation installation"}}},
     "preview_profile_impact": {"name": "Preview profile impact", "description": "Return every irrigation zone affected by a profile change.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "profile_id": {"name": "Profile ID"}}},
-    "copy_profile": {"name": "Copy irrigation profile", "description": "Create an editable user-owned copy without modifying its built-in source.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "source_profile_id": {"name": "Source profile ID"}, "new_profile_id": {"name": "New profile ID"}, "name": {"name": "Name"}, "config_hash": {"name": "Expected profile configuration hash"}}}
+    "copy_profile": {"name": "Copy irrigation profile", "description": "Create an editable user-owned copy without modifying its built-in source.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "source_profile_id": {"name": "Source profile ID"}, "new_profile_id": {"name": "New profile ID"}, "name": {"name": "Name"}, "config_hash": {"name": "Expected profile configuration hash"}}},
+    "archive_zone": {"name": "Archive irrigation zone", "description": "Archive an idle zone while retaining its device identity, history, statistics, and accounting."},
+    "restore_zone": {"name": "Restore irrigation zone", "description": "Restore an archived zone at safe idle."},
+    "suspend_automatic": {"name": "Suspend automatic irrigation", "description": "Suspend automatic irrigation globally or for one zone until a timestamp."},
+    "resume_automatic": {"name": "Resume automatic irrigation", "description": "Clear a global or zone automatic suspension immediately."},
+    "list_maintenance": {"name": "List irrigation maintenance", "description": "Return recurring tasks, due dates, history, and spring recommission status."},
+    "complete_maintenance_task": {"name": "Complete maintenance task", "description": "Complete a recurring task and calculate its next due date."},
+    "snooze_maintenance_task": {"name": "Snooze maintenance task", "description": "Delay one task while retaining its original due date and history."},
+    "update_spring_checklist": {"name": "Update spring checklist", "description": "Confirm or reopen one configured recommission checklist item."}
   },
   "selector": {
     "meter_failure_strategy": {
@@ -195,6 +205,12 @@
       },
       "wind_interlock": {
         "name": "Strong-wind interlock"
+      },
+      "automation_release": {
+        "name": "Automatic release"
+      },
+      "archived": {
+        "name": "Archived"
       }
     },
     "sensor": {
@@ -269,7 +285,18 @@
       "crop_evapotranspiration": {"name": "Crop evapotranspiration"},
       "effective_rain": {"name": "Effective rain"},
       "soil_moisture_status": {"name": "Soil moisture status", "state": {"not_configured": "Not configured", "valid": "Valid", "partial": "Partially valid", "unavailable": "Unavailable"}},
-      "hardware_health": {"name": "Valve hardware health", "state": {"not_configured": "Not configured", "healthy": "Healthy", "blocked": "Blocked"}}
+      "hardware_health": {"name": "Valve hardware health", "state": {"not_configured": "Not configured", "healthy": "Healthy", "blocked": "Blocked"}},
+      "next_zone": {"name": "Next zone"},
+      "next_start": {"name": "Next planned start"},
+      "maintenance_due": {"name": "Maintenance tasks due"},
+      "water_cost": {"name": "Water cost"},
+      "zone_status": {"name": "Status", "state": {"idle": "Idle", "watering_needed": "Watering needed", "watering": "Watering", "suspended": "Suspended", "safety_lock": "Safety lock", "archived": "Archived"}},
+      "zone_priority": {"name": "Priority"},
+      "last_effective_irrigation": {"name": "Last effective irrigation"},
+      "demand_coverage": {"name": "Demand coverage"},
+      "expected_flow": {"name": "Expected flow"},
+      "actual_flow": {"name": "Actual flow"},
+      "flow_deviation": {"name": "Flow deviation"}
     }
   },
   "config": {
@@ -332,6 +359,11 @@
           ,"installation_weekly_budget_liters": "Weekly installation budget"
           ,"pause_timeout_seconds": "Maximum pause duration"
           ,"custom_profiles": "User-owned profile copies"
+          ,"water_tariff_per_m3": "Water tariff per m³"
+          ,"automation_enabled": "Global automatic release"
+          ,"winter_reminder_date": "Winter reminder date (MM-DD)"
+          ,"maintenance_tasks": "Recurring maintenance tasks"
+          ,"spring_checklist": "Spring recommission checklist"
         },
         "data_description": {
           "main_valve": "Optional switch or valve that isolates the complete installation.",
@@ -427,6 +459,11 @@
           ,"installation_weekly_budget_liters": "Weekly installation budget"
           ,"pause_timeout_seconds": "Maximum pause duration"
           ,"custom_profiles": "User-owned profile copies"
+          ,"water_tariff_per_m3": "Water tariff per m³"
+          ,"automation_enabled": "Global automatic release"
+          ,"winter_reminder_date": "Winter reminder date (MM-DD)"
+          ,"maintenance_tasks": "Recurring maintenance tasks"
+          ,"spring_checklist": "Spring recommission checklist"
         },
         "data_description": {
           "local_wind_height_m": "Defaults to 2 m for local garden sensors; set their actual physical height.",
@@ -531,6 +568,7 @@
       "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
       ,"wind_interlock_requires_source_and_threshold": "Wind source and threshold must be configured together."
       ,"invalid_import": "The portable file, version, entity mappings, or zone mappings are invalid."
+      ,"invalid_maintenance_configuration": "Use a valid MM-DD reminder date, unique task/checklist IDs, ISO due dates, and positive recurrence intervals."
     }
   },
   "config_subentries": {

@@ -12,13 +12,19 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfLength, UnitOfTime, UnitOfVolume, UnitOfVolumeFlowRate
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfLength,
+    UnitOfTime,
+    UnitOfVolume,
+    UnitOfVolumeFlowRate,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, INTEGRATION_NAME, SUBENTRY_TYPE_ZONE
+from .const import CONF_WATER_TARIFF_PER_M3, DOMAIN, INTEGRATION_NAME, SUBENTRY_TYPE_ZONE
 from .coordinator import IrrigationCoordinator
 from .models import InstallationSnapshot
 from .runtime import IrrigationConfigEntry
@@ -141,6 +147,42 @@ async def async_setup_entry(
                 installation_id=installation_id,
                 key="measured_rain",
             ),
+            InstallationNextSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                zone_names={
+                    (subentry.unique_id or subentry.subentry_id): subentry.title
+                    for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+                },
+                key="next_zone",
+            ),
+            InstallationNextSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                zone_names={},
+                key="next_start",
+            ),
+            MaintenanceSummarySensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+            ),
+            *(
+                [
+                    IrrigationCostSensor(
+                        coordinator=entry.runtime_data.coordinator,
+                        entry=entry,
+                        installation_id=installation_id,
+                        zone_id=None,
+                        zone_name=None,
+                        currency=hass.config.currency,
+                    )
+                ]
+                if CONF_WATER_TARIFF_PER_M3 in entry.data
+                else []
+            ),
         ]
     )
 
@@ -249,6 +291,39 @@ async def async_setup_entry(
                     zone_id=zone_id,
                     zone_name=subentry.title,
                     key="hardware_health",
+                ),
+                *[
+                    ZoneContractSensor(
+                        coordinator=entry.runtime_data.coordinator,
+                        entry=entry,
+                        installation_id=installation_id,
+                        zone_id=zone_id,
+                        zone_name=subentry.title,
+                        key=key,
+                    )
+                    for key in (
+                        "zone_status",
+                        "zone_priority",
+                        "last_effective_irrigation",
+                        "demand_coverage",
+                        "expected_flow",
+                        "actual_flow",
+                        "flow_deviation",
+                    )
+                ],
+                *(
+                    [
+                        IrrigationCostSensor(
+                            coordinator=entry.runtime_data.coordinator,
+                            entry=entry,
+                            installation_id=installation_id,
+                            zone_id=zone_id,
+                            zone_name=subentry.title,
+                            currency=hass.config.currency,
+                        )
+                    ]
+                    if CONF_WATER_TARIFF_PER_M3 in entry.data
+                    else []
                 ),
             ],
             config_subentry_id=subentry.subentry_id,
@@ -450,7 +525,10 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
     @override
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose the native-action installation identifier."""
-        return {"config_entry_id": self._config_entry_id}
+        return {
+            "config_entry_id": self._config_entry_id,
+            "recent_history": list(self.coordinator.data.recent_history),
+        }
 
 
 class WeatherModelSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
@@ -520,6 +598,145 @@ class WeatherModelSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity)
             "last_finalized_at": snapshot.weather_last_finalized_at,
             "automation_available": snapshot.weather_automation_available,
             "rain_forecast": snapshot.rain_forecast,
+        }
+
+
+class InstallationNextSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Expose the next queued zone and its production-derived expected start."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_names: dict[str, str],
+        key: str,
+    ) -> None:
+        """Initialize one next-zone or next-start entity."""
+        super().__init__(coordinator)
+        self._key = key
+        self._zone_names = zone_names
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{installation_id}_{key}"
+        if key == "next_start":
+            self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> datetime | str | None:
+        snapshot = self.coordinator.data
+        if self._key == "next_start":
+            return (
+                datetime.fromisoformat(snapshot.next_start_at) if snapshot.next_start_at else None
+            )
+        return self._zone_names.get(snapshot.next_zone_id) if snapshot.next_zone_id else None
+
+
+class MaintenanceSummarySensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Expose real recurring-maintenance and spring recommission state."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "maintenance_due"
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+    ) -> None:
+        """Initialize the installation maintenance summary."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{installation_id}_maintenance_due"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> int:
+        return self.coordinator.data.maintenance_due_count
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, object]:
+        snapshot = self.coordinator.data
+        return {
+            "next_due": snapshot.maintenance_next_due,
+            "spring_checklist_status": snapshot.spring_checklist_status,
+            "spring_test_status": snapshot.spring_test_status,
+        }
+
+
+class IrrigationCostSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Expose tariff-at-delivery cumulative cost without repricing history."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "water_cost"
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 2
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_id: str | None,
+        zone_name: str | None,
+        currency: str,
+    ) -> None:
+        """Initialize one installation or zone cumulative-cost sensor."""
+        super().__init__(coordinator)
+        self._zone_id = zone_id
+        self._attr_native_unit_of_measurement = currency
+        self._attr_unique_id = f"{zone_id or installation_id}_water_cost"
+        if zone_id is None:
+            self._attr_device_info = DeviceInfo(
+                identifiers={(DOMAIN, installation_id)},
+                name=entry.title,
+                manufacturer=INTEGRATION_NAME,
+                model="Irrigation installation",
+            )
+        else:
+            self._attr_device_info = DeviceInfo(
+                identifiers={(DOMAIN, zone_id)},
+                name=zone_name,
+                manufacturer=INTEGRATION_NAME,
+                model="Irrigation zone",
+                via_device=(DOMAIN, installation_id),
+            )
+
+    @property
+    @override
+    def native_value(self) -> Decimal | None:
+        snapshot = self.coordinator.data
+        value = (
+            snapshot.installation_cost
+            if self._zone_id is None
+            else snapshot.zone_costs.get(self._zone_id, 0.0)
+        )
+        return Decimal(str(value)) if value is not None else None
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, object]:
+        return {
+            "tariff_per_m3": self.coordinator.data.water_tariff_per_m3,
+            "tariff_applied_at_delivery": True,
         }
 
 
@@ -682,6 +899,11 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
                 self._zone_id, "unknown"
             ),
             "water_energy_dashboard_compatible": True,
+            "recent_history": [
+                value
+                for value in self.coordinator.data.recent_history
+                if value.get("zone_id") == self._zone_id
+            ],
         }
 
 
@@ -862,3 +1084,53 @@ class ZonePlanningValueSensor(_ZoneObservationSensor):
             "soil_moisture": snapshot.zone_soil_moisture.get(self._zone_id),
             "hardware_health": snapshot.zone_hardware_health.get(self._zone_id),
         }
+
+
+class ZoneContractSensor(_ZoneObservationSensor):
+    """Expose contracted zone state only when the runtime has production data."""
+
+    def __init__(self, *, key: str, **kwargs: object) -> None:
+        """Initialize one zone contract value."""
+        self._observation_key = key
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._attr_translation_key = key
+        if key == "zone_status":
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = [
+                "idle",
+                "watering_needed",
+                "watering",
+                "suspended",
+                "safety_lock",
+                "archived",
+            ]
+        elif key == "last_effective_irrigation":
+            self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        elif key in {"expected_flow", "actual_flow"}:
+            self._attr_device_class = SensorDeviceClass.VOLUME_FLOW_RATE
+            self._attr_native_unit_of_measurement = UnitOfVolumeFlowRate.LITERS_PER_MINUTE
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        elif key in {"demand_coverage", "flow_deviation"}:
+            self._attr_native_unit_of_measurement = PERCENTAGE
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    @override
+    def native_value(self) -> Decimal | datetime | str | int | None:
+        snapshot = self.coordinator.data
+        key = self._observation_key
+        if key == "zone_status":
+            return snapshot.zone_status.get(self._zone_id, "idle")
+        if key == "zone_priority":
+            return snapshot.zone_priority.get(self._zone_id)
+        if key == "last_effective_irrigation":
+            timestamp_value = snapshot.zone_last_effective_irrigation.get(self._zone_id)
+            return datetime.fromisoformat(timestamp_value) if timestamp_value is not None else None
+        values = {
+            "demand_coverage": snapshot.zone_coverage_percent,
+            "expected_flow": snapshot.zone_expected_flow_l_min,
+            "actual_flow": snapshot.zone_actual_flow_l_min,
+            "flow_deviation": snapshot.zone_flow_deviation_percent,
+        }[key]
+        numeric_value = values.get(self._zone_id)
+        return Decimal(str(numeric_value)) if numeric_value is not None else None

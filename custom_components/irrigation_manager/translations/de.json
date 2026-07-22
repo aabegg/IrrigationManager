@@ -104,7 +104,9 @@
         "config_entry_id": {"name": "Bewässerungsanlage"},
         "zone_subentry_id": {"name": "Bewässerungszone"},
         "duration": {"name": "Harte Testdauer"},
-        "bypass_checks": {"name": "Übersteuerte Prüfungen", "description": "Nur ausgewählte implementierte Sensorprüfungen werden übersteuert. Ventilrückmeldung und Exklusivität bleiben zwingend."}
+        "bypass_checks": {"name": "Übersteuerte Prüfungen", "description": "Nur ausgewählte implementierte Sensorprüfungen werden übersteuert. Ventilrückmeldung und Exklusivität bleiben zwingend."},
+        "kind": {"name": "Testzweck"},
+        "water_attribution": {"name": "Wasserzuordnung", "description": "Ordnet gemessenes Wasser der gewählten Zone oder dem unzugeordneten Verbrauch zu."}
       }
     },
     "confirm_maintenance_test": {"name": "Wartungsaufsicht bestätigen", "description": "Erneuert die Dead-Man-Frist, ohne das feste Testende zu verlängern."},
@@ -122,7 +124,15 @@
     "resolve_calibration": {"name": "Kalibrierungsvorschlag entscheiden", "description": "Übernimmt oder verwirft einen offenen Kalibrierungsvorschlag ausdrücklich."},
     "list_profiles": {"name": "Bewässerungsprofile auflisten", "description": "Gibt versionierte unveränderliche Standardprofile und benutzereigene Kopien zurück.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}}},
     "preview_profile_impact": {"name": "Profil-Auswirkung anzeigen", "description": "Gibt alle von einer Profiländerung betroffenen Bewässerungszonen zurück.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}, "profile_id": {"name": "Profil-ID"}}},
-    "copy_profile": {"name": "Bewässerungsprofil kopieren", "description": "Erstellt eine bearbeitbare benutzereigene Kopie, ohne das Standardprofil zu verändern.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}, "source_profile_id": {"name": "ID des Ausgangsprofils"}, "new_profile_id": {"name": "Neue Profil-ID"}, "name": {"name": "Name"}, "config_hash": {"name": "Erwarteter Hash der Profilkonfiguration"}}}
+    "copy_profile": {"name": "Bewässerungsprofil kopieren", "description": "Erstellt eine bearbeitbare benutzereigene Kopie, ohne das Standardprofil zu verändern.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}, "source_profile_id": {"name": "ID des Ausgangsprofils"}, "new_profile_id": {"name": "Neue Profil-ID"}, "name": {"name": "Name"}, "config_hash": {"name": "Erwarteter Hash der Profilkonfiguration"}}},
+    "archive_zone": {"name": "Bewässerungszone archivieren", "description": "Archiviert eine Zone im sicheren Leerlauf und erhält Geräteidentität, Historie, Statistiken und Abrechnung."},
+    "restore_zone": {"name": "Bewässerungszone wiederherstellen", "description": "Stellt eine archivierte Zone im sicheren Leerlauf wieder her."},
+    "suspend_automatic": {"name": "Automatik zeitlich aussetzen", "description": "Setzt die Automatik global oder für eine Zone bis zu einem Zeitpunkt aus."},
+    "resume_automatic": {"name": "Automatik fortsetzen", "description": "Beendet eine globale oder zonenspezifische Aussetzung sofort."},
+    "list_maintenance": {"name": "Wartung auflisten", "description": "Gibt Aufgaben, Fälligkeiten, Historie und Frühjahrsstatus zurück."},
+    "complete_maintenance_task": {"name": "Wartungsaufgabe abschließen", "description": "Schließt eine wiederkehrende Aufgabe ab und berechnet die nächste Fälligkeit."},
+    "snooze_maintenance_task": {"name": "Wartungsaufgabe verschieben", "description": "Verschiebt eine Aufgabe unter Erhalt ihrer ursprünglichen Fälligkeit und Historie."},
+    "update_spring_checklist": {"name": "Frühjahrscheckliste aktualisieren", "description": "Bestätigt oder öffnet einen konfigurierten Inbetriebnahmepunkt erneut."}
   },
   "selector": {
     "meter_failure_strategy": {
@@ -195,6 +205,12 @@
       },
       "wind_interlock": {
         "name": "Starkwindsperre"
+      },
+      "automation_release": {
+        "name": "Automatikfreigabe"
+      },
+      "archived": {
+        "name": "Archiviert"
       }
     },
     "sensor": {
@@ -269,7 +285,18 @@
       "crop_evapotranspiration": {"name": "Pflanzenverdunstung"},
       "effective_rain": {"name": "Wirksamer Regen"},
       "soil_moisture_status": {"name": "Bodenfeuchtestatus", "state": {"not_configured": "Nicht konfiguriert", "valid": "Gültig", "partial": "Teilweise gültig", "unavailable": "Nicht verfügbar"}},
-      "hardware_health": {"name": "Zustand der Ventilhardware", "state": {"not_configured": "Nicht konfiguriert", "healthy": "In Ordnung", "blocked": "Gesperrt"}}
+      "hardware_health": {"name": "Zustand der Ventilhardware", "state": {"not_configured": "Nicht konfiguriert", "healthy": "In Ordnung", "blocked": "Gesperrt"}},
+      "next_zone": {"name": "Nächste Zone"},
+      "next_start": {"name": "Nächster geplanter Start"},
+      "maintenance_due": {"name": "Fällige Wartungsaufgaben"},
+      "water_cost": {"name": "Wasserkosten"},
+      "zone_status": {"name": "Status", "state": {"idle": "Bereit", "watering_needed": "Bewässerung erforderlich", "watering": "Bewässerung", "suspended": "Ausgesetzt", "safety_lock": "Sicherheitssperre", "archived": "Archiviert"}},
+      "zone_priority": {"name": "Priorität"},
+      "last_effective_irrigation": {"name": "Letzte wirksame Bewässerung"},
+      "demand_coverage": {"name": "Bedarfsdeckung"},
+      "expected_flow": {"name": "Erwarteter Durchfluss"},
+      "actual_flow": {"name": "Tatsächlicher Durchfluss"},
+      "flow_deviation": {"name": "Durchflussabweichung"}
     }
   },
   "config": {
@@ -332,6 +359,11 @@
           ,"installation_weekly_budget_liters": "Wochenbudget der Anlage"
           ,"pause_timeout_seconds": "Maximale Pausendauer"
           ,"custom_profiles": "Benutzereigene Profilkopien"
+          ,"water_tariff_per_m3": "Wassertarif pro m³"
+          ,"automation_enabled": "Globale Automatikfreigabe"
+          ,"winter_reminder_date": "Wintererinnerung (MM-TT)"
+          ,"maintenance_tasks": "Wiederkehrende Wartungsaufgaben"
+          ,"spring_checklist": "Frühjahrs-Inbetriebnahmecheckliste"
         },
         "data_description": {
           "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
@@ -427,6 +459,11 @@
           ,"installation_weekly_budget_liters": "Wochenbudget der Anlage"
           ,"pause_timeout_seconds": "Maximale Pausendauer"
           ,"custom_profiles": "Benutzereigene Profilkopien"
+          ,"water_tariff_per_m3": "Wassertarif pro m³"
+          ,"automation_enabled": "Globale Automatikfreigabe"
+          ,"winter_reminder_date": "Wintererinnerung (MM-TT)"
+          ,"maintenance_tasks": "Wiederkehrende Wartungsaufgaben"
+          ,"spring_checklist": "Frühjahrs-Inbetriebnahmecheckliste"
         },
         "data_description": {
           "local_wind_height_m": "Standard sind 2 m für lokale Gartensensoren; gib ihre tatsächliche physische Höhe an.",
@@ -531,6 +568,7 @@
       "soil_moisture_correction_limit_required": "Die konservative Korrektur benötigt eine ausdrücklich positive Korrekturgrenze."
       ,"wind_interlock_requires_source_and_threshold": "Windquelle und Schwellwert müssen gemeinsam konfiguriert werden."
       ,"invalid_import": "Portable Datei, Version oder Entity-/Zonenzuordnung ist ungültig."
+      ,"invalid_maintenance_configuration": "Erforderlich sind ein gültiges MM-TT-Datum, eindeutige Aufgaben-/Checklisten-IDs, ISO-Fälligkeiten und positive Intervalle."
     }
   },
   "config_subentries": {

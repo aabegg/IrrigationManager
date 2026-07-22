@@ -9,6 +9,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_AGRONOMIC_VALUES_CONFIRMED,
+    CONF_AUTOMATION_ENABLED,
     CONF_CUSTOM_PROFILES,
     CONF_EXTERNAL_FAILURE_POLICY,
     DOMAIN,
@@ -138,6 +139,12 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 **entry.data,
             },
             minor_version=4,
+        )
+    if entry.minor_version < 5:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={CONF_AUTOMATION_ENABLED: True, **entry.data},
+            minor_version=5,
         )
     return True
 
