@@ -6,7 +6,7 @@
   "issue_tracker": "https://github.com/aabegg/IrrigationManager/issues",
   "codeowners": ["@aabegg"],
   "config_flow": true,
-  "dependencies": ["calendar", "frontend"],
+  "dependencies": ["calendar", "frontend", "http"],
   "after_dependencies": ["recorder", "weather"],
   "integration_type": "hub",
   "iot_class": "cloud_polling",

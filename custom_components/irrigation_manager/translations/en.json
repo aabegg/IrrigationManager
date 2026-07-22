@@ -643,6 +643,7 @@
   },
   "config_subentries": {
     "zone": {
+      "entry_type": "Irrigation zone",
       "title": "Irrigation zone",
       "step": {
         "expert": {
