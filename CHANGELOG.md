@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-rc4 - 2026-07-22
+
+### Added
+
+- Add a native zone-subentry menu below Settings > Devices & services with guided,
+  expert, and flow-calibration choices.
+- Guide operators through an explicitly supervised measurement, bounded runtime,
+  result review, and separate accept-or-discard decision.
+- Keep measured flow limits unchanged until the operator explicitly accepts a fresh
+  proposal for the same unchanged zone.
+
 ## 0.1.0-rc3 - 2026-07-22
 
 ### Changed

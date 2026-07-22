@@ -1733,6 +1733,9 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self._guided_zone: dict[str, Any] = {}
         self._guided_answers: dict[str, Any] = {}
         self._guided_flow_lpm: float | None = None
+        self._calibration_test_id: str | None = None
+        self._calibration_previous_proposal_id: str | None = None
+        self._calibration_proposal: dict[str, object] | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Choose guided setup or the complete expert form."""
@@ -1798,23 +1801,197 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Choose a guided edit or complete expert edit."""
-        if user_input is not None:
-            if user_input["setup_mode"] == "expert":
-                return await self.async_step_reconfigure_expert()
-            self._guided_zone = dict(self._get_reconfigure_subentry().data)
-            self._guided_answers = {}
-            self._pending_reconfigure = True
-            return await self.async_step_zone_basic()
-        return self.async_show_form(
+        """Choose zone configuration or a supervised calibration."""
+        return self.async_show_menu(
             step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("setup_mode", default="guided"): _choice(
-                        ["guided", "expert"], "setup_mode"
+            menu_options=["reconfigure_guided", "reconfigure_expert", "calibration"],
+        )
+
+    async def async_step_reconfigure_guided(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Start the guided editor for this existing zone."""
+        self._guided_zone = dict(self._get_reconfigure_subentry().data)
+        self._guided_answers = {}
+        self._pending_reconfigure = True
+        return await self.async_step_zone_basic()
+
+    def _manager(self) -> IrrigationManager | None:
+        """Return the loaded runtime owned by this zone's installation."""
+        runtime = self.hass.data.get(DOMAIN, {}).get(self._get_entry().entry_id)
+        return cast(IrrigationManager, runtime) if runtime is not None else None
+
+    def _calibration_duration_limit(self) -> float:
+        """Keep the guided measurement inside both hard and dead-man deadlines."""
+        data = self._get_entry().data
+        hard_limit = float(data.get(CONF_MAINTENANCE_MAX_DURATION, 300.0))
+        confirmation = float(data.get(CONF_MAINTENANCE_CONFIRMATION_INTERVAL, 30.0))
+        settle = float(data.get(CONF_CALIBRATION_SETTLE_SECONDS, 2.0))
+        return min(20.0, min(hard_limit, confirmation) - settle - 2.0)
+
+    async def async_step_calibration(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Start one short, supervised flow measurement for this zone."""
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        duration_limit = self._calibration_duration_limit()
+        if duration_limit < 1:
+            return self.async_abort(reason="calibration_configuration_invalid")
+        schema = vol.Schema(
+            {
+                vol.Required("duration", default=min(20.0, duration_limit)): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1,
+                        max=duration_limit,
+                        step=1,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement=UnitOfTime.SECONDS,
                     )
-                }
-            ),
+                ),
+                vol.Required("confirm_supervision", default=False): BooleanSelector(),
+            }
+        )
+        if user_input is None:
+            return self.async_show_form(
+                step_id="calibration",
+                data_schema=schema,
+                description_placeholders={"zone": self._get_reconfigure_subentry().title},
+            )
+        if user_input.get("confirm_supervision") is not True:
+            return self.async_show_form(
+                step_id="calibration",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "calibration_supervision_required"},
+                description_placeholders={"zone": self._get_reconfigure_subentry().title},
+            )
+        previous = manager.calibration_proposal()
+        self._calibration_previous_proposal_id = (
+            str(previous["proposal_id"]) if previous is not None else None
+        )
+        try:
+            started = await manager.async_start_maintenance_test(
+                zone_subentry_id=self._get_reconfigure_subentry().subentry_id,
+                duration_seconds=float(user_input["duration"]),
+                kind="calibration",
+            )
+        except HomeAssistantError:
+            return self.async_show_form(
+                step_id="calibration",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "calibration_start_failed"},
+                description_placeholders={"zone": self._get_reconfigure_subentry().title},
+            )
+        self._calibration_test_id = str(started["test_id"])
+        return await self.async_step_calibration_running()
+
+    async def async_step_calibration_running(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Let the operator refresh the bounded measurement and renew its supervision."""
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        test_id = self._calibration_test_id
+        if test_id is None:
+            return self.async_abort(reason="calibration_not_started")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="calibration_running",
+                data_schema=vol.Schema({}),
+                description_placeholders={"zone": self._get_reconfigure_subentry().title},
+            )
+        if manager.is_supervised_test_active(test_id):
+            await manager.async_confirm_maintenance_test(test_id=test_id)
+            return self.async_show_form(
+                step_id="calibration_running",
+                data_schema=vol.Schema({}),
+                errors={"base": "calibration_still_running"},
+                description_placeholders={"zone": self._get_reconfigure_subentry().title},
+            )
+        proposal = manager.calibration_proposal()
+        if (
+            proposal is None
+            or proposal.get("proposal_id") == self._calibration_previous_proposal_id
+            or proposal.get("zone_subentry_id") != self._get_reconfigure_subentry().subentry_id
+            or proposal.get("status") != "pending"
+        ):
+            return self.async_abort(reason="calibration_no_proposal")
+        self._calibration_proposal = proposal
+        return await self.async_step_calibration_review()
+
+    def _calibration_preview(self) -> str:
+        """Render the measured proposal in the configured UI language."""
+        proposal = self._calibration_proposal or {}
+        def number(key: str) -> float:
+            value = proposal.get(key)
+            return float(value) if isinstance(value, int | float) else 0.0
+
+        average = number("average_flow_l_min")
+        minimum = number("proposed_min_flow_l_min")
+        maximum = number("proposed_max_flow_l_min")
+        liters = number("delivered_liters")
+        duration = number("duration_seconds")
+        latency = number("opening_latency_seconds")
+        post_run = number("post_run_liters")
+        if self.hass.config.language == "de":
+            return (
+                f"Gemittelt {average:.1f} l/min aus {liters:.1f} l in {duration:.1f} s. "
+                f"Vorgeschlagener Normalbereich: {minimum:.1f}-{maximum:.1f} l/min. "
+                f"Ventilöffnung: {latency:.1f} s; Nachlauf: {post_run:.1f} l."
+            )
+        return (
+            f"Average {average:.1f} L/min from {liters:.1f} L in {duration:.1f} s. "
+            f"Proposed normal range: {minimum:.1f}-{maximum:.1f} L/min. "
+            f"Valve opening: {latency:.1f} s; post-run: {post_run:.1f} L."
+        )
+
+    async def async_step_calibration_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Apply or discard measured flow limits only after explicit review."""
+        proposal = self._calibration_proposal
+        manager = self._manager()
+        if proposal is None:
+            return self.async_abort(reason="calibration_no_proposal")
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        schema = vol.Schema(
+            {
+                vol.Required("resolution", default="discard"): _choice(
+                    ["accept", "discard"], "calibration_resolution"
+                ),
+                vol.Required("confirm_resolution", default=False): BooleanSelector(),
+            }
+        )
+        if user_input is None:
+            return self.async_show_form(
+                step_id="calibration_review",
+                data_schema=schema,
+                description_placeholders={"result": self._calibration_preview()},
+            )
+        if user_input.get("confirm_resolution") is not True:
+            return self.async_show_form(
+                step_id="calibration_review",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "calibration_resolution_required"},
+                description_placeholders={"result": self._calibration_preview()},
+            )
+        resolution = str(user_input["resolution"])
+        try:
+            await manager.async_resolve_calibration(
+                proposal_id=str(proposal["proposal_id"]), resolution=resolution
+            )
+        except HomeAssistantError:
+            return self.async_show_form(
+                step_id="calibration_review",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "calibration_resolution_failed"},
+                description_placeholders={"result": self._calibration_preview()},
+            )
+        return self.async_abort(
+            reason="calibration_accepted" if resolution == "accept" else "calibration_discarded"
         )
 
     async def async_step_reconfigure_expert(

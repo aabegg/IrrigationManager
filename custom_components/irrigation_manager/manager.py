@@ -7465,6 +7465,11 @@ class IrrigationManager:
         proposal = self._stored_state.calibration_proposal
         return proposal.as_dict() if proposal is not None else None
 
+    def is_supervised_test_active(self, test_id: str) -> bool:
+        """Return whether the identified supervised test still owns the runtime."""
+        test = self._stored_state.maintenance_test
+        return test is not None and test.test_id == test_id
+
     @staticmethod
     def _calibration_zone_config_hash(subentry: _ZoneConfigSnapshot) -> str:
         """Hash only zone settings that affect calibration execution and accounting."""

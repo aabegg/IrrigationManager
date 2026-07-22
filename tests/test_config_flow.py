@@ -3,7 +3,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from homeassistant.config_entries import SOURCE_USER
@@ -15,11 +15,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.irrigation_manager.config_flow import ZONE_SCHEMA
 from custom_components.irrigation_manager.const import (
     CONF_AUTOMATION_ENABLED,
+    CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_FLOW_SENSOR,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
+    CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
+    CONF_MAINTENANCE_MAX_DURATION,
     CONF_METER_FAILURE_STRATEGY,
     CONF_WATER_METER,
     CONF_WATERING_WINDOWS,
@@ -879,9 +882,10 @@ async def test_guided_reconfigure_preserves_expert_only_values(hass: HomeAssista
         (entry.entry_id, "zone"),
         context={"source": "reconfigure", "subentry_id": subentry.subentry_id},
     )
+    assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "reconfigure"
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {"setup_mode": "guided"}
+        result["flow_id"], {"next_step_id": "reconfigure_guided"}
     )
     assert result["step_id"] == "zone_basic"
     assert (
@@ -928,6 +932,109 @@ async def test_guided_reconfigure_preserves_expert_only_values(hass: HomeAssista
         "total_available_water_mm": 45.0,
         "readily_available_water_mm": 15.75,
     }
+
+
+async def test_zone_reconfigure_guides_flow_calibration(hass: HomeAssistant) -> None:
+    """Run and explicitly accept calibration from the zone subentry settings."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={
+            "name": "Garden",
+            CONF_MAINTENANCE_MAX_DURATION: 300,
+            CONF_MAINTENANCE_CONFIRMATION_INTERVAL: 30,
+            CONF_CALIBRATION_SETTLE_SECONDS: 2,
+        },
+        unique_id="calibration-flow",
+    )
+    entry.add_to_hass(hass)
+    created = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    created = await hass.config_entries.subentries.async_configure(
+        created["flow_id"], {"setup_mode": "expert"}
+    )
+    await hass.config_entries.subentries.async_configure(
+        created["flow_id"],
+        {
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "default_duration": 600,
+            "min_flow": 5,
+            "max_flow": 20,
+        },
+    )
+    subentry = next(iter(entry.subentries.values()))
+    proposal = {
+        "proposal_id": "proposal-1",
+        "zone_subentry_id": subentry.subentry_id,
+        "status": "pending",
+        "average_flow_l_min": 10.0,
+        "proposed_min_flow_l_min": 8.0,
+        "proposed_max_flow_l_min": 12.0,
+        "delivered_liters": 3.3,
+        "duration_seconds": 20.0,
+        "opening_latency_seconds": 1.0,
+        "post_run_liters": 0.2,
+    }
+    manager = Mock()
+    manager.calibration_proposal.side_effect = [None, proposal]
+    manager.async_start_maintenance_test = AsyncMock(
+        return_value={"test_id": "test-1", "expires_at": "later"}
+    )
+    manager.is_supervised_test_active.side_effect = [True, False]
+    manager.async_confirm_maintenance_test = AsyncMock(
+        return_value={"test_id": "test-1", "confirmation_deadline": "later"}
+    )
+    manager.async_resolve_calibration = AsyncMock(return_value={**proposal, "status": "accepted"})
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": subentry.subentry_id},
+    )
+    assert result["type"] is FlowResultType.MENU
+    assert result["menu_options"] == [
+        "reconfigure_guided",
+        "reconfigure_expert",
+        "calibration",
+    ]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "calibration"}
+    )
+    assert result["step_id"] == "calibration"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"duration": 20, "confirm_supervision": False}
+    )
+    assert result["step_id"] == "calibration"
+    assert result["errors"] == {"base": "calibration_supervision_required"}
+    manager.async_start_maintenance_test.assert_not_awaited()
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"duration": 20, "confirm_supervision": True}
+    )
+    assert result["step_id"] == "calibration_running"
+    manager.async_start_maintenance_test.assert_awaited_once_with(
+        zone_subentry_id=subentry.subentry_id,
+        duration_seconds=20.0,
+        kind="calibration",
+    )
+
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+    assert result["step_id"] == "calibration_running"
+    assert result["errors"] == {"base": "calibration_still_running"}
+    manager.async_confirm_maintenance_test.assert_awaited_once_with(test_id="test-1")
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+    assert result["step_id"] == "calibration_review"
+    assert "8.0-12.0 L/min" in result["description_placeholders"]["result"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"resolution": "accept", "confirm_resolution": True}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "calibration_accepted"
+    manager.async_resolve_calibration.assert_awaited_once_with(
+        proposal_id="proposal-1", resolution="accept"
+    )
 
 
 async def test_novice_runtime_readiness_and_targets_match_guided_preview(

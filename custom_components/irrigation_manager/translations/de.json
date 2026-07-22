@@ -138,6 +138,7 @@
     "meter_kind": {"options": {"cumulative": "Kumulativer Volumenzähler", "raw": "Impuls- oder Zählwert", "none": "Kein Wasserzähler"}},
     "weather_strategy": {"options": {"recommended": "Empfohlene verfügbare Quelle", "local": "Lokale Sensoren oder Wetter-Entity", "open_meteo": "Open-Meteo", "seasonal": "Nur saisonaler Ersatz"}},
     "setup_mode": {"options": {"guided": "Geführte Einrichtung", "expert": "Experteneinstellungen"}},
+    "calibration_resolution": {"options": {"accept": "Messwerte übernehmen", "discard": "Messwerte verwerfen"}},
     "zone_category": {"options": {"raised_bed": "Hochbeet", "vegetables": "Gemüsebeet", "lawn": "Rasen", "shrubs": "Sträucher oder Hecke", "flowers": "Blumen oder Stauden", "young_tree": "Junger Obstbaum"}},
     "area_method": {"options": {"measured": "Fläche ist bekannt", "rectangle": "Länge × Breite", "unknown": "Noch unbekannt"}},
     "soil_answer": {"options": {"potting_mix": "Gekaufte Pflanz-/Hochbeeterde", "mineral_mix": "Gartenerde mit Kompost", "sand": "Sandig und sehr locker", "sandy_loam": "Locker, hält etwas Wasser", "loam": "Ausgewogene Gartenerde", "clay_loam": "Schwerer Boden", "clay": "Sehr schwer und klebrig", "unknown": "Unsicher"}},
@@ -735,6 +736,21 @@
           "description": "Prüfe Wertebereiche, Vertrauensstufe, Quellen, Annahmen, Warnungen sowie die aufgelösten TAW- und RAW-Werte vor dem Speichern: {preview}",
           "data": {"confirm_profile_selection": "Diese Profilannahmen verwenden"}
         },
+        "calibration": {
+          "title": "Durchfluss kalibrieren",
+          "description": "{zone} wird für die gewählte Dauer real bewässert. Bleibe vor Ort, prüfe Leitungen und Regner und halte Stop oder Not-Aus bereit. Das Wasser wird der Zone zugerechnet; Messwerte werden erst nach einer separaten Prüfung übernommen.",
+          "data": {"duration": "Messdauer", "confirm_supervision": "Ich beaufsichtige die Zone vor Ort und darf sie jetzt öffnen"}
+        },
+        "calibration_running": {
+          "title": "Kalibrierung läuft",
+          "description": "{zone} wird gemessen und anschließend automatisch geschlossen. Warte, bis Ventil und Nachlauf beendet sind, und wähle dann Weiter, um das Ergebnis abzurufen. Ein früher Aufruf erneuert lediglich die Sicherheitsaufsicht.",
+          "data": {}
+        },
+        "calibration_review": {
+          "title": "Kalibrierung prüfen",
+          "description": "{result} Übernimm den vorgeschlagenen Normalbereich nur, wenn Durchfluss und Anlagenverhalten plausibel waren.",
+          "data": {"resolution": "Entscheidung", "confirm_resolution": "Ich habe Messung und vorgeschlagene Werte geprüft"}
+        },
         "reconfigure_expert": {
           "title": "Bewässerungszone bearbeiten (Experte)",
           "data": {
@@ -808,12 +824,18 @@
             "phenology_stage_schedule": "Für gestufte Profile season_start als MM-TT sowie initial_days, development_days, mid_days und late_days oder wiederkehrende Datumsgrenzen angeben. Es wird keine Hemisphäre angenommen."
           }
         },
-        "reconfigure": {"title": "Bewässerungszone bearbeiten", "description": "Wähle die geführte Bearbeitung oder das vollständige Expertenformular.", "data": {"setup_mode": "Bearbeitungsmodus"}}
+        "reconfigure": {"title": "Bewässerungszone", "menu_options": {"reconfigure_guided": "Geführt bearbeiten", "reconfigure_expert": "Experteneinstellungen", "calibration": "Durchfluss kalibrieren"}}
       },
       "abort": {
         "already_configured": "Dieses Zonenventil ist bereits konfiguriert.",
         "profile_selection_not_pending": "Es wartet keine Auswahl eines Forschungsprofils auf Bestätigung.",
-        "profile_selection_cancelled": "Die Auswahl des Forschungsprofils wurde nicht gespeichert."
+        "profile_selection_cancelled": "Die Auswahl des Forschungsprofils wurde nicht gespeichert.",
+        "installation_not_loaded": "Die Bewässerungsanlage ist derzeit nicht geladen.",
+        "calibration_configuration_invalid": "Die konfigurierten Test- und Aufsichtszeiten lassen keine sichere Kalibrierung zu.",
+        "calibration_not_started": "Es wurde keine Kalibrierung gestartet.",
+        "calibration_no_proposal": "Die Messung wurde beendet, hat aber keinen gültigen Kalibrierungsvorschlag erzeugt. Prüfe Sperren, Sensoren und Ereignisse und versuche es erneut.",
+        "calibration_accepted": "Der gemessene Durchflussbereich wurde für diese Bewässerungszone übernommen.",
+        "calibration_discarded": "Der Kalibrierungsvorschlag wurde verworfen; die bisherigen Durchflusswerte bleiben erhalten."
       },
       "error": {
         "invalid_intervals": "Der maximale Abstand darf nicht kürzer als der minimale Abstand sein.",
@@ -828,6 +850,11 @@
         ,"measured_flow_required": "Gib beide Grenzen des gemessenen Durchflussbereichs ein."
         ,"invalid_flow_range": "Der maximale Durchfluss muss größer als der minimale sein."
         ,"application_rate_required": "Gib die geschätzte Ausbringungsrate ein."
+        ,"calibration_supervision_required": "Bestätige die Beaufsichtigung vor Ort, bevor ein Ventil geöffnet wird."
+        ,"calibration_start_failed": "Die Kalibrierung konnte die Sicherheitsprüfung nicht bestehen oder die Anlage ist beschäftigt."
+        ,"calibration_still_running": "Die Messung läuft noch. Die Sicherheitsaufsicht wurde erneuert; warte kurz und wähle erneut Weiter."
+        ,"calibration_resolution_required": "Prüfe das Ergebnis und bestätige deine Entscheidung."
+        ,"calibration_resolution_failed": "Der Vorschlag konnte nicht übernommen oder verworfen werden. Die Zone wurde möglicherweise zwischenzeitlich geändert."
       }
     }
   }

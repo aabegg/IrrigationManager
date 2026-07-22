@@ -151,6 +151,12 @@ Jeder Vorgang verwendet seinen beim Preflight validierten Konfigurationssnapshot
 
 ## Geführte Kalibrierung
 
+Die Kalibrierung wird direkt am Untereintrag der Bewässerungszone gestartet:
+**Einstellungen > Geräte & Dienste > Irrigation Manager > Zahnrad der Zone >
+Durchfluss kalibrieren**. Home Assistant erlaubt Integrationen keine eigenen Einträge im
+nativen Drei-Punkte-Kontextmenü; der Reconfigure-Flow des Zonen-Untereintrags ist daher die
+native Konfigurationsschnittstelle.
+
 1. Zone und Testdauer auswählen
 2. Sicherheitsprüfung und ausdrückliche Bestätigung
 3. Haupt- und Zonenventil kontrolliert schalten

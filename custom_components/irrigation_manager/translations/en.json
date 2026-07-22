@@ -138,6 +138,7 @@
     "meter_kind": {"options": {"cumulative": "Cumulative volume meter", "raw": "Pulse or count meter", "none": "No water meter"}},
     "weather_strategy": {"options": {"recommended": "Use the recommended available source", "local": "Local sensors or weather entity", "open_meteo": "Open-Meteo", "seasonal": "Seasonal fallback only"}},
     "setup_mode": {"options": {"guided": "Guided setup", "expert": "Expert settings"}},
+    "calibration_resolution": {"options": {"accept": "Apply measured values", "discard": "Discard measured values"}},
     "zone_category": {"options": {"raised_bed": "Raised bed", "vegetables": "Vegetable bed", "lawn": "Lawn", "shrubs": "Shrubs or hedge", "flowers": "Flowers or perennials", "young_tree": "Young fruit tree"}},
     "area_method": {"options": {"measured": "I know the area", "rectangle": "Calculate length × width", "unknown": "I do not know yet"}},
     "soil_answer": {"options": {"potting_mix": "Mostly purchased potting/raised-bed mix", "mineral_mix": "Mixed garden soil and compost", "sand": "Sandy and very loose", "sandy_loam": "Loose soil that holds some water", "loam": "Balanced garden soil", "clay_loam": "Heavy soil", "clay": "Very heavy/sticky soil", "unknown": "I am not sure"}},
@@ -735,6 +736,21 @@
           "description": "Review profile ranges, confidence, sources, assumptions, warnings, and the resolved TAW and RAW before saving: {preview}",
           "data": {"confirm_profile_selection": "Use these profile assumptions"}
         },
+        "calibration": {
+          "title": "Calibrate flow",
+          "description": "{zone} will receive real water for the selected duration. Stay on site, inspect pipes and emitters, and keep Stop or Emergency Stop available. Water is attributed to this zone; measured values are applied only after a separate review.",
+          "data": {"duration": "Measurement duration", "confirm_supervision": "I am supervising this zone on site and it may open now"}
+        },
+        "calibration_running": {
+          "title": "Calibration running",
+          "description": "{zone} is being measured and will close automatically. Wait until the valve and post-run observation have finished, then select Submit to retrieve the result. An early submission only renews safety supervision.",
+          "data": {}
+        },
+        "calibration_review": {
+          "title": "Review calibration",
+          "description": "{result} Apply the proposed normal range only when flow and installation behavior were plausible.",
+          "data": {"resolution": "Decision", "confirm_resolution": "I reviewed the measurement and proposed values"}
+        },
         "reconfigure_expert": {
           "title": "Update irrigation zone (expert)",
           "data": {
@@ -808,12 +824,18 @@
             "phenology_stage_schedule": "For staged profiles, provide season_start as MM-DD plus initial_days, development_days, mid_days, and late_days, or explicit recurring stage boundary dates. No hemisphere is assumed."
           }
         },
-        "reconfigure": {"title": "Update irrigation zone", "description": "Choose guided editing or the complete expert form.", "data": {"setup_mode": "Edit mode"}}
+        "reconfigure": {"title": "Irrigation zone", "menu_options": {"reconfigure_guided": "Guided editing", "reconfigure_expert": "Expert settings", "calibration": "Calibrate flow"}}
       },
       "abort": {
         "already_configured": "This zone valve is already configured.",
         "profile_selection_not_pending": "There is no researched profile selection awaiting confirmation.",
-        "profile_selection_cancelled": "The researched profile selection was not saved."
+        "profile_selection_cancelled": "The researched profile selection was not saved.",
+        "installation_not_loaded": "The irrigation installation is not currently loaded.",
+        "calibration_configuration_invalid": "The configured test and supervision deadlines do not permit a safe calibration.",
+        "calibration_not_started": "No calibration was started.",
+        "calibration_no_proposal": "The measurement ended without a valid calibration proposal. Check locks, sensors, and events before trying again.",
+        "calibration_accepted": "The measured flow range was applied to this irrigation zone.",
+        "calibration_discarded": "The calibration proposal was discarded; the previous flow values remain unchanged."
       },
       "error": {
         "invalid_intervals": "The maximum interval must not be shorter than the minimum interval.",
@@ -828,6 +850,11 @@
         ,"measured_flow_required": "Enter both ends of the measured flow range."
         ,"invalid_flow_range": "Maximum flow must be greater than minimum flow."
         ,"application_rate_required": "Enter the estimated application rate."
+        ,"calibration_supervision_required": "Confirm on-site supervision before opening a valve."
+        ,"calibration_start_failed": "Calibration did not pass its safety preflight or the installation is busy."
+        ,"calibration_still_running": "The measurement is still running. Safety supervision was renewed; wait briefly and submit again."
+        ,"calibration_resolution_required": "Review the result and confirm your decision."
+        ,"calibration_resolution_failed": "The proposal could not be applied or discarded. The zone may have changed since measurement."
       }
     }
   }
