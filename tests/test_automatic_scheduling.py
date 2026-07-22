@@ -279,6 +279,39 @@ async def test_withdrawal_can_recreate_in_same_window_but_explicit_skip_stays_su
     assert entry.runtime_data.manager._request(request_id).status == "cancelled"
 
 
+async def test_recreated_automatic_request_atomically_replaces_resolved_inputs(
+    hass: HomeAssistant,
+) -> None:
+    """Never retain calculation inputs from the cancelled incarnation."""
+    entry, _ = await _setup_automatic_zone(hass)
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    manager = entry.runtime_data.manager
+    _make_zone_due(entry, now, deficit_mm=10)
+    created = await manager.async_plan_automatic(now=now)
+    request_id = created["created_request_ids"][0]
+    original = manager._request(request_id)
+    assert original is not None
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=(
+            replace(
+                original,
+                status="cancelled",
+                resolved_inputs={"stale_incarnation": True},
+            ),
+        ),
+    )
+
+    report = await manager.async_plan_automatic(now=now)
+    recreated = manager._request(request_id)
+
+    assert report["recreated_request_ids"] == [request_id]
+    assert recreated is not None
+    assert recreated.resolved_inputs["profile_schema_version"] == 1
+    assert recreated.resolved_inputs["resolved_on"] == "2026-07-21"
+    assert "stale_incarnation" not in recreated.resolved_inputs
+
+
 async def test_stop_and_skip_cancels_selected_order_and_suppresses_opportunity(
     hass: HomeAssistant,
 ) -> None:

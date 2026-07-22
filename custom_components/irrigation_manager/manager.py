@@ -16,6 +16,7 @@ from uuid import uuid4
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
+    PERCENTAGE,
     STATE_OFF,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
@@ -36,13 +37,16 @@ from .adapters import (
 )
 from .const import (
     CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
+    CONF_AGRONOMIC_VALUES_CONFIRMED,
     CONF_APPLICATION_EFFICIENCY,
     CONF_AREA_M2,
     CONF_AUTOMATIC_MAX_DURATION,
     CONF_AUTOMATION_ENABLED,
     CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_CROP_FACTOR,
+    CONF_CUSTOM_PROFILES,
     CONF_ET0_SENSORS,
+    CONF_EXPOSURE_PROFILE,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
@@ -51,10 +55,16 @@ from .const import (
     CONF_FORECAST_RAIN_THRESHOLD_MM,
     CONF_FROST_ENTITY,
     CONF_FROST_THRESHOLD,
+    CONF_HARDWARE_BATTERY_MINIMUM,
+    CONF_HARDWARE_BATTERY_SENSOR,
+    CONF_HARDWARE_CONNECTIVITY_SENSOR,
+    CONF_HARDWARE_FAULT_SENSOR,
+    CONF_HARDWARE_HEALTH_MAX_AGE_SECONDS,
     CONF_INSTALLATION_DAILY_BUDGET_LITERS,
     CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
     CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
     CONF_INSTALLATION_WEEKLY_BUDGET_LITERS,
+    CONF_IRRIGATION_PROFILE,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
@@ -79,12 +89,22 @@ from .const import (
     CONF_MINIMUM_TRIGGER_LITERS,
     CONF_OPEN_METEO_ENABLED,
     CONF_PAUSE_TIMEOUT_SECONDS,
+    CONF_PLANT_PROFILE,
+    CONF_PROFILE_OVERRIDES,
     CONF_RAIN_FACTOR,
     CONF_RAIN_SENSORS,
     CONF_RAIN_STOP_ENTITY,
     CONF_RAIN_STOP_THRESHOLD,
     CONF_SEASONAL_CROP_FACTORS,
     CONF_SOAK_DURATION,
+    CONF_SOIL_MOISTURE_AGGREGATION,
+    CONF_SOIL_MOISTURE_CORRECTION_LIMIT_MM,
+    CONF_SOIL_MOISTURE_MAX_AGE_SECONDS,
+    CONF_SOIL_MOISTURE_ROLE,
+    CONF_SOIL_MOISTURE_SENSORS,
+    CONF_SOIL_MOISTURE_WET_THRESHOLD,
+    CONF_SOIL_PROFILE,
+    CONF_SUBAREAS,
     CONF_TEMPERATURE_SENSORS,
     CONF_WATER_METER,
     CONF_WATERING_MODE,
@@ -103,6 +123,7 @@ from .const import (
     EXPORT_SCHEMA_VERSION,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
+    SOIL_MOISTURE_ROLE_INHIBIT,
     SUBENTRY_TYPE_ZONE,
 )
 from .coordinator import IrrigationCoordinator
@@ -119,6 +140,15 @@ from .models import (
     StoredInstallationState,
     UncreditedBalanceDelivery,
 )
+from .profiles import (
+    EffectiveZoneProfile,
+    builtin_profiles,
+    copy_profile,
+    dependent_profile_ids,
+    profile_impacted_zones,
+    resolve_effective_zone_profile,
+    validate_custom_profiles,
+)
 from .scheduler import (
     WateringMode,
     ZonePlanningInput,
@@ -128,6 +158,7 @@ from .scheduler import (
     dose_target,
     select_manual_request,
 )
+from .soil_moisture import SoilMoistureAssessment, assess_soil_moisture
 from .storage import IrrigationStore
 from .water_balance import (
     WaterBalancePeriod,
@@ -238,6 +269,9 @@ class IrrigationManager:
         self._zone_crop_evapotranspiration_mm: dict[str, float] = {}
         self._zone_effective_rain_mm: dict[str, float] = {}
         self._zone_calculation_explanations: dict[str, dict[str, object]] = {}
+        self._zone_effective_profiles: dict[str, dict[str, object]] = {}
+        self._zone_soil_moisture: dict[str, dict[str, object]] = {}
+        self._zone_hardware_health: dict[str, dict[str, object]] = {}
         self._provisional_period_id: str | None = None
         self._last_weather_preview_at: datetime | None = None
         self._restore_latest_weather_snapshot()
@@ -1757,6 +1791,28 @@ class IrrigationManager:
                 raise HomeAssistantError(
                     f"Rain safety blocks automatic irrigation ({weather.status})"
                 )
+        target_zone = next(
+            (
+                item
+                for item in self._zone_configs
+                if (item.unique_id or item.subentry_id) == target_zone_id
+            ),
+            None,
+        )
+        if target_zone is not None:
+            now = datetime.now(UTC)
+            hardware = self._hardware_health(target_zone.data, now=now)
+            self._zone_hardware_health[target_zone_id or ""] = hardware
+            if hardware["status"] == "blocked":
+                raise HomeAssistantError("Valve hardware health preflight failed")
+            moisture = self._soil_moisture_assessment(target_zone.data, now=now)
+            if moisture is not None:
+                self._zone_soil_moisture[target_zone_id or ""] = moisture.as_dict()
+                if (
+                    str(target_zone.data.get(CONF_SOIL_MOISTURE_ROLE)) == SOIL_MOISTURE_ROLE_INHIBIT
+                    and moisture.safety_blocked
+                ):
+                    raise HomeAssistantError("Soil-moisture safety preflight is wet or incomplete")
         entity_ids = self._zone_valves()
         if main_valve := self._installation_data.get(CONF_MAIN_VALVE):
             entity_ids.append(main_valve)
@@ -1811,6 +1867,98 @@ class IrrigationManager:
             )
             await self._store.async_save(self._stored_state)
 
+    def _effective_zone_profile(self, data: Mapping[str, Any], day: date) -> EffectiveZoneProfile:
+        """Resolve one immutable effective profile from current config."""
+        return resolve_effective_zone_profile(
+            data,
+            self._installation_data.get(CONF_CUSTOM_PROFILES, {}),
+            day,
+        )
+
+    def _soil_moisture_assessment(
+        self, data: Mapping[str, Any], *, now: datetime
+    ) -> SoilMoistureAssessment | None:
+        """Read explicitly configured soil sensors without mutating the ET balance."""
+        raw_entities = data.get(CONF_SOIL_MOISTURE_SENSORS, [])
+        entities = list(raw_entities) if isinstance(raw_entities, list | tuple) else []
+        raw_subareas = data.get(CONF_SUBAREAS, [])
+        if isinstance(raw_subareas, list | tuple):
+            for subarea in raw_subareas:
+                if not isinstance(subarea, Mapping):
+                    continue
+                subarea_entities = subarea.get(CONF_SOIL_MOISTURE_SENSORS, [])
+                if isinstance(subarea_entities, list | tuple):
+                    entities.extend(subarea_entities)
+        entity_ids = list(dict.fromkeys(str(value) for value in entities))
+        if not entity_ids:
+            return None
+        return assess_soil_moisture(
+            self._hass,
+            entity_ids=entity_ids,
+            aggregation=str(data.get(CONF_SOIL_MOISTURE_AGGREGATION, "median")),
+            role=str(data.get(CONF_SOIL_MOISTURE_ROLE, "plausibility")),
+            max_age_seconds=self._number(data, CONF_SOIL_MOISTURE_MAX_AGE_SECONDS, 3_600),
+            wet_threshold=self._number(data, CONF_SOIL_MOISTURE_WET_THRESHOLD, 80),
+            correction_limit_mm=self._number(data, CONF_SOIL_MOISTURE_CORRECTION_LIMIT_MM, 0),
+            now=now,
+        )
+
+    def _hardware_health(self, data: Mapping[str, Any], *, now: datetime) -> dict[str, object]:
+        """Validate optional valve battery, connectivity, and fault observations."""
+        max_age = self._number(data, CONF_HARDWARE_HEALTH_MAX_AGE_SECONDS, 300)
+        result: dict[str, object] = {"status": "not_configured", "checks": {}}
+        checks: dict[str, object] = {}
+        failures: list[str] = []
+        for kind, key in (
+            ("battery", CONF_HARDWARE_BATTERY_SENSOR),
+            ("connectivity", CONF_HARDWARE_CONNECTIVITY_SENSOR),
+            ("fault", CONF_HARDWARE_FAULT_SENSOR),
+        ):
+            entity_id = data.get(key)
+            if not isinstance(entity_id, str):
+                continue
+            state = self._hass.states.get(entity_id)
+            reason: str | None = None
+            value: object = None
+            if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
+                reason = "unavailable"
+            elif (
+                now.astimezone(UTC) - state.last_reported.astimezone(UTC)
+            ).total_seconds() > max_age:
+                reason = "stale"
+            elif kind == "battery":
+                try:
+                    battery = float(state.state)
+                except ValueError:
+                    battery = math.nan
+                value = battery
+                if (
+                    state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) != PERCENTAGE
+                    or not math.isfinite(battery)
+                    or not 0 <= battery <= 100
+                ):
+                    reason = "invalid_unit_or_value"
+                elif battery < self._number(data, CONF_HARDWARE_BATTERY_MINIMUM, 20):
+                    reason = "battery_low"
+            elif kind == "connectivity":
+                value = state.state
+                if state.state.lower() not in {"on", "connected", "home", "online", "ok"}:
+                    reason = "disconnected"
+            else:
+                value = state.state
+                if state.state.lower() not in {"off", "clear", "none", "normal", "ok"}:
+                    reason = "fault_active"
+            checks[kind] = {"valid": reason is None, "reason": reason, "value": value}
+            if reason is not None:
+                failures.append(f"{kind}:{reason}")
+        if checks:
+            result = {
+                "status": "blocked" if failures else "healthy",
+                "checks": checks,
+                "failures": failures,
+            }
+        return result
+
     def _zone_schedule_decisions(
         self, *, now: datetime
     ) -> list[tuple[_ZoneConfigSnapshot, ZonePlanningInput, ZoneScheduleDecision]]:
@@ -1824,19 +1972,27 @@ class IrrigationManager:
         for subentry in self._zone_configs:
             zone_id = subentry.unique_id or subentry.subentry_id
             data = subentry.data
-            maximum_deficit = self._number(data, CONF_MAXIMUM_DEFICIT_MM, 50.0)
+            profile = self._effective_zone_profile(data, now.date())
+            maximum_deficit = profile.maximum_deficit_mm
             final_deficit = self._stored_state.zone_deficit_mm.get(zone_id, 0.0)
             planning_deficit = (
                 self._zone_provisional_deficit_mm.get(zone_id, final_deficit)
                 if provisional_current
                 else final_deficit
             )
+            moisture = self._soil_moisture_assessment(data, now=now)
+            hardware = self._hardware_health(data, now=now)
             deficit = min(
                 maximum_deficit,
                 max(0.0, planning_deficit),
             )
-            area = self._number(data, CONF_AREA_M2, 1.0)
-            efficiency = self._number(data, CONF_APPLICATION_EFFICIENCY, 0.8)
+            if moisture is not None:
+                deficit = max(0.0, deficit - moisture.correction_mm)
+                self._zone_soil_moisture[zone_id] = moisture.as_dict()
+            self._zone_hardware_health[zone_id] = hardware
+            self._zone_effective_profiles[zone_id] = dict(profile.resolved_inputs)
+            area = profile.area_m2
+            efficiency = profile.application_efficiency
             target = calculate_irrigation_target_liters(
                 deficit_mm=deficit,
                 area_m2=area,
@@ -1875,6 +2031,12 @@ class IrrigationManager:
                     or weather.frost_blocked
                     or weather.rain_stop_active
                     or (self._weather_model_configured and not self._weather_automation_available)
+                    or hardware["status"] == "blocked"
+                    or (
+                        moisture is not None
+                        and str(data.get(CONF_SOIL_MOISTURE_ROLE)) == SOIL_MOISTURE_ROLE_INHIBIT
+                        and moisture.safety_blocked
+                    )
                 ),
             )
             last_value = self._stored_state.zone_last_effective_irrigation.get(zone_id)
@@ -1954,7 +2116,7 @@ class IrrigationManager:
         expected_effective_rain = (
             calculate_effective_rain(
                 measured_rain_mm=forecast.amount_mm,
-                rain_factor=self._number(data, CONF_RAIN_FACTOR, 1),
+                rain_factor=self._effective_zone_profile(data, now.date()).rain_factor,
                 maximum_infiltration_mm=self._number(data, CONF_MAX_EFFECTIVE_RAIN_MM, 25),
                 available_storage_mm=available_storage,
             ).effective_mm
@@ -2108,6 +2270,9 @@ class IrrigationManager:
                     planning_now + timedelta(seconds=self._operation_lifetime_limit(data)),
                 )
                 balance_snapshot = self._balance_snapshot(data)
+                resolved_inputs = dict(
+                    self._effective_zone_profile(data, planning_now.date()).resolved_inputs
+                )
                 if existing is not None and existing.status in {"cancelled", "expired"}:
                     requests = tuple(
                         replace(
@@ -2132,6 +2297,7 @@ class IrrigationManager:
                             balance_application_efficiency=balance_snapshot[1],
                             balance_maximum_deficit_mm=balance_snapshot[2],
                             balance_minimum_effective_liters=balance_snapshot[3],
+                            resolved_inputs=resolved_inputs,
                             revision=request.revision + 1,
                         )
                         if request.request_id == request_id
@@ -2172,6 +2338,7 @@ class IrrigationManager:
                                 balance_application_efficiency=balance_snapshot[1],
                                 balance_maximum_deficit_mm=balance_snapshot[2],
                                 balance_minimum_effective_liters=balance_snapshot[3],
+                                resolved_inputs=resolved_inputs,
                                 revision=request.revision + 1,
                             )
                             if request.request_id == request_id
@@ -2216,6 +2383,7 @@ class IrrigationManager:
                     balance_application_efficiency=balance_snapshot[1],
                     balance_maximum_deficit_mm=balance_snapshot[2],
                     balance_minimum_effective_liters=balance_snapshot[3],
+                    resolved_inputs=resolved_inputs,
                 )
                 requests = (*requests, request)
                 sequence += 1
@@ -2462,13 +2630,14 @@ class IrrigationManager:
             for subentry in self._zone_configs:
                 zone_id = subentry.unique_id or subentry.subentry_id
                 data = subentry.data
-                maximum = self._number(data, CONF_MAXIMUM_DEFICIT_MM, 50.0)
+                profile = self._effective_zone_profile(data, period_day)
+                maximum = profile.maximum_deficit_mm
                 previous_deficit = deficits.get(zone_id, 0.0)
-                crop_factor = self._seasonal_crop_factor(data, period_day)
+                crop_factor = profile.crop_and_location_factor
                 crop_et = reference_evapotranspiration_mm * crop_factor
                 effective_rain = calculate_effective_rain(
                     measured_rain_mm=rain_mm,
-                    rain_factor=self._number(data, CONF_RAIN_FACTOR, 1.0),
+                    rain_factor=profile.rain_factor,
                     maximum_infiltration_mm=self._number(data, CONF_MAX_EFFECTIVE_RAIN_MM, 25.0),
                     available_storage_mm=previous_deficit + crop_et,
                 )
@@ -2481,8 +2650,8 @@ class IrrigationManager:
                     ),
                 )
                 deficits[zone_id] = updated.deficit_mm
-                area = self._number(data, CONF_AREA_M2, 1.0)
-                efficiency = self._number(data, CONF_APPLICATION_EFFICIENCY, 0.8)
+                area = profile.area_m2
+                efficiency = profile.application_efficiency
                 gross_target = calculate_irrigation_target_liters(
                     deficit_mm=updated.deficit_mm,
                     area_m2=area,
@@ -2494,7 +2663,7 @@ class IrrigationManager:
                     "seasonal_crop_and_location_factor": crop_factor,
                     "crop_evapotranspiration_mm": crop_et,
                     "measured_rain_mm": rain_mm,
-                    "rain_factor": self._number(data, CONF_RAIN_FACTOR, 1.0),
+                    "rain_factor": profile.rain_factor,
                     "maximum_effective_rain_mm": self._number(
                         data, CONF_MAX_EFFECTIVE_RAIN_MM, 25.0
                     ),
@@ -2503,6 +2672,7 @@ class IrrigationManager:
                     "drainage_mm": effective_rain.drainage_mm,
                     "final_deficit_mm": updated.deficit_mm,
                     "maximum_deficit_mm": maximum,
+                    "resolved_profile": profile.resolved_inputs,
                     "target": {
                         "net_depth_mm": updated.deficit_mm,
                         "area_m2": area,
@@ -2752,12 +2922,13 @@ class IrrigationManager:
                 zone_id = subentry.unique_id or subentry.subentry_id
                 data = subentry.data
                 previous = self._stored_state.zone_deficit_mm.get(zone_id, 0.0)
-                maximum = self._number(data, CONF_MAXIMUM_DEFICIT_MM, 50)
-                factor = self._seasonal_crop_factor(data, local_day)
+                profile = self._effective_zone_profile(data, local_day)
+                maximum = profile.maximum_deficit_mm
+                factor = profile.crop_and_location_factor
                 crop_et = calculation.value_mm * factor
                 rain = calculate_effective_rain(
                     measured_rain_mm=weather.rain_mm.value,
-                    rain_factor=self._number(data, CONF_RAIN_FACTOR, 1),
+                    rain_factor=profile.rain_factor,
                     maximum_infiltration_mm=self._number(data, CONF_MAX_EFFECTIVE_RAIN_MM, 25),
                     available_storage_mm=previous + crop_et,
                 )
@@ -2776,6 +2947,7 @@ class IrrigationManager:
                     "effective_rain_mm": rain.effective_mm,
                     "provisional_deficit_mm": updated.deficit_mm,
                     "model": calculation.as_dict(),
+                    "resolved_profile": profile.resolved_inputs,
                 }
         self._zone_provisional_deficit_mm = provisional
         self._provisional_period_id = (
@@ -2948,6 +3120,9 @@ class IrrigationManager:
                 balance_application_efficiency=balance_snapshot[1],
                 balance_maximum_deficit_mm=balance_snapshot[2],
                 balance_minimum_effective_liters=balance_snapshot[3],
+                resolved_inputs=dict(
+                    self._effective_zone_profile(subentry.data, now.date()).resolved_inputs
+                ),
             )
             budget_warnings = self._manual_budget_warnings(request, now=requested_start)
             self._stored_state = replace(
@@ -3093,6 +3268,9 @@ class IrrigationManager:
                     balance_application_efficiency=balance[1],
                     balance_maximum_deficit_mm=balance[2],
                     balance_minimum_effective_liters=balance[3],
+                    resolved_inputs=dict(
+                        self._effective_zone_profile(subentry.data, now.date()).resolved_inputs
+                    ),
                 )
                 requests.append(request)
                 sequence += 1
@@ -4032,6 +4210,101 @@ class IrrigationManager:
         """Return deliveries requiring explicit water-balance reconciliation."""
         return [delivery.as_dict() for delivery in self._stored_state.uncredited_balance_deliveries]
 
+    def list_profiles(self) -> dict[str, object]:
+        """Return immutable built-ins and detached user-owned profiles."""
+        custom = validate_custom_profiles(self._entry.data.get(CONF_CUSTOM_PROFILES, {}))
+        return {
+            "built_in": builtin_profiles(),
+            "custom": list(custom.values()),
+            "config_hash": self._profile_config_hash(self._entry.data),
+        }
+
+    def preview_profile_impact(self, profile_id: str) -> dict[str, object]:
+        """Preview every zone that would be affected by changing one custom profile."""
+        custom = validate_custom_profiles(self._entry.data.get(CONF_CUSTOM_PROFILES, {}))
+        known = {profile["id"] for profile in builtin_profiles()} | set(custom)
+        if profile_id not in known:
+            raise HomeAssistantError("The irrigation profile does not exist")
+        impacted = profile_impacted_zones(
+            [
+                (subentry.unique_id or subentry.subentry_id, subentry.title, subentry.data)
+                for subentry in self._zone_configs
+            ],
+            dependent_profile_ids(custom, profile_id),
+        )
+        return {
+            "profile_id": profile_id,
+            "impacted_zones": impacted,
+            "count": len(impacted),
+            "config_hash": self._profile_config_hash(self._entry.data),
+        }
+
+    async def async_copy_profile(
+        self,
+        *,
+        source_id: str,
+        new_id: str,
+        name: str,
+        expected_config_hash: str | None = None,
+    ) -> dict[str, object]:
+        """Persist an editable user copy while refusing built-in mutation."""
+        async with self._command_lock:
+            fresh_data = dict(self._entry.data)
+            current_hash = self._profile_config_hash(fresh_data)
+            if expected_config_hash is not None and expected_config_hash != current_hash:
+                raise HomeAssistantError("Irrigation profiles changed; refresh them before copying")
+            try:
+                custom = copy_profile(
+                    fresh_data.get(CONF_CUSTOM_PROFILES, {}),
+                    source_id=source_id,
+                    new_id=new_id,
+                    name=name,
+                )
+            except ValueError as err:
+                raise HomeAssistantError(str(err)) from err
+            self._hass.config_entries.async_update_entry(
+                self._entry,
+                data={**fresh_data, CONF_CUSTOM_PROFILES: custom},
+            )
+            return {
+                "profile": custom[new_id],
+                "impacted_zones": [],
+                "config_hash": self._profile_config_hash(self._entry.data),
+            }
+
+    async def async_update_installation_config(
+        self, data: Mapping[str, Any], *, expected_config_hash: str
+    ) -> None:
+        """Apply an Options Flow edit only if its complete entry snapshot is still current."""
+        async with self._command_lock:
+            if expected_config_hash != self.installation_config_hash(self._entry.data):
+                raise HomeAssistantError(
+                    "Irrigation installation configuration changed; reopen the options flow"
+                )
+            self._hass.config_entries.async_update_entry(
+                self._entry,
+                title=str(data["name"]),
+                data=dict(data),
+            )
+
+    @staticmethod
+    def installation_config_hash(data: Mapping[str, Any]) -> str:
+        """Hash a complete persisted installation config for optimistic locking."""
+        return sha256(
+            json.dumps(dict(data), sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _profile_config_hash(data: Mapping[str, Any]) -> str:
+        """Hash only user-owned profiles for profile-service optimistic locking."""
+        return sha256(
+            json.dumps(
+                validate_custom_profiles(data.get(CONF_CUSTOM_PROFILES, {})),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
     def export_portable_config(self) -> dict[str, object]:
         """Return versioned portable config using only declared non-secret fields."""
         installation_keys = {
@@ -4058,6 +4331,7 @@ class IrrigationManager:
             CONF_MAINTENANCE_MAX_DURATION,
             CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
             CONF_CALIBRATION_SETTLE_SECONDS,
+            CONF_CUSTOM_PROFILES,
             CONF_WEATHER_ENTITY,
             "name",
             "notify_entities",
@@ -4093,6 +4367,24 @@ class IrrigationManager:
             CONF_WATERING_WINDOWS,
             CONF_ZONE_DAILY_BUDGET_LITERS,
             CONF_ZONE_WEEKLY_BUDGET_LITERS,
+            CONF_AGRONOMIC_VALUES_CONFIRMED,
+            CONF_PLANT_PROFILE,
+            CONF_SOIL_PROFILE,
+            CONF_EXPOSURE_PROFILE,
+            CONF_IRRIGATION_PROFILE,
+            CONF_SUBAREAS,
+            CONF_PROFILE_OVERRIDES,
+            CONF_SOIL_MOISTURE_SENSORS,
+            CONF_SOIL_MOISTURE_ROLE,
+            CONF_SOIL_MOISTURE_AGGREGATION,
+            CONF_SOIL_MOISTURE_MAX_AGE_SECONDS,
+            CONF_SOIL_MOISTURE_WET_THRESHOLD,
+            CONF_SOIL_MOISTURE_CORRECTION_LIMIT_MM,
+            CONF_HARDWARE_BATTERY_SENSOR,
+            CONF_HARDWARE_BATTERY_MINIMUM,
+            CONF_HARDWARE_CONNECTIVITY_SENSOR,
+            CONF_HARDWARE_FAULT_SENSOR,
+            CONF_HARDWARE_HEALTH_MAX_AGE_SECONDS,
         }
         return {
             "schema_version": EXPORT_SCHEMA_VERSION,
@@ -4177,6 +4469,15 @@ class IrrigationManager:
                 "latest_calculation": self._latest_final_weather_snapshot(),
             },
             "pending_config_reload": self._pending_reload_task is not None,
+            "profiles": {
+                "built_in_count": len(builtin_profiles()),
+                "custom_count": len(
+                    validate_custom_profiles(self._installation_data.get(CONF_CUSTOM_PROFILES, {}))
+                ),
+                "effective_zones": self._zone_effective_profiles,
+            },
+            "soil_moisture": self._zone_soil_moisture,
+            "hardware_health": self._zone_hardware_health,
             "zone_safety_lock_ids": sorted(self._stored_state.zone_safety_locks),
             "active": (
                 {
@@ -4236,6 +4537,9 @@ class IrrigationManager:
                 )
                 if subentry is None:
                     raise HomeAssistantError("The reconciliation zone no longer exists")
+                profile = self._effective_zone_profile(
+                    subentry.data, datetime.fromisoformat(record.delivered_at).date()
+                )
                 deficits, last_effective = self._balance_after_delivery(
                     zone_id=record.zone_id,
                     delivered_liters=record.delivered_liters,
@@ -4247,11 +4551,9 @@ class IrrigationManager:
                         ),
                     ),
                     delivered_at=datetime.fromisoformat(record.delivered_at),
-                    area_m2=self._number(subentry.data, CONF_AREA_M2, 1),
-                    application_efficiency=self._number(
-                        subentry.data, CONF_APPLICATION_EFFICIENCY, 0.8
-                    ),
-                    maximum_deficit_mm=self._number(subentry.data, CONF_MAXIMUM_DEFICIT_MM, 50),
+                    area_m2=profile.area_m2,
+                    application_efficiency=profile.application_efficiency,
+                    maximum_deficit_mm=profile.maximum_deficit_mm,
                 )
             self._stored_state = replace(
                 self._stored_state,
@@ -4503,6 +4805,21 @@ class IrrigationManager:
             source=manual_request.source,
             ignore_weather=False,
         )
+        preflight_moisture = self._soil_moisture_assessment(subentry.data, now=datetime.now(UTC))
+        manual_request = replace(
+            manual_request,
+            resolved_inputs={
+                **manual_request.resolved_inputs,
+                "preflight": {
+                    "soil_moisture": (
+                        preflight_moisture.as_dict()
+                        if preflight_moisture is not None
+                        else {"status": "not_configured"}
+                    ),
+                    "hardware_health": self._hardware_health(subentry.data, now=datetime.now(UTC)),
+                },
+            },
+        )
         self._cancel_leak_observation()
 
         estimated_flow_l_min = manual_request.estimated_flow_l_min
@@ -4555,6 +4872,7 @@ class IrrigationManager:
                 balance_application_efficiency=(manual_request.balance_application_efficiency),
                 balance_maximum_deficit_mm=manual_request.balance_maximum_deficit_mm,
                 balance_minimum_effective_liters=(manual_request.balance_minimum_effective_liters),
+                resolved_inputs=dict(manual_request.resolved_inputs),
             )
             executions = (*self._stored_state.irrigation_executions, execution)
         else:
@@ -4576,6 +4894,7 @@ class IrrigationManager:
                     execution.balance_minimum_effective_liters
                     or manual_request.balance_minimum_effective_liters
                 ),
+                resolved_inputs=execution.resolved_inputs or dict(manual_request.resolved_inputs),
             )
             executions = self._with_execution(execution)
         manual_request = replace(
@@ -4613,6 +4932,7 @@ class IrrigationManager:
                 balance_application_efficiency=execution.balance_application_efficiency,
                 balance_maximum_deficit_mm=execution.balance_maximum_deficit_mm,
                 balance_minimum_effective_liters=(execution.balance_minimum_effective_liters),
+                resolved_inputs=dict(execution.resolved_inputs),
             ),
         )
         await self._store.async_save(self._stored_state)
@@ -5017,6 +5337,7 @@ class IrrigationManager:
                 bypass_checks=tuple(sorted(set(bypass_checks))),
             )
             meter_baseline = await self._meter.read_raw_liters() if self._has_meter else None
+            profile = self._effective_zone_profile(subentry.data, now.date())
             self._stored_state = replace(
                 self._stored_state,
                 maintenance_test=test,
@@ -5029,16 +5350,13 @@ class IrrigationManager:
                     watering_started_at=None,
                     requested_duration_seconds=duration_seconds,
                     estimated_flow_l_min=self._estimated_flow(subentry.data),
-                    balance_area_m2=self._number(subentry.data, CONF_AREA_M2, 1.0),
-                    balance_application_efficiency=self._number(
-                        subentry.data, CONF_APPLICATION_EFFICIENCY, 0.8
-                    ),
-                    balance_maximum_deficit_mm=self._number(
-                        subentry.data, CONF_MAXIMUM_DEFICIT_MM, 50.0
-                    ),
+                    balance_area_m2=profile.area_m2,
+                    balance_application_efficiency=profile.application_efficiency,
+                    balance_maximum_deficit_mm=profile.maximum_deficit_mm,
                     balance_minimum_effective_liters=self._number(
                         subentry.data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1
                     ),
+                    resolved_inputs=dict(profile.resolved_inputs),
                 ),
             )
             await self._store.async_save(self._stored_state)
@@ -5237,6 +5555,7 @@ class IrrigationManager:
             zone_locks[test.zone_id] = result.safety_violation
         if result.safety_scope == "installation" and result.safety_violation:
             installation_lock = result.safety_violation
+        profile = self._effective_zone_profile(subentry.data, datetime.now(UTC).date())
         deficits, last_effective = self._balance_after_delivery(
             zone_id=test.zone_id,
             delivered_liters=result.delivered_liters,
@@ -5248,9 +5567,9 @@ class IrrigationManager:
                 ),
             ),
             delivered_at=datetime.now(UTC),
-            area_m2=self._number(subentry.data, CONF_AREA_M2, 1.0),
-            application_efficiency=self._number(subentry.data, CONF_APPLICATION_EFFICIENCY, 0.8),
-            maximum_deficit_mm=self._number(subentry.data, CONF_MAXIMUM_DEFICIT_MM, 50.0),
+            area_m2=profile.area_m2,
+            application_efficiency=profile.application_efficiency,
+            maximum_deficit_mm=profile.maximum_deficit_mm,
         )
         proposal = self._stored_state.calibration_proposal
         successful = (
@@ -5527,6 +5846,7 @@ class IrrigationManager:
             raise HomeAssistantError("The amount exceeds unassigned consumption")
 
         zone_id = subentry.unique_id or subentry.subentry_id
+        profile = self._effective_zone_profile(subentry.data, datetime.now(UTC).date())
         zone_totals = dict(self._stored_state.zone_totals_liters)
         zone_totals[zone_id] = zone_totals.get(zone_id, 0.0) + amount_liters
         deficits, last_effective = self._balance_after_delivery(
@@ -5540,9 +5860,9 @@ class IrrigationManager:
                 ),
             ),
             delivered_at=datetime.now(UTC),
-            area_m2=self._number(subentry.data, CONF_AREA_M2, 1.0),
-            application_efficiency=self._number(subentry.data, CONF_APPLICATION_EFFICIENCY, 0.8),
-            maximum_deficit_mm=self._number(subentry.data, CONF_MAXIMUM_DEFICIT_MM, 50.0),
+            area_m2=profile.area_m2,
+            application_efficiency=profile.application_efficiency,
+            maximum_deficit_mm=profile.maximum_deficit_mm,
         )
         self._stored_state = replace(
             self._stored_state,
@@ -5738,6 +6058,15 @@ class IrrigationManager:
                 zone_calculation_explanations={
                     key: dict(value) for key, value in self._zone_calculation_explanations.items()
                 },
+                zone_effective_profiles={
+                    key: dict(value) for key, value in self._zone_effective_profiles.items()
+                },
+                zone_soil_moisture={
+                    key: dict(value) for key, value in self._zone_soil_moisture.items()
+                },
+                zone_hardware_health={
+                    key: dict(value) for key, value in self._zone_hardware_health.items()
+                },
             )
         )
         self._refresh_complete_idle_event()
@@ -5839,12 +6168,12 @@ class IrrigationManager:
             return False
         return previous_liters < minimum_effective_liters <= previous_liters + delivered_liters
 
-    @classmethod
     def _with_balance_snapshot(
-        cls, request: ManualIrrigationRequest, data: Mapping[str, object]
+        self, request: ManualIrrigationRequest, data: Mapping[str, object]
     ) -> ManualIrrigationRequest:
         """Hydrate a legacy pending request once before its durable claim."""
-        snapshot = cls._balance_snapshot(data)
+        snapshot = self._balance_snapshot(data)
+        resolved = self._effective_zone_profile(data, dt_util.now().date()).resolved_inputs
         return replace(
             request,
             balance_area_m2=(request.balance_area_m2 or snapshot[0]),
@@ -5853,6 +6182,7 @@ class IrrigationManager:
             balance_minimum_effective_liters=(
                 request.balance_minimum_effective_liters or snapshot[3]
             ),
+            resolved_inputs=request.resolved_inputs or dict(resolved),
         )
 
     @staticmethod
@@ -5902,14 +6232,14 @@ class IrrigationManager:
             execution_id=execution_id,
         )
 
-    @classmethod
-    def _balance_snapshot(cls, data: Mapping[str, object]) -> tuple[float, float, float, float]:
+    def _balance_snapshot(self, data: Mapping[str, object]) -> tuple[float, float, float, float]:
         """Capture immutable parameters used for later delivery accounting."""
+        profile = self._effective_zone_profile(data, dt_util.now().date())
         return (
-            cls._number(data, CONF_AREA_M2, 1.0),
-            cls._number(data, CONF_APPLICATION_EFFICIENCY, 0.8),
-            cls._number(data, CONF_MAXIMUM_DEFICIT_MM, 50.0),
-            cls._number(data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1),
+            profile.area_m2,
+            profile.application_efficiency,
+            profile.maximum_deficit_mm,
+            self._number(data, CONF_MINIMUM_EFFECTIVE_LITERS, 0.1),
         )
 
     @staticmethod

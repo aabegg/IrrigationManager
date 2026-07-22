@@ -169,3 +169,113 @@ async def test_options_flow_updates_installation_and_zone_expert_settings(
     assert subentry.title == "Lawn expert"
     assert subentry.unique_id == original_unique_id
     assert subentry.data["default_duration"] == 900
+
+
+async def test_profile_change_shows_impacted_zone_before_saving(hass: HomeAssistant) -> None:
+    """Require explicit confirmation with an impacted-zone preview."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={
+            "name": "Garden",
+            "custom_profiles": {
+                "plant:lawn": {
+                    "kind": "plant",
+                    "values": {"seasonal_kc": [1.0] * 12},
+                }
+            },
+        },
+        unique_id="installation-1",
+    )
+    entry.add_to_hass(hass)
+    zone_result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    await hass.config_entries.subentries.async_configure(
+        zone_result["flow_id"],
+        {
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "default_duration": 600,
+            "min_flow": 5,
+            "max_flow": 20,
+            "plant_profile": "plant:lawn",
+        },
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "installation"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Garden",
+            "custom_profiles": {
+                "plant:lawn": {
+                    "kind": "plant",
+                    "values": {"seasonal_kc": [0.8] * 12},
+                }
+            },
+        },
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "profile_impact"
+    assert result["description_placeholders"] == {"zones": "Lawn"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"confirm_profile_changes": True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_profile_edit_rejects_concurrent_entry_change(hass: HomeAssistant) -> None:
+    """Use the form's optimistic hash instead of overwriting a concurrent profile copy."""
+    original_profiles = {
+        "plant:lawn": {
+            "kind": "plant",
+            "values": {"seasonal_kc": [1.0] * 12},
+        }
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={"name": "Garden", "custom_profiles": original_profiles},
+        unique_id="installation-profile-race",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "installation"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Garden",
+            "custom_profiles": {
+                "plant:lawn": {
+                    "kind": "plant",
+                    "values": {"seasonal_kc": [0.8] * 12},
+                }
+            },
+        },
+    )
+    assert result["step_id"] == "profile_impact"
+    concurrent_profiles = {
+        **original_profiles,
+        "plant:concurrent": {
+            "kind": "plant",
+            "values": {"seasonal_kc": [0.6] * 12},
+        },
+    }
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "custom_profiles": concurrent_profiles}
+    )
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"confirm_profile_changes": True}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "configuration_changed"
+    assert entry.data["custom_profiles"] == concurrent_profiles

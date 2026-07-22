@@ -9,7 +9,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 21
+STORAGE_MINOR_VERSION = 22
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -44,6 +44,7 @@ class _StateStore(Store[dict[str, object]]):
             18,
             19,
             20,
+            21,
         }:
             migrated = dict(old_data)
             if old_minor_version == 1:
@@ -228,6 +229,19 @@ class _StateStore(Store[dict[str, object]]):
                         else request
                         for request in requests
                     ]
+            if old_minor_version < 22:
+                for key in ("manual_requests", "irrigation_executions"):
+                    records = migrated.get(key, [])
+                    if isinstance(records, list):
+                        migrated[key] = [
+                            {**record, "resolved_inputs": {}}
+                            if isinstance(record, dict)
+                            else record
+                            for record in records
+                        ]
+                raw_active = migrated.get("active_execution")
+                if isinstance(raw_active, dict):
+                    migrated["active_execution"] = {**raw_active, "resolved_inputs": {}}
             return migrated
         raise NotImplementedError
 

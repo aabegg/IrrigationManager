@@ -117,7 +117,10 @@
       }
     },
     "get_calibration_proposal": {"name": "Get calibration proposal", "description": "Return the latest measured proposal without applying it."},
-    "resolve_calibration": {"name": "Resolve calibration proposal", "description": "Explicitly accept or discard a pending calibration proposal."}
+    "resolve_calibration": {"name": "Resolve calibration proposal", "description": "Explicitly accept or discard a pending calibration proposal."},
+    "list_profiles": {"name": "List irrigation profiles", "description": "Return versioned immutable built-ins and user-owned profile copies.", "fields": {"config_entry_id": {"name": "Irrigation installation"}}},
+    "preview_profile_impact": {"name": "Preview profile impact", "description": "Return every irrigation zone affected by a profile change.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "profile_id": {"name": "Profile ID"}}},
+    "copy_profile": {"name": "Copy irrigation profile", "description": "Create an editable user-owned copy without modifying its built-in source.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "source_profile_id": {"name": "Source profile ID"}, "new_profile_id": {"name": "New profile ID"}, "name": {"name": "Name"}, "config_hash": {"name": "Expected profile configuration hash"}}}
   },
   "selector": {
     "meter_failure_strategy": {
@@ -140,6 +143,16 @@
         "direct": "Prefer direct ET0",
         "calculated": "Prefer calculated ET0"
       }
+    },
+    "soil_moisture_role": {
+      "options": {
+        "plausibility": "Plausibility only",
+        "safety_wet_inhibit": "Wet-soil safety inhibit",
+        "conservative_correction": "Configured conservative correction"
+      }
+    },
+    "soil_moisture_aggregation": {
+      "options": {"minimum": "Minimum", "median": "Median", "mean": "Mean"}
     }
   },
   "entity": {
@@ -232,7 +245,9 @@
       "measured_rain": {"name": "Measured rain"},
       "provisional_water_deficit": {"name": "Provisional water deficit"},
       "crop_evapotranspiration": {"name": "Crop evapotranspiration"},
-      "effective_rain": {"name": "Effective rain"}
+      "effective_rain": {"name": "Effective rain"},
+      "soil_moisture_status": {"name": "Soil moisture status", "state": {"not_configured": "Not configured", "valid": "Valid", "partial": "Partially valid", "unavailable": "Unavailable"}},
+      "hardware_health": {"name": "Valve hardware health", "state": {"not_configured": "Not configured", "healthy": "Healthy", "blocked": "Blocked"}}
     }
   },
   "config": {
@@ -285,6 +300,7 @@
           ,"installation_daily_budget_liters": "Daily installation budget"
           ,"installation_weekly_budget_liters": "Weekly installation budget"
           ,"pause_timeout_seconds": "Maximum pause duration"
+          ,"custom_profiles": "User-owned profile copies"
         },
         "data_description": {
           "main_valve": "Optional switch or valve that isolates the complete installation.",
@@ -305,7 +321,8 @@
       "already_configured": "This irrigation installation is already configured."
     },
     "error": {
-      "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time."
+      "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time.",
+      "invalid_profiles": "Profile data or a profile reference is invalid."
     }
   },
   "options": {
@@ -365,6 +382,7 @@
           ,"installation_daily_budget_liters": "Daily installation budget"
           ,"installation_weekly_budget_liters": "Weekly installation budget"
           ,"pause_timeout_seconds": "Maximum pause duration"
+          ,"custom_profiles": "User-owned profile copies"
         },
         "data_description": {
           "local_wind_height_m": "Defaults to 2 m for local garden sensors; set their actual physical height.",
@@ -375,6 +393,11 @@
       "zone": {
         "title": "Select irrigation zone",
         "data": {"zone_subentry_id": "Irrigation zone"}
+      },
+      "profile_impact": {
+        "title": "Confirm profile changes",
+        "description": "Affected irrigation zones: {zones}. Historical calculations remain unchanged.",
+        "data": {"confirm_profile_changes": "Apply profile changes"}
       },
       "zone_settings": {
         "title": "Zone expert settings",
@@ -414,17 +437,39 @@
           "zone_priority": "Zone priority",
           "watering_windows": "Watering-window rules",
           "zone_daily_budget_liters": "Daily zone budget",
-          "zone_weekly_budget_liters": "Weekly zone budget"
+          "zone_weekly_budget_liters": "Weekly zone budget",
+          "agronomic_values_confirmed": "I reviewed and confirm the agronomic values",
+          "plant_profile": "Plant profile ID",
+          "soil_profile": "Soil profile ID",
+          "exposure_profile": "Exposure profile ID",
+          "irrigation_profile": "Irrigation profile ID",
+          "subareas": "Teilflaechen",
+          "profile_overrides": "Profile overrides",
+          "soil_moisture_sensors": "Soil moisture sensors",
+          "soil_moisture_role": "Soil moisture role",
+          "soil_moisture_aggregation": "Soil moisture aggregation",
+          "soil_moisture_max_age_seconds": "Maximum soil moisture age",
+          "soil_moisture_wet_threshold": "Wet-soil threshold",
+          "soil_moisture_correction_limit_mm": "Maximum configured correction",
+          "hardware_battery_sensor": "Valve battery sensor",
+          "hardware_battery_minimum": "Minimum valve battery",
+          "hardware_connectivity_sensor": "Valve connectivity sensor",
+          "hardware_fault_sensor": "Valve fault sensor",
+          "hardware_health_max_age_seconds": "Maximum hardware-health age"
         }
       }
     },
     "abort": {
       "no_zones": "Add an irrigation zone before editing zone settings.",
       "zone_not_found": "The selected irrigation zone no longer exists.",
-      "already_configured": "This zone valve is already configured."
+      "already_configured": "This zone valve is already configured.",
+      "profile_change_not_pending": "There is no pending profile change to confirm.",
+      "configuration_changed": "The installation changed while this form was open. Reopen it and apply your changes again."
     },
     "error": {
-      "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time."
+      "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time.",
+      "invalid_profiles": "Profile data or a profile reference is invalid.",
+      "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
     }
   },
   "config_subentries": {
@@ -469,7 +514,25 @@
             "zone_priority": "Zone priority",
             "watering_windows": "Watering-window rules",
             "zone_daily_budget_liters": "Daily zone budget",
-            "zone_weekly_budget_liters": "Weekly zone budget"
+            "zone_weekly_budget_liters": "Weekly zone budget",
+            "agronomic_values_confirmed": "I reviewed and confirm the agronomic values",
+            "plant_profile": "Plant profile ID",
+            "soil_profile": "Soil profile ID",
+            "exposure_profile": "Exposure profile ID",
+            "irrigation_profile": "Irrigation profile ID",
+            "subareas": "Teilflaechen",
+            "profile_overrides": "Profile overrides",
+            "soil_moisture_sensors": "Soil moisture sensors",
+            "soil_moisture_role": "Soil moisture role",
+            "soil_moisture_aggregation": "Soil moisture aggregation",
+            "soil_moisture_max_age_seconds": "Maximum soil moisture age",
+            "soil_moisture_wet_threshold": "Wet-soil threshold",
+            "soil_moisture_correction_limit_mm": "Maximum configured correction",
+            "hardware_battery_sensor": "Valve battery sensor",
+            "hardware_battery_minimum": "Minimum valve battery",
+            "hardware_connectivity_sensor": "Valve connectivity sensor",
+            "hardware_fault_sensor": "Valve fault sensor",
+            "hardware_health_max_age_seconds": "Maximum hardware-health age"
           },
           "data_description": {
             "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
@@ -513,7 +576,25 @@
             "zone_priority": "Zone priority",
             "watering_windows": "Watering-window rules",
             "zone_daily_budget_liters": "Daily zone budget",
-            "zone_weekly_budget_liters": "Weekly zone budget"
+            "zone_weekly_budget_liters": "Weekly zone budget",
+            "agronomic_values_confirmed": "I reviewed and confirm the agronomic values",
+            "plant_profile": "Plant profile ID",
+            "soil_profile": "Soil profile ID",
+            "exposure_profile": "Exposure profile ID",
+            "irrigation_profile": "Irrigation profile ID",
+            "subareas": "Teilflaechen",
+            "profile_overrides": "Profile overrides",
+            "soil_moisture_sensors": "Soil moisture sensors",
+            "soil_moisture_role": "Soil moisture role",
+            "soil_moisture_aggregation": "Soil moisture aggregation",
+            "soil_moisture_max_age_seconds": "Maximum soil moisture age",
+            "soil_moisture_wet_threshold": "Wet-soil threshold",
+            "soil_moisture_correction_limit_mm": "Maximum configured correction",
+            "hardware_battery_sensor": "Valve battery sensor",
+            "hardware_battery_minimum": "Minimum valve battery",
+            "hardware_connectivity_sensor": "Valve connectivity sensor",
+            "hardware_fault_sensor": "Valve fault sensor",
+            "hardware_health_max_age_seconds": "Maximum hardware-health age"
           },
           "data_description": {
             "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
@@ -527,7 +608,10 @@
       "error": {
         "invalid_intervals": "The maximum interval must not be shorter than the minimum interval.",
         "invalid_watering_windows": "Enter at least one valid default, weekday, date, or sun-event watering-window rule.",
-        "automation_requires_flow_profile": "Automatic release requires minimum and maximum flow values."
+        "automation_requires_flow_profile": "Automatic release requires minimum and maximum flow values.",
+        "agronomic_confirmation_required": "Review and confirm the generic or customized agronomic values before enabling automatic irrigation.",
+        "invalid_profiles": "Profile data, Teilflaechen, or a profile reference is invalid.",
+        "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
       }
     }
   }

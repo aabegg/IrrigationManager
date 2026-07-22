@@ -35,6 +35,11 @@ ATTR_RESOLUTION = "resolution"
 ATTR_TEST_ID = "test_id"
 ATTR_BYPASS_CHECKS = "bypass_checks"
 ATTR_PROPOSAL_ID = "proposal_id"
+ATTR_PROFILE_ID = "profile_id"
+ATTR_SOURCE_PROFILE_ID = "source_profile_id"
+ATTR_NEW_PROFILE_ID = "new_profile_id"
+ATTR_NAME = "name"
+ATTR_CONFIG_HASH = "config_hash"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
@@ -67,6 +72,9 @@ SERVICE_STOP_MAINTENANCE_TEST = "stop_maintenance_test"
 SERVICE_START_CALIBRATION = "start_calibration"
 SERVICE_GET_CALIBRATION_PROPOSAL = "get_calibration_proposal"
 SERVICE_RESOLVE_CALIBRATION = "resolve_calibration"
+SERVICE_LIST_PROFILES = "list_profiles"
+SERVICE_PREVIEW_PROFILE_IMPACT = "preview_profile_impact"
+SERVICE_COPY_PROFILE = "copy_profile"
 
 
 def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
@@ -226,6 +234,21 @@ CALIBRATION_RESOLUTION_SCHEMA = vol.Schema(
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_PROPOSAL_ID): cv.string,
         vol.Required(ATTR_RESOLUTION): vol.In({"accept", "discard"}),
+    }
+)
+PROFILE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_PROFILE_ID): cv.string,
+    }
+)
+COPY_PROFILE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_SOURCE_PROFILE_ID): cv.string,
+        vol.Required(ATTR_NEW_PROFILE_ID): cv.string,
+        vol.Required(ATTR_NAME): cv.string,
+        vol.Optional(ATTR_CONFIG_HASH): cv.string,
     }
 )
 
@@ -408,6 +431,20 @@ async def async_register_services(hass: HomeAssistant) -> None:
             resolution=cast(str, call.data[ATTR_RESOLUTION]),
         )
 
+    async def list_profiles(call: ServiceCall) -> dict[str, Any]:
+        return manager_for(call).list_profiles()
+
+    async def preview_profile_impact(call: ServiceCall) -> dict[str, Any]:
+        return manager_for(call).preview_profile_impact(cast(str, call.data[ATTR_PROFILE_ID]))
+
+    async def copy_profile_service(call: ServiceCall) -> dict[str, Any]:
+        return await manager_for(call).async_copy_profile(
+            source_id=cast(str, call.data[ATTR_SOURCE_PROFILE_ID]),
+            new_id=cast(str, call.data[ATTR_NEW_PROFILE_ID]),
+            name=cast(str, call.data[ATTR_NAME]),
+            expected_config_hash=cast(str | None, call.data.get(ATTR_CONFIG_HASH)),
+        )
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_START_MANUAL,
@@ -460,6 +497,27 @@ async def async_register_services(hass: HomeAssistant) -> None:
         SERVICE_RESOLVE_CALIBRATION,
         resolve_calibration,
         schema=CALIBRATION_RESOLUTION_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_PROFILES,
+        list_profiles,
+        schema=INSTALLATION_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PREVIEW_PROFILE_IMPACT,
+        preview_profile_impact,
+        schema=PROFILE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_COPY_PROFILE,
+        copy_profile_service,
+        schema=COPY_PROFILE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(

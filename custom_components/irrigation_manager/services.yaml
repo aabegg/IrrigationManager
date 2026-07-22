@@ -534,3 +534,44 @@ resolve_calibration:
           options:
             - accept
             - discard
+list_profiles:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+preview_profile_impact:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    profile_id:
+      required: true
+      selector:
+        text:
+copy_profile:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    source_profile_id:
+      required: true
+      selector:
+        text:
+    new_profile_id:
+      required: true
+      selector:
+        text:
+    name:
+      required: true
+      selector:
+        text:
+    config_hash:
+      required: false
+      selector:
+        text:

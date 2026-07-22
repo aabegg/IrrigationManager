@@ -216,6 +216,22 @@ async def async_setup_entry(
                     zone_name=subentry.title,
                     key="effective_rain",
                 ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="soil_moisture_status",
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="hardware_health",
+                ),
             ],
             config_subentry_id=subentry.subentry_id,
         )
@@ -662,6 +678,14 @@ class ZonePlanningValueSensor(_ZoneObservationSensor):
             self._attr_suggested_display_precision = 1
         elif key == "next_watering_window":
             self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        elif key in {"soil_moisture_status", "hardware_health"}:
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_entity_registry_enabled_default = False
+            self._attr_options = (
+                ["not_configured", "valid", "partial", "unavailable"]
+                if key == "soil_moisture_status"
+                else ["not_configured", "healthy", "blocked"]
+            )
 
     @property
     @override
@@ -684,6 +708,12 @@ class ZonePlanningValueSensor(_ZoneObservationSensor):
         if self._observation_key == "next_watering_window":
             timestamp = snapshot.zone_next_window.get(self._zone_id)
             return datetime.fromisoformat(timestamp) if timestamp is not None else None
+        if self._observation_key == "soil_moisture_status":
+            moisture = snapshot.zone_soil_moisture.get(self._zone_id)
+            return str(moisture.get("status", "not_configured")) if moisture else "not_configured"
+        if self._observation_key == "hardware_health":
+            hardware = snapshot.zone_hardware_health.get(self._zone_id)
+            return str(hardware.get("status", "not_configured")) if hardware else "not_configured"
         return snapshot.zone_planning_reason.get(self._zone_id, "automation_disabled")
 
     @property
@@ -696,7 +726,14 @@ class ZonePlanningValueSensor(_ZoneObservationSensor):
             "crop_evapotranspiration",
             "effective_rain",
             "automatic_target",
+            "soil_moisture_status",
+            "hardware_health",
         }:
             return None
-        explanation = self.coordinator.data.zone_calculation_explanations.get(self._zone_id)
-        return {"calculation": explanation} if explanation is not None else None
+        snapshot = self.coordinator.data
+        return {
+            "calculation": snapshot.zone_calculation_explanations.get(self._zone_id),
+            "effective_profile": snapshot.zone_effective_profiles.get(self._zone_id),
+            "soil_moisture": snapshot.zone_soil_moisture.get(self._zone_id),
+            "hardware_health": snapshot.zone_hardware_health.get(self._zone_id),
+        }

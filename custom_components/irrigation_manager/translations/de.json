@@ -117,7 +117,10 @@
       }
     },
     "get_calibration_proposal": {"name": "Kalibrierungsvorschlag abrufen", "description": "Gibt den letzten Messvorschlag zurück, ohne ihn anzuwenden."},
-    "resolve_calibration": {"name": "Kalibrierungsvorschlag entscheiden", "description": "Übernimmt oder verwirft einen offenen Kalibrierungsvorschlag ausdrücklich."}
+    "resolve_calibration": {"name": "Kalibrierungsvorschlag entscheiden", "description": "Übernimmt oder verwirft einen offenen Kalibrierungsvorschlag ausdrücklich."},
+    "list_profiles": {"name": "Bewässerungsprofile auflisten", "description": "Gibt versionierte unveränderliche Standardprofile und benutzereigene Kopien zurück.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}}},
+    "preview_profile_impact": {"name": "Profil-Auswirkung anzeigen", "description": "Gibt alle von einer Profiländerung betroffenen Bewässerungszonen zurück.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}, "profile_id": {"name": "Profil-ID"}}},
+    "copy_profile": {"name": "Bewässerungsprofil kopieren", "description": "Erstellt eine bearbeitbare benutzereigene Kopie, ohne das Standardprofil zu verändern.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}, "source_profile_id": {"name": "ID des Ausgangsprofils"}, "new_profile_id": {"name": "Neue Profil-ID"}, "name": {"name": "Name"}, "config_hash": {"name": "Erwarteter Hash der Profilkonfiguration"}}}
   },
   "selector": {
     "meter_failure_strategy": {
@@ -140,6 +143,16 @@
         "direct": "Direkte ET0 bevorzugen",
         "calculated": "Berechnete ET0 bevorzugen"
       }
+    },
+    "soil_moisture_role": {
+      "options": {
+        "plausibility": "Nur Plausibilität",
+        "safety_wet_inhibit": "Sicherheitssperre bei nassem Boden",
+        "conservative_correction": "Konfigurierte konservative Korrektur"
+      }
+    },
+    "soil_moisture_aggregation": {
+      "options": {"minimum": "Minimum", "median": "Median", "mean": "Mittelwert"}
     }
   },
   "entity": {
@@ -232,7 +245,9 @@
       "measured_rain": {"name": "Gemessener Regen"},
       "provisional_water_deficit": {"name": "Vorläufiges Wasserdefizit"},
       "crop_evapotranspiration": {"name": "Pflanzenverdunstung"},
-      "effective_rain": {"name": "Wirksamer Regen"}
+      "effective_rain": {"name": "Wirksamer Regen"},
+      "soil_moisture_status": {"name": "Bodenfeuchtestatus", "state": {"not_configured": "Nicht konfiguriert", "valid": "Gültig", "partial": "Teilweise gültig", "unavailable": "Nicht verfügbar"}},
+      "hardware_health": {"name": "Zustand der Ventilhardware", "state": {"not_configured": "Nicht konfiguriert", "healthy": "In Ordnung", "blocked": "Gesperrt"}}
     }
   },
   "config": {
@@ -285,6 +300,7 @@
           ,"installation_daily_budget_liters": "Tagesbudget der Anlage"
           ,"installation_weekly_budget_liters": "Wochenbudget der Anlage"
           ,"pause_timeout_seconds": "Maximale Pausendauer"
+          ,"custom_profiles": "Benutzereigene Profilkopien"
         },
         "data_description": {
           "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
@@ -305,7 +321,8 @@
       "already_configured": "Diese Bewässerungsanlage ist bereits konfiguriert."
     },
     "error": {
-      "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein."
+      "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein.",
+      "invalid_profiles": "Profildaten oder eine Profilreferenz sind ungültig."
     }
   },
   "options": {
@@ -365,6 +382,7 @@
           ,"installation_daily_budget_liters": "Tagesbudget der Anlage"
           ,"installation_weekly_budget_liters": "Wochenbudget der Anlage"
           ,"pause_timeout_seconds": "Maximale Pausendauer"
+          ,"custom_profiles": "Benutzereigene Profilkopien"
         },
         "data_description": {
           "local_wind_height_m": "Standard sind 2 m für lokale Gartensensoren; gib ihre tatsächliche physische Höhe an.",
@@ -375,6 +393,11 @@
       "zone": {
         "title": "Bewässerungszone auswählen",
         "data": {"zone_subentry_id": "Bewässerungszone"}
+      },
+      "profile_impact": {
+        "title": "Profiländerungen bestätigen",
+        "description": "Betroffene Bewässerungszonen: {zones}. Historische Berechnungen bleiben unverändert.",
+        "data": {"confirm_profile_changes": "Profiländerungen übernehmen"}
       },
       "zone_settings": {
         "title": "Experteneinstellungen der Zone",
@@ -414,17 +437,39 @@
           "zone_priority": "Zonenpriorität",
           "watering_windows": "Regeln für Bewässerungsfenster",
           "zone_daily_budget_liters": "Tagesbudget der Zone",
-          "zone_weekly_budget_liters": "Wochenbudget der Zone"
+          "zone_weekly_budget_liters": "Wochenbudget der Zone",
+          "agronomic_values_confirmed": "Ich habe die agronomischen Werte geprüft und bestätigt",
+          "plant_profile": "ID des Pflanzenprofils",
+          "soil_profile": "ID des Bodenprofils",
+          "exposure_profile": "ID des Standortprofils",
+          "irrigation_profile": "ID des Bewässerungsprofils",
+          "subareas": "Teilflächen",
+          "profile_overrides": "Profilüberschreibungen",
+          "soil_moisture_sensors": "Bodenfeuchtesensoren",
+          "soil_moisture_role": "Rolle der Bodenfeuchte",
+          "soil_moisture_aggregation": "Zusammenführung der Bodenfeuchte",
+          "soil_moisture_max_age_seconds": "Maximales Alter der Bodenfeuchte",
+          "soil_moisture_wet_threshold": "Schwellwert für nassen Boden",
+          "soil_moisture_correction_limit_mm": "Maximale konfigurierte Korrektur",
+          "hardware_battery_sensor": "Batteriesensor des Ventils",
+          "hardware_battery_minimum": "Mindestbatteriestand des Ventils",
+          "hardware_connectivity_sensor": "Verbindungssensor des Ventils",
+          "hardware_fault_sensor": "Störungssensor des Ventils",
+          "hardware_health_max_age_seconds": "Maximales Alter des Hardwarezustands"
         }
       }
     },
     "abort": {
       "no_zones": "Füge zuerst eine Bewässerungszone hinzu.",
       "zone_not_found": "Die ausgewählte Bewässerungszone existiert nicht mehr.",
-      "already_configured": "Dieses Zonenventil ist bereits konfiguriert."
+      "already_configured": "Dieses Zonenventil ist bereits konfiguriert.",
+      "profile_change_not_pending": "Es gibt keine offene Profiländerung zur Bestätigung.",
+      "configuration_changed": "Die Anlage wurde geändert, während dieses Formular geöffnet war. Öffne es erneut und wende die Änderungen nochmals an."
     },
     "error": {
-      "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein."
+      "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein.",
+      "invalid_profiles": "Profildaten oder eine Profilreferenz sind ungültig.",
+      "soil_moisture_correction_limit_required": "Die konservative Korrektur benötigt eine ausdrücklich positive Korrekturgrenze."
     }
   },
   "config_subentries": {
@@ -469,7 +514,25 @@
             "zone_priority": "Zonenpriorität",
             "watering_windows": "Regeln für Bewässerungsfenster",
             "zone_daily_budget_liters": "Tagesbudget der Zone",
-            "zone_weekly_budget_liters": "Wochenbudget der Zone"
+            "zone_weekly_budget_liters": "Wochenbudget der Zone",
+            "agronomic_values_confirmed": "Ich habe die agronomischen Werte geprüft und bestätigt",
+            "plant_profile": "ID des Pflanzenprofils",
+            "soil_profile": "ID des Bodenprofils",
+            "exposure_profile": "ID des Standortprofils",
+            "irrigation_profile": "ID des Bewässerungsprofils",
+            "subareas": "Teilflächen",
+            "profile_overrides": "Profilüberschreibungen",
+            "soil_moisture_sensors": "Bodenfeuchtesensoren",
+            "soil_moisture_role": "Rolle der Bodenfeuchte",
+            "soil_moisture_aggregation": "Zusammenführung der Bodenfeuchte",
+            "soil_moisture_max_age_seconds": "Maximales Alter der Bodenfeuchte",
+            "soil_moisture_wet_threshold": "Schwellwert für nassen Boden",
+            "soil_moisture_correction_limit_mm": "Maximale konfigurierte Korrektur",
+            "hardware_battery_sensor": "Batteriesensor des Ventils",
+            "hardware_battery_minimum": "Mindestbatteriestand des Ventils",
+            "hardware_connectivity_sensor": "Verbindungssensor des Ventils",
+            "hardware_fault_sensor": "Störungssensor des Ventils",
+            "hardware_health_max_age_seconds": "Maximales Alter des Hardwarezustands"
           },
           "data_description": {
             "meter_failure_strategy": "Gilt beim Ausfall eines konfigurierten kumulativen Zählers. Ohne Zähler laufen automatische Ziele zeitgesteuert anhand des Durchflussprofils.",
@@ -513,7 +576,25 @@
             "zone_priority": "Zonenpriorität",
             "watering_windows": "Regeln für Bewässerungsfenster",
             "zone_daily_budget_liters": "Tagesbudget der Zone",
-            "zone_weekly_budget_liters": "Wochenbudget der Zone"
+            "zone_weekly_budget_liters": "Wochenbudget der Zone",
+            "agronomic_values_confirmed": "Ich habe die agronomischen Werte geprüft und bestätigt",
+            "plant_profile": "ID des Pflanzenprofils",
+            "soil_profile": "ID des Bodenprofils",
+            "exposure_profile": "ID des Standortprofils",
+            "irrigation_profile": "ID des Bewässerungsprofils",
+            "subareas": "Teilflächen",
+            "profile_overrides": "Profilüberschreibungen",
+            "soil_moisture_sensors": "Bodenfeuchtesensoren",
+            "soil_moisture_role": "Rolle der Bodenfeuchte",
+            "soil_moisture_aggregation": "Zusammenführung der Bodenfeuchte",
+            "soil_moisture_max_age_seconds": "Maximales Alter der Bodenfeuchte",
+            "soil_moisture_wet_threshold": "Schwellwert für nassen Boden",
+            "soil_moisture_correction_limit_mm": "Maximale konfigurierte Korrektur",
+            "hardware_battery_sensor": "Batteriesensor des Ventils",
+            "hardware_battery_minimum": "Mindestbatteriestand des Ventils",
+            "hardware_connectivity_sensor": "Verbindungssensor des Ventils",
+            "hardware_fault_sensor": "Störungssensor des Ventils",
+            "hardware_health_max_age_seconds": "Maximales Alter des Hardwarezustands"
           },
           "data_description": {
             "meter_failure_strategy": "Gilt beim Ausfall eines konfigurierten kumulativen Zählers. Ohne Zähler laufen automatische Ziele zeitgesteuert anhand des Durchflussprofils.",
@@ -527,7 +608,10 @@
       "error": {
         "invalid_intervals": "Der maximale Abstand darf nicht kürzer als der minimale Abstand sein.",
         "invalid_watering_windows": "Mindestens eine gültige Standard-, Wochentags-, Datums- oder Sonnenereignisregel ist erforderlich.",
-        "automation_requires_flow_profile": "Die Automatikfreigabe benötigt minimalen und maximalen Durchfluss."
+        "automation_requires_flow_profile": "Die Automatikfreigabe benötigt minimalen und maximalen Durchfluss.",
+        "agronomic_confirmation_required": "Prüfe und bestätige die generischen oder angepassten agronomischen Werte vor der Automatikfreigabe.",
+        "invalid_profiles": "Profildaten, Teilflächen oder eine Profilreferenz sind ungültig.",
+        "soil_moisture_correction_limit_required": "Die konservative Korrektur benötigt eine ausdrücklich positive Korrekturgrenze."
       }
     }
   }

@@ -7,7 +7,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN
+from .const import CONF_AGRONOMIC_VALUES_CONFIRMED, CONF_CUSTOM_PROFILES, DOMAIN
 from .coordinator import IrrigationCoordinator
 from .frontend import async_register_frontend, async_unregister_frontend
 from .manager import IrrigationManager
@@ -98,8 +98,19 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Mark legacy entries compatible with additive automatic-planning defaults."""
     if entry.version != 1:
         return False
-    if entry.minor_version < 1:
-        hass.config_entries.async_update_entry(entry, minor_version=1)
+    if entry.minor_version < 2:
+        for subentry in entry.get_subentries_of_type("zone"):
+            if CONF_AGRONOMIC_VALUES_CONFIRMED not in subentry.data:
+                hass.config_entries.async_update_subentry(
+                    entry,
+                    subentry,
+                    data={**subentry.data, CONF_AGRONOMIC_VALUES_CONFIRMED: True},
+                )
+        hass.config_entries.async_update_entry(
+            entry,
+            data={CONF_CUSTOM_PROFILES: {}, **entry.data},
+            minor_version=2,
+        )
     return True
 
 

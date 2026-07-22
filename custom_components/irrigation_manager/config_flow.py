@@ -22,6 +22,7 @@ from homeassistant.const import (
     UnitOfVolumeFlowRate,
 )
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
@@ -29,6 +30,7 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    ObjectSelector,
     SelectSelector,
     SelectSelectorConfig,
     TextSelector,
@@ -38,15 +40,18 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
+    CONF_AGRONOMIC_VALUES_CONFIRMED,
     CONF_APPLICATION_EFFICIENCY,
     CONF_AREA_M2,
     CONF_AUTOMATIC_MAX_DURATION,
     CONF_AUTOMATION_ENABLED,
     CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_CROP_FACTOR,
+    CONF_CUSTOM_PROFILES,
     CONF_DEFAULT_DURATION,
     CONF_ET0_PRIORITY,
     CONF_ET0_SENSORS,
+    CONF_EXPOSURE_PROFILE,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
@@ -55,11 +60,17 @@ from .const import (
     CONF_FORECAST_RAIN_THRESHOLD_MM,
     CONF_FROST_ENTITY,
     CONF_FROST_THRESHOLD,
+    CONF_HARDWARE_BATTERY_MINIMUM,
+    CONF_HARDWARE_BATTERY_SENSOR,
+    CONF_HARDWARE_CONNECTIVITY_SENSOR,
+    CONF_HARDWARE_FAULT_SENSOR,
+    CONF_HARDWARE_HEALTH_MAX_AGE_SECONDS,
     CONF_HUMIDITY_SENSORS,
     CONF_INSTALLATION_DAILY_BUDGET_LITERS,
     CONF_INSTALLATION_MAX_DELIVERY_RUNTIME,
     CONF_INSTALLATION_MAX_OPERATION_LIFETIME,
     CONF_INSTALLATION_WEEKLY_BUDGET_LITERS,
+    CONF_IRRIGATION_PROFILE,
     CONF_LEAK_DURATION_SECONDS,
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
@@ -86,7 +97,9 @@ from .const import (
     CONF_NOTIFY_ENTITIES,
     CONF_OPEN_METEO_ENABLED,
     CONF_PAUSE_TIMEOUT_SECONDS,
+    CONF_PLANT_PROFILE,
     CONF_PRESSURE_SENSORS,
+    CONF_PROFILE_OVERRIDES,
     CONF_RAIN_FACTOR,
     CONF_RAIN_SENSORS,
     CONF_RAIN_STOP_ENTITY,
@@ -94,7 +107,15 @@ from .const import (
     CONF_SEASONAL_CROP_FACTORS,
     CONF_SEASONAL_ET0_MM,
     CONF_SOAK_DURATION,
+    CONF_SOIL_MOISTURE_AGGREGATION,
+    CONF_SOIL_MOISTURE_CORRECTION_LIMIT_MM,
+    CONF_SOIL_MOISTURE_MAX_AGE_SECONDS,
+    CONF_SOIL_MOISTURE_ROLE,
+    CONF_SOIL_MOISTURE_SENSORS,
+    CONF_SOIL_MOISTURE_WET_THRESHOLD,
+    CONF_SOIL_PROFILE,
     CONF_SOLAR_RADIATION_SENSORS,
+    CONF_SUBAREAS,
     CONF_SUNSHINE_DURATION_SENSORS,
     CONF_TEMPERATURE_SENSORS,
     CONF_WATER_METER,
@@ -119,10 +140,20 @@ from .const import (
     ET0_PRIORITY_DIRECT,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
+    SOIL_MOISTURE_ROLE_CORRECTION,
+    SOIL_MOISTURE_ROLE_INHIBIT,
+    SOIL_MOISTURE_ROLE_PLAUSIBILITY,
     SUBENTRY_TYPE_ZONE,
     WATERING_MODE_DEMAND,
     WATERING_MODE_MINIMUM,
     WEATHER_FAILURE_FAIL_SAFE,
+)
+from .manager import IrrigationManager
+from .profiles import (
+    dependent_profile_ids,
+    profile_impacted_zones,
+    resolve_effective_zone_profile,
+    validate_custom_profiles,
 )
 from .scheduler import parse_window_rule
 from .weather import calculate_seasonal_value
@@ -353,6 +384,7 @@ INSTALLATION_SCHEMA = vol.Schema(
                 unit_of_measurement=UnitOfTime.SECONDS,
             )
         ),
+        vol.Optional(CONF_CUSTOM_PROFILES, default={}): ObjectSelector(),
     }
 )
 
@@ -438,6 +470,21 @@ ZONE_SCHEMA = vol.Schema(
                 translation_key=CONF_WATERING_MODE,
             )
         ),
+        vol.Optional(CONF_AGRONOMIC_VALUES_CONFIRMED, default=False): BooleanSelector(),
+        vol.Optional(
+            CONF_PLANT_PROFILE, default="builtin:plant:generic-neutral:v1"
+        ): TextSelector(),
+        vol.Optional(
+            CONF_SOIL_PROFILE, default="builtin:soil:generic-reference:v1"
+        ): TextSelector(),
+        vol.Optional(
+            CONF_EXPOSURE_PROFILE, default="builtin:exposure:generic-neutral:v1"
+        ): TextSelector(),
+        vol.Optional(
+            CONF_IRRIGATION_PROFILE, default="builtin:irrigation:generic-reference:v1"
+        ): TextSelector(),
+        vol.Optional(CONF_SUBAREAS, default=[]): ObjectSelector(),
+        vol.Optional(CONF_PROFILE_OVERRIDES, default={}): ObjectSelector(),
         vol.Optional(CONF_AREA_M2, default=1): NumberSelector(
             NumberSelectorConfig(min=0.1, max=100_000, step=0.1, mode=NumberSelectorMode.BOX)
         ),
@@ -538,11 +585,56 @@ ZONE_SCHEMA = vol.Schema(
                 unit_of_measurement=UnitOfVolume.LITERS,
             )
         ),
+        vol.Optional(CONF_SOIL_MOISTURE_SENSORS, default=[]): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR, multiple=True)
+        ),
+        vol.Optional(
+            CONF_SOIL_MOISTURE_ROLE, default=SOIL_MOISTURE_ROLE_PLAUSIBILITY
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SOIL_MOISTURE_ROLE_PLAUSIBILITY,
+                    SOIL_MOISTURE_ROLE_INHIBIT,
+                    SOIL_MOISTURE_ROLE_CORRECTION,
+                ],
+                translation_key=CONF_SOIL_MOISTURE_ROLE,
+            )
+        ),
+        vol.Optional(CONF_SOIL_MOISTURE_AGGREGATION, default="median"): SelectSelector(
+            SelectSelectorConfig(
+                options=["minimum", "median", "mean"],
+                translation_key=CONF_SOIL_MOISTURE_AGGREGATION,
+            )
+        ),
+        vol.Optional(CONF_SOIL_MOISTURE_MAX_AGE_SECONDS, default=3600): NumberSelector(
+            NumberSelectorConfig(min=1, max=604_800, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_SOIL_MOISTURE_WET_THRESHOLD, default=80): NumberSelector(
+            NumberSelectorConfig(min=0, max=100, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_SOIL_MOISTURE_CORRECTION_LIMIT_MM, default=0): NumberSelector(
+            NumberSelectorConfig(min=0, max=100, step=0.1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_HARDWARE_BATTERY_SENSOR): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR)
+        ),
+        vol.Optional(CONF_HARDWARE_BATTERY_MINIMUM, default=20): NumberSelector(
+            NumberSelectorConfig(min=0, max=100, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_HARDWARE_CONNECTIVITY_SENSOR): EntitySelector(
+            EntitySelectorConfig(domain=[Platform.BINARY_SENSOR, Platform.SENSOR])
+        ),
+        vol.Optional(CONF_HARDWARE_FAULT_SENSOR): EntitySelector(
+            EntitySelectorConfig(domain=[Platform.BINARY_SENSOR, Platform.SENSOR])
+        ),
+        vol.Optional(CONF_HARDWARE_HEALTH_MAX_AGE_SECONDS, default=300): NumberSelector(
+            NumberSelectorConfig(min=1, max=86_400, step=1, mode=NumberSelectorMode.BOX)
+        ),
     }
 )
 
 
-def _validate_zone_input(user_input: dict[str, Any]) -> str | None:
+def _validate_zone_input(user_input: dict[str, Any], custom_profiles: object = None) -> str | None:
     """Return a form error for invalid interval/window automation settings."""
     try:
         windows = user_input.get(CONF_WATERING_WINDOWS, [])
@@ -560,8 +652,21 @@ def _validate_zone_input(user_input: dict[str, Any]) -> str | None:
             for key in (CONF_MIN_FLOW, CONF_MAX_FLOW)
         ):
             return "automation_requires_flow_profile"
+        if user_input.get(CONF_AUTOMATION_ENABLED) and not user_input.get(
+            CONF_AGRONOMIC_VALUES_CONFIRMED, False
+        ):
+            return "agronomic_confirmation_required"
     except KeyError, TypeError, ValueError:
         return "invalid_watering_windows"
+    try:
+        resolve_effective_zone_profile(user_input, custom_profiles, dt_util.now().date())
+    except TypeError, ValueError:
+        return "invalid_profiles"
+    if (
+        user_input.get(CONF_SOIL_MOISTURE_ROLE) == SOIL_MOISTURE_ROLE_CORRECTION
+        and float(user_input.get(CONF_SOIL_MOISTURE_CORRECTION_LIMIT_MM, 0)) <= 0
+    ):
+        return "soil_moisture_correction_limit_required"
     return None
 
 
@@ -572,6 +677,10 @@ def _validate_installation_input(user_input: dict[str, Any]) -> str | None:
         time.fromisoformat(str(user_input[CONF_WEATHER_FINALIZATION_TIME]))
     except TypeError, ValueError:
         return "invalid_weather_curve"
+    try:
+        validate_custom_profiles(user_input.get(CONF_CUSTOM_PROFILES, {}))
+    except TypeError, ValueError:
+        return "invalid_profiles"
     return None
 
 
@@ -579,7 +688,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create and reconfigure irrigation installations."""
 
     VERSION = 1
-    MINOR_VERSION = 1
+    MINOR_VERSION = 2
 
     @override
     @staticmethod
@@ -620,7 +729,9 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Add a zone to the parent irrigation installation."""
         if user_input is not None:
-            if error := _validate_zone_input(user_input):
+            if error := _validate_zone_input(
+                user_input, self._get_entry().data.get(CONF_CUSTOM_PROFILES, {})
+            ):
                 return self.async_show_form(
                     step_id="user", data_schema=ZONE_SCHEMA, errors={"base": error}
                 )
@@ -641,7 +752,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry()
         if user_input is not None:
-            if error := _validate_zone_input(user_input):
+            if error := _validate_zone_input(user_input, entry.data.get(CONF_CUSTOM_PROFILES, {})):
                 return self.async_show_form(
                     step_id="reconfigure",
                     data_schema=self.add_suggested_values_to_schema(ZONE_SCHEMA, user_input),
@@ -684,6 +795,9 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
     def __init__(self) -> None:
         """Initialize transient zone selection."""
         self._zone_subentry_id: str | None = None
+        self._pending_installation_input: dict[str, Any] | None = None
+        self._profile_impact_names = ""
+        self._installation_config_hash: str | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Offer installation and zone settings."""
@@ -705,12 +819,38 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                     ),
                     errors={"base": error},
                 )
-            self.hass.config_entries.async_update_entry(
-                self.config_entry,
-                title=str(user_input[CONF_NAME]),
-                data=user_input,
+            previous_profiles = validate_custom_profiles(
+                self.config_entry.data.get(CONF_CUSTOM_PROFILES, {})
             )
-            return self.async_create_entry(data={})
+            next_profiles = validate_custom_profiles(user_input.get(CONF_CUSTOM_PROFILES, {}))
+            changed_ids = {
+                profile_id
+                for profile_id in previous_profiles.keys() | next_profiles.keys()
+                if previous_profiles.get(profile_id) != next_profiles.get(profile_id)
+            }
+            if changed_ids:
+                affected_ids: set[str] = set()
+                for profile_id in changed_ids:
+                    affected_ids.update(dependent_profile_ids(next_profiles, profile_id))
+                    affected_ids.update(dependent_profile_ids(previous_profiles, profile_id))
+                impacted = profile_impacted_zones(
+                    [
+                        (
+                            subentry.unique_id or subentry.subentry_id,
+                            subentry.title,
+                            subentry.data,
+                        )
+                        for subentry in self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+                    ],
+                    affected_ids,
+                )
+                self._pending_installation_input = user_input
+                self._profile_impact_names = ", ".join(item["name"] for item in impacted) or "none"
+                return await self.async_step_profile_impact()
+            return await self._save_installation(user_input)
+        self._installation_config_hash = IrrigationManager.installation_config_hash(
+            self.config_entry.data
+        )
         return self.async_show_form(
             step_id="installation",
             data_schema=self.add_suggested_values_to_schema(
@@ -718,6 +858,52 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                 self.config_entry.data,
             ),
         )
+
+    async def async_step_profile_impact(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Require confirmation after showing zones affected by profile changes."""
+        if self._pending_installation_input is None:
+            return self.async_abort(reason="profile_change_not_pending")
+        if user_input is not None:
+            if user_input.get("confirm_profile_changes") is not True:
+                self._pending_installation_input = None
+                return await self.async_step_installation()
+            pending = self._pending_installation_input
+            self._pending_installation_input = None
+            return await self._save_installation(pending)
+        return self.async_show_form(
+            step_id="profile_impact",
+            data_schema=vol.Schema(
+                {vol.Required("confirm_profile_changes", default=False): BooleanSelector()}
+            ),
+            description_placeholders={"zones": self._profile_impact_names},
+        )
+
+    async def _save_installation(self, user_input: dict[str, Any]) -> ConfigFlowResult:
+        """Persist validated installation settings after any impact confirmation."""
+        expected_hash = self._installation_config_hash
+        if expected_hash is None:
+            return self.async_abort(reason="configuration_changed")
+        manager = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        try:
+            if isinstance(manager, IrrigationManager):
+                await manager.async_update_installation_config(
+                    user_input, expected_config_hash=expected_hash
+                )
+            else:
+                if expected_hash != IrrigationManager.installation_config_hash(
+                    self.config_entry.data
+                ):
+                    return self.async_abort(reason="configuration_changed")
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry,
+                    title=str(user_input[CONF_NAME]),
+                    data=user_input,
+                )
+        except HomeAssistantError:
+            return self.async_abort(reason="configuration_changed")
+        return self.async_create_entry(data={})
 
     async def async_step_zone(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Select a zone whose expert settings should be edited."""
@@ -746,7 +932,9 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_ZONE:
             return self.async_abort(reason="zone_not_found")
         if user_input is not None:
-            if error := _validate_zone_input(user_input):
+            if error := _validate_zone_input(
+                user_input, self.config_entry.data.get(CONF_CUSTOM_PROFILES, {})
+            ):
                 return self.async_show_form(
                     step_id="zone_settings",
                     data_schema=self.add_suggested_values_to_schema(ZONE_SCHEMA, user_input),

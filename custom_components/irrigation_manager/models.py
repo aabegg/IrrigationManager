@@ -1,5 +1,6 @@
 """Runtime models shared by the Home Assistant platforms."""
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -45,6 +46,7 @@ class ManualIrrigationRequest:
     balance_application_efficiency: float | None = None
     balance_maximum_deficit_mm: float | None = None
     balance_minimum_effective_liters: float | None = None
+    resolved_inputs: dict[str, object] = field(default_factory=dict)
     revision: int = 1
 
     @classmethod
@@ -153,12 +155,15 @@ class ManualIrrigationRequest:
             balance_minimum_effective_liters=_optional_stored_float(
                 data, "balance_minimum_effective_liters"
             ),
+            resolved_inputs=_stored_object_dict(data, "resolved_inputs"),
             revision=int(StoredInstallationState._float(data.get("revision", 1))),
         )
 
     def as_dict(self) -> dict[str, object]:
         """Serialize one manual order."""
-        return {field: getattr(self, field) for field in self.__dataclass_fields__}
+        result = {field: getattr(self, field) for field in self.__dataclass_fields__}
+        result["resolved_inputs"] = deepcopy(self.resolved_inputs)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +190,7 @@ class IrrigationExecutionState:
     balance_application_efficiency: float | None = None
     balance_maximum_deficit_mm: float | None = None
     balance_minimum_effective_liters: float | None = None
+    resolved_inputs: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> IrrigationExecutionState:
@@ -236,17 +242,28 @@ class IrrigationExecutionState:
             balance_minimum_effective_liters=_optional_stored_float(
                 data, "balance_minimum_effective_liters"
             ),
+            resolved_inputs=_stored_object_dict(data, "resolved_inputs"),
         )
 
     def as_dict(self) -> dict[str, object]:
         """Serialize one irrigation execution."""
-        return {field: getattr(self, field) for field in self.__dataclass_fields__}
+        result = {field: getattr(self, field) for field in self.__dataclass_fields__}
+        result["resolved_inputs"] = deepcopy(self.resolved_inputs)
+        return result
 
 
 def _optional_stored_float(data: dict[str, object], key: str) -> float | None:
     """Read one optional persisted number."""
     value = data.get(key)
     return None if value is None else StoredInstallationState._float(value)
+
+
+def _stored_object_dict(data: dict[str, object], key: str) -> dict[str, object]:
+    """Read one JSON object without accepting malformed historical snapshots."""
+    value = data.get(key, {})
+    if not isinstance(value, dict):
+        raise ValueError(f"Stored {key} snapshot is malformed")
+    return deepcopy(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,6 +355,9 @@ class InstallationSnapshot:
     zone_crop_evapotranspiration_mm: dict[str, float] = field(default_factory=dict)
     zone_effective_rain_mm: dict[str, float] = field(default_factory=dict)
     zone_calculation_explanations: dict[str, dict[str, object]] = field(default_factory=dict)
+    zone_effective_profiles: dict[str, dict[str, object]] = field(default_factory=dict)
+    zone_soil_moisture: dict[str, dict[str, object]] = field(default_factory=dict)
+    zone_hardware_health: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,6 +389,7 @@ class ActiveExecutionState:
     balance_application_efficiency: float | None = None
     balance_maximum_deficit_mm: float | None = None
     balance_minimum_effective_liters: float | None = None
+    resolved_inputs: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> ActiveExecutionState:
@@ -426,6 +447,7 @@ class ActiveExecutionState:
             balance_application_efficiency=optional_float("balance_application_efficiency"),
             balance_maximum_deficit_mm=optional_float("balance_maximum_deficit_mm"),
             balance_minimum_effective_liters=optional_float("balance_minimum_effective_liters"),
+            resolved_inputs=_stored_object_dict(data, "resolved_inputs"),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -456,6 +478,7 @@ class ActiveExecutionState:
             "balance_application_efficiency": self.balance_application_efficiency,
             "balance_maximum_deficit_mm": self.balance_maximum_deficit_mm,
             "balance_minimum_effective_liters": self.balance_minimum_effective_liters,
+            "resolved_inputs": deepcopy(self.resolved_inputs),
         }
 
 
