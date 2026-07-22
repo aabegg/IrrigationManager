@@ -1,6 +1,6 @@
 # Software-Qualifikation
 
-Stand: 2026-07-21
+Stand: 2026-07-22
 
 ## Umfang
 
@@ -9,6 +9,15 @@ Scheduler-, Wasserzähler- und Wetterpfade vor einem Feldtest. Die wiederverwend
 Testanlage `tests/irrigation_plant.py` stellt kontrollierbare monotone Zeit und Wandzeit,
 Ventile und Rückmeldungen, kumulatives Volumen, Durchfluss, Wetterzustand sowie einen
 Home-Assistant-Config-Entry mit echtem Integrationsspeicher bereit.
+
+`tests/test_phase5_multiweek.py` ergänzt fokussierte Produktionspfadtests mit denselben
+sechs Referenzzonen. Ein 28-Tage-Szenario finalisiert trockene und regnerische Perioden
+über `IrrigationManager`, echten Integrationsspeicher und einen Neustart. Getrennte Tests
+rufen die produktiven Prognoseaufschub-, Budget-, Auftrags- und Neustartpfade auf,
+vergleichen physisch beobachtete Zählerdeltas mit persistierter Anlagen-, Zonen- und
+unzugeordneter Bilanz und prüfen cross-midnight-Fenster über beide europäischen
+Zeitumstellungen. Wetterquellen-Fallback und -Ablauf bleiben durch den fokussierten
+Produktionstest `test_seasonal_weather_fallback_is_degraded_then_expires` nachgewiesen.
 
 Die Tests ersetzen keinen beaufsichtigten Test mit realen Ventilen, Relais, Leitungen und
 einem unabhängigen Hardware-Abschalttimer. Eine Freigabe für unbeaufsichtigten Feldbetrieb
@@ -41,6 +50,11 @@ wird aus diesem Bericht ausdrücklich nicht abgeleitet.
 | Not-Aus ist persistent und nicht durch normale manuelle Bedienung übersteuerbar | `test_stop_actions_close_active_valves_and_account_partial_water`, `test_emergency_stop_blocks_manual_watering` |
 | Feedback, externe Freigaben und zonaler Wind werden beim Start und kontinuierlich ausfallsicher geprüft | `test_own_command_feedback_transition_does_not_trigger_false_lock`, `test_feedback_loss_during_operation_stops_and_locks_zone`, `test_zone_external_permit_change_stops_and_locks_only_zone`, `test_strong_wind_change_stops_relevant_manual_operation` |
 | Wartungsübersteuerungen gelten einzeln nur für den beaufsichtigten Test; Not-Aus, Winter, Exklusivität und Dead-Man bleiben wirksam | `test_supervised_overrides_are_individual_and_test_scoped`, `test_emergency_stop_cancels_supervised_test_and_remains_locked`, `test_deadman_confirmation_is_capped_and_fixed_expiry_is_enforced`, Executor-Exklusivitätstests |
+| 28-Tage-Wasserbilanz verarbeitet trockene und regnerische Perioden über Manager und Speicher idempotent | `test_six_zone_multiweek_weather_balance_uses_manager_and_is_idempotent` |
+| Prognoseaufschub, Budgetansprüche und stabile Auftrags-IDs verwenden produktive Planungs- und Neustartpfade | `test_forecast_budget_and_duplicate_planning_survive_restart` |
+| Persistierte Anlagen-, Zonen- und unzugeordnete Summen konservieren unabhängig beobachtete physische Zählerdeltas | `test_meter_deltas_conserve_persisted_zone_and_unassigned_accounting` |
+| Cross-midnight-Fenster überspannen beide realen DST-Übergänge korrekt nach UTC | `test_cross_midnight_windows_span_spring_and_fall_dst` |
+| Sensor-, Ventil- und Leckfehler schließen oder isolieren den Wasserfluss in der Sechs-Zonen-Anlage | `test_six_zone_fault_matrix_closes_or_hydraulically_isolates_flow` |
 
 ## Speicher- und Wetterannahmen
 
@@ -64,9 +78,39 @@ wird aus diesem Bericht ausdrücklich nicht abgeleitet.
 Diese Risiken erfordern beaufsichtigte Inbetriebnahme, Prüfung der stromlosen Ventilstellung,
 reale Durchfluss- und Nachlaufkalibrierung sowie einen unabhängig geprüften Hardware-Abschalttimer.
 
-## Verbleibende Software-Lücken
+## Anforderungsabnahme und verbleibende Gates
 
-- Eine deterministische Mehrwochen-Simulation mit sechs Referenzzonen ist nicht Teil dieses Slices.
-- Reale Zeitzonen-/DST-Übergänge und Sonnenfenster sind nicht vollständig qualifiziert; feste Fenster über Mitternacht sind getestet.
-- Wetterquellen-Fallbackketten, Prognoseaufschub und lang andauernde Wetterausfälle sind nur teilweise implementiert und getestet.
-- Der Test der grafischen Karten erfolgt als Build/Registrierungsprüfung, nicht als visueller Browser- oder Hardware-End-to-End-Test.
+Die vollständige Zuordnung aller 177 normativen Anforderungen und der zusätzlichen
+Sicherheits-MUSTs steht in `docs/15_Traceability.md`. Phase 5 ist softwareseitig für die
+simulierbaren Pfade qualifiziert, aber nicht als Gesamtprodukt oder Feldfreigabe
+abgeschlossen. Insbesondere bleiben:
+
+- fachliche Validierung der Pflanzen-, Boden-, Wetter-, Schwellen- und Profilstandardwerte
+- reale Ventil-, Relais-, Zähler-, Durchfluss-, Impuls-, Nachlauf- und Messlatenzprüfung
+- Installation und Lasttest eines unabhängigen Hardware-Abschalttimers
+- visueller Mobil-/Desktop-Browsertest der Karten und Editoren
+- beaufsichtigter mehrwöchiger Feldtest aller sechs realen Zonen
+- tatsächliche Remote-Ergebnisse der HACS- und Hassfest-Workflows
+- ein vollständiger produktionsnaher Mehrwochenlauf, der alle Wetter-, Planungs-, Executor- und Fehlerereignisse in einer einzigen Zeitachse kombiniert
+
+Die Mindestversion ist Home Assistant 2026.7.2. HACS erzwingt sie über `hacs.json`.
+`manifest.json` kann sie nicht duplizieren, weil das HA-Manifestschema kein Feld für eine
+Mindestversion definiert; ein erfundener Schlüssel würde Hassfest verletzen.
+
+## Ausgeführte Validierungen
+
+Lokal am 2026-07-22 tatsächlich ausgeführt:
+
+| Prüfung | Beobachtetes Ergebnis |
+| --- | --- |
+| `uv run pytest` | 271 Tests bestanden in 106,11 s |
+| `uv run ruff check .` | bestanden |
+| `uv run ruff format --check .` | 50 Dateien formatiert, bestanden |
+| `uv run mypy` | bestanden, 24 Quelldateien geprüft |
+| `npm ci` | 59 Pakete installiert, 0 gemeldete Schwachstellen |
+| `npm run check` | TypeScript-Prüfung und 5 Vitest-Tests bestanden |
+| `npm run build` | Vite-Build bestanden; Bundle 57,44 kB, gzip 15,04 kB |
+
+Auf diesem Rechner waren weder `hassfest` noch ein lokaler HACS-Validator noch Docker
+verfügbar. `.github/workflows/home-assistant.yml` führt beide offiziellen Actions aus;
+deren Erfolg ist hier ausdrücklich **nicht** behauptet.

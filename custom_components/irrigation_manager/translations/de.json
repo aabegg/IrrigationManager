@@ -302,6 +302,13 @@
   "config": {
     "step": {
       "user": {
+        "title": "Irrigation Manager einrichten",
+        "menu_options": {
+          "create": "Neue Bewässerungsanlage anlegen",
+          "import": "Portable Bewässerungsanlage importieren"
+        }
+      },
+      "create": {
         "title": "Bewässerungsanlage anlegen",
         "description": "Konfiguriere die gemeinsame Wasserzufuhr. Bewässerungszonen werden anschließend hinzugefügt.",
         "data": {
@@ -378,10 +385,27 @@
           "weather_wind_height_m": "Standard sind 10 m, da Wetterdienste Wind üblicherweise in 10 m Höhe melden. Passe den Wert bei abweichender Dokumentation an.",
           "weather_backfill_days": "Sicherheits- und Aufbewahrungsgrenze für nach einem Ausfall nachzuholende Tageszeiträume."
         }
+      },
+      "import": {
+        "title": "Neue Bewässerungsanlage importieren",
+        "description": "Prüft einen portablen Export und die explizite Entity-Neuzuordnung vor dem Anlegen einer getrennten Anlage.",
+        "data": {
+          "payload": "Portable Konfiguration",
+          "entity_remapping": "Entity-Neuzuordnung"
+        }
+      },
+      "import_confirm": {
+        "title": "Neue Anlage bestätigen",
+        "description": "Legt eine neue Anlage und alle Zonen-Subentries mit neuen Identitäten an. Vorschau: {preview}",
+        "data": {"confirm_create": "Anlage erstellen"}
       }
     },
     "abort": {
-      "already_configured": "Diese Bewässerungsanlage ist bereits konfiguriert."
+      "already_configured": "Diese Bewässerungsanlage ist bereits konfiguriert.",
+      "actuator_already_owned": "Eine vorhandene Bewässerungsanlage besitzt bereits einen importierten Aktor oder eine importierte Rückmeldung.",
+      "invalid_import": "Die portable Konfiguration ist ungültig.",
+      "import_not_pending": "Es wartet kein geprüfter Import auf Bestätigung.",
+      "import_cancelled": "Der portable Import wurde abgebrochen."
     },
     "error": {
       "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein.",

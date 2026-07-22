@@ -28,7 +28,7 @@ Die funktionalen Grundsatzfragen wurden in der Grill-Session vom 20. Juli 2026 e
 
 ## Technische Entscheidungen
 
-- konkrete unterstützte Home-Assistant-Mindestversion
+- Home-Assistant-Mindestversion ist entschieden: 2026.7.2; `hacs.json` erzwingt sie für HACS, während das HA-Manifest dafür kein zulässiges Feld besitzt
 - Bibliothek oder eigene geprüfte Implementierung für FAO-56
 - Open-Meteo-Endpunkte, Rate Limits und Cache
 - Config-Subentry- und Profilpersistenz im gewählten HA-Stand

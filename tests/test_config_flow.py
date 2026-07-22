@@ -1,5 +1,6 @@
 """Config-flow behavior tests for Irrigation Manager."""
 
+import asyncio
 from unittest.mock import patch
 
 from homeassistant.config_entries import SOURCE_USER
@@ -43,8 +44,13 @@ async def test_user_can_create_an_irrigation_installation(
         context={"source": SOURCE_USER},
     )
 
-    assert result["type"] is FlowResultType.FORM
+    assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "user"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "create"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "create"
 
     with patch(
         "custom_components.irrigation_manager.config_flow.uuid4",
@@ -116,6 +122,212 @@ async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:
     assert subentry.data[CONF_WATERING_WINDOWS] == ["04:00-06:00"]
     assert subentry.data["external_failure_policy"] == "fail_safe"
     assert subentry.data["wind_manual_policy"] == "allow"
+
+
+async def test_portable_import_creates_new_entry_with_zone_subentries(
+    hass: HomeAssistant,
+    mock_setup_entry: None,
+) -> None:
+    """Use the public config-flow subentry API and fresh stable identities."""
+    payload = {
+        "schema_version": 1,
+        "integration": DOMAIN,
+        "installation": {
+            "id": "source-installation",
+            "config": {"name": "Imported garden", CONF_MAIN_VALVE: "switch.old_main"},
+        },
+        "zones": [
+            {
+                "id": "source-zone-lawn",
+                "config": {
+                    "name": "Lawn",
+                    "zone_valve": "switch.old_lawn",
+                    "default_duration": 600,
+                    "min_flow": 5,
+                    "max_flow": 20,
+                },
+            },
+            {
+                "id": "source-zone-beds",
+                "config": {
+                    "name": "Beds",
+                    "zone_valve": "switch.old_beds",
+                    "default_duration": 300,
+                    "min_flow": 2,
+                    "max_flow": 10,
+                },
+            },
+        ],
+    }
+    for entity_id in ("switch.new_main", "switch.new_lawn", "switch.new_beds"):
+        hass.states.async_set(entity_id, "off")
+
+    with patch("custom_components.irrigation_manager.config_flow.uuid4") as uuid4:
+        uuid4.side_effect = [
+            type("Id", (), {"hex": "new-installation"})(),
+            type("Id", (), {"hex": "new-zone-lawn"})(),
+            type("Id", (), {"hex": "new-zone-beds"})(),
+        ]
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "import"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "payload": payload,
+                "entity_remapping": {
+                    "switch.old_main": "switch.new_main",
+                    "switch.old_lawn": "switch.new_lawn",
+                    "switch.old_beds": "switch.new_beds",
+                },
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "import_confirm"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"confirm_create": True}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    entry = result["result"]
+    assert entry.unique_id == "new-installation"
+    assert entry.data[CONF_MAIN_VALVE] == "switch.new_main"
+    assert [subentry.title for subentry in entry.subentries.values()] == ["Lawn", "Beds"]
+    assert [subentry.unique_id for subentry in entry.subentries.values()] == [
+        "new-zone-lawn",
+        "new-zone-beds",
+    ]
+    assert [subentry.data["zone_valve"] for subentry in entry.subentries.values()] == [
+        "switch.new_lawn",
+        "switch.new_beds",
+    ]
+
+
+async def test_portable_new_entry_import_rejects_missing_target_entities(
+    hass: HomeAssistant,
+) -> None:
+    """Fail before creating an entry when a remapped actuator is unavailable."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_USER},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "import"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "payload": {
+                "schema_version": 1,
+                "integration": DOMAIN,
+                "installation": {"id": "source", "config": {"name": "Import"}},
+                "zones": [
+                    {
+                        "id": "zone",
+                        "config": {
+                            "name": "Missing",
+                            "zone_valve": "switch.does_not_exist",
+                            "default_duration": 60,
+                            "min_flow": 1,
+                            "max_flow": 2,
+                        },
+                    }
+                ],
+            }
+        },
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "invalid_import"
+
+
+async def test_portable_import_rejects_existing_or_concurrent_actuator_ownership(
+    hass: HomeAssistant,
+    mock_setup_entry: None,
+) -> None:
+    """Serialize final ownership checks and never leave partial imported entries."""
+    for entity_id in ("switch.shared_main", "switch.shared_zone"):
+        hass.states.async_set(entity_id, "off")
+    payload = {
+        "schema_version": 1,
+        "integration": DOMAIN,
+        "installation": {
+            "id": "source",
+            "config": {"name": "Imported", CONF_MAIN_VALVE: "switch.shared_main"},
+        },
+        "zones": [
+            {
+                "id": "source-zone",
+                "config": {
+                    "name": "Shared",
+                    "zone_valve": "switch.shared_zone",
+                    "default_duration": 60,
+                    "min_flow": 1,
+                    "max_flow": 2,
+                },
+            }
+        ],
+    }
+
+    async def preview() -> dict[str, object]:
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "import"}
+        )
+        return await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"payload": payload, "entity_remapping": {}}
+        )
+
+    first, second = await asyncio.gather(preview(), preview())
+    before = len(hass.config_entries.async_entries(DOMAIN))
+    results = await asyncio.gather(
+        hass.config_entries.flow.async_configure(first["flow_id"], {"confirm_create": True}),
+        hass.config_entries.flow.async_configure(second["flow_id"], {"confirm_create": True}),
+    )
+
+    assert sum(result["type"] is FlowResultType.CREATE_ENTRY for result in results) == 1
+    assert (
+        sum(
+            result["type"] is FlowResultType.ABORT and result["reason"] == "actuator_already_owned"
+            for result in results
+        )
+        == 1
+    )
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert len(entries) == before + 1
+    imported = entries[-1]
+    assert len(imported.get_subentries_of_type("zone")) == 1
+
+    hass.states.async_set("switch.other_zone", "off")
+    conflicting_payload = {
+        **payload,
+        "installation": {"id": "other", "config": {"name": "Other"}},
+        "zones": [
+            {
+                "id": "other-zone",
+                "config": {
+                    **payload["zones"][0]["config"],
+                    "name": "Other zone",
+                    "zone_valve": "switch.other_zone",
+                    "zone_valve_feedback": "switch.shared_main",
+                },
+            }
+        ],
+    }
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "import"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"payload": conflicting_payload, "entity_remapping": {}}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "actuator_already_owned"
+    assert len(hass.config_entries.async_entries(DOMAIN)) == before + 1
 
 
 async def test_options_flow_updates_installation_and_zone_expert_settings(

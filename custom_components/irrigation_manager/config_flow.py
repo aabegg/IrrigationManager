@@ -1,8 +1,10 @@
 """Config and subentry flows for Irrigation Manager."""
 
+import asyncio
 import json
+from collections.abc import Mapping
 from datetime import date, time
-from typing import Any, override
+from typing import Any, cast, override
 from uuid import uuid4
 
 import voluptuous as vol
@@ -10,6 +12,7 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentryData,
     ConfigSubentryFlow,
     OptionsFlow,
     SubentryFlowResult,
@@ -157,6 +160,7 @@ from .const import (
     DOMAIN,
     ET0_PRIORITY_CALCULATED,
     ET0_PRIORITY_DIRECT,
+    EXPORT_SCHEMA_VERSION,
     EXTERNAL_FAILURE_FAIL_SAFE,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
@@ -181,6 +185,7 @@ from .scheduler import parse_window_rule
 from .weather import calculate_seasonal_value
 
 ATTR_ZONE_SUBENTRY_ID = "zone_subentry_id"
+_IMPORT_CREATE_LOCK = asyncio.Lock()
 
 INSTALLATION_SCHEMA = vol.Schema(
     {
@@ -850,6 +855,12 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
     MINOR_VERSION = 5
 
+    def __init__(self) -> None:
+        """Initialize transient portable-import data."""
+        self._pending_import_installation: dict[str, Any] | None = None
+        self._pending_import_zones: list[dict[str, Any]] = []
+        self._import_preview = ""
+
     @override
     @staticmethod
     @callback
@@ -859,11 +870,15 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @override
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Create one physical irrigation installation."""
+        """Choose whether to create or import an irrigation installation."""
+        return self.async_show_menu(step_id="user", menu_options=["create", "import"])
+
+    async def async_step_create(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Create one physical irrigation installation from form input."""
         if user_input is not None:
             if error := _validate_installation_input(user_input):
                 return self.async_show_form(
-                    step_id="user", data_schema=INSTALLATION_SCHEMA, errors={"base": error}
+                    step_id="create", data_schema=INSTALLATION_SCHEMA, errors={"base": error}
                 )
             await self.async_set_unique_id(uuid4().hex)
             return self.async_create_entry(
@@ -871,7 +886,197 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 data=user_input,
             )
 
-        return self.async_show_form(step_id="user", data_schema=INSTALLATION_SCHEMA)
+        return self.async_show_form(step_id="create", data_schema=INSTALLATION_SCHEMA)
+
+    async def async_step_import(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Validate a portable export before creating a new installation atomically."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="import",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("payload"): ObjectSelector(),
+                        vol.Optional("entity_remapping", default={}): ObjectSelector(),
+                    }
+                ),
+            )
+        try:
+            installation, zones = self._validate_new_entry_import(user_input)
+        except TypeError, ValueError, vol.Invalid:
+            return self.async_abort(reason="invalid_import")
+        if self._import_ownership_conflicts(installation, zones):
+            return self.async_abort(reason="actuator_already_owned")
+        self._pending_import_installation = installation
+        self._pending_import_zones = zones
+        self._import_preview = json.dumps(
+            {
+                "installation": installation[CONF_NAME],
+                "zones": [zone[CONF_NAME] for zone in zones],
+                "fresh_unique_ids": True,
+            },
+            sort_keys=True,
+        )
+        return await self.async_step_import_confirm()
+
+    async def async_step_import_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Create one entry and all imported zones after explicit confirmation."""
+        installation = self._pending_import_installation
+        if installation is None:
+            return self.async_abort(reason="import_not_pending")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="import_confirm",
+                data_schema=vol.Schema(
+                    {vol.Required("confirm_create", default=False): BooleanSelector()}
+                ),
+                description_placeholders={"preview": self._import_preview},
+            )
+        if user_input.get("confirm_create") is not True:
+            return self.async_abort(reason="import_cancelled")
+        zones = self._pending_import_zones
+        async with _IMPORT_CREATE_LOCK:
+            if self._import_ownership_conflicts(installation, zones):
+                return self.async_abort(reason="actuator_already_owned")
+            await self.async_set_unique_id(uuid4().hex)
+            # HA validates and commits this entry plus every subentry atomically.
+            result = self.async_create_entry(
+                title=str(installation[CONF_NAME]),
+                data=installation,
+                subentries=[
+                    ConfigSubentryData(
+                        data=zone,
+                        subentry_type=SUBENTRY_TYPE_ZONE,
+                        title=str(zone[CONF_NAME]),
+                        unique_id=uuid4().hex,
+                    )
+                    for zone in zones
+                ],
+            )
+        self._pending_import_installation = None
+        self._pending_import_zones = []
+        return result
+
+    def _validate_new_entry_import(
+        self,
+        user_input: Mapping[str, object],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Return schema-normalized installation and zone data from a portable export."""
+        payload = user_input.get("payload")
+        entity_remapping = user_input.get("entity_remapping", {})
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("integration") != DOMAIN
+            or payload.get("schema_version") != EXPORT_SCHEMA_VERSION
+            or not isinstance(entity_remapping, Mapping)
+            or not all(
+                isinstance(source, str) and isinstance(target, str)
+                for source, target in entity_remapping.items()
+            )
+        ):
+            raise ValueError("Invalid portable import envelope")
+        raw_installation = payload.get("installation")
+        raw_zones = payload.get("zones")
+        if (
+            not isinstance(raw_installation, Mapping)
+            or not isinstance(raw_installation.get("config"), Mapping)
+            or not isinstance(raw_zones, list)
+            or not raw_zones
+        ):
+            raise ValueError("Portable import requires an installation and zones")
+        remapping = cast(Mapping[str, str], entity_remapping)
+        installation = dict(
+            INSTALLATION_SCHEMA(
+                IrrigationManager._remap_import_entities(
+                    dict(cast(Mapping[str, object], raw_installation["config"])), remapping
+                )
+            )
+        )
+        if error := _validate_installation_input(installation):
+            raise ValueError(error)
+        zones: list[dict[str, Any]] = []
+        source_ids: set[str] = set()
+        valves: set[str] = set()
+        for raw_zone in raw_zones:
+            if (
+                not isinstance(raw_zone, Mapping)
+                or not isinstance(raw_zone.get("id"), str)
+                or raw_zone["id"] in source_ids
+                or not isinstance(raw_zone.get("config"), Mapping)
+            ):
+                raise ValueError("Malformed or duplicate portable zone")
+            source_ids.add(cast(str, raw_zone["id"]))
+            zone = dict(
+                ZONE_SCHEMA(
+                    IrrigationManager._remap_import_entities(
+                        dict(cast(Mapping[str, object], raw_zone["config"])), remapping
+                    )
+                )
+            )
+            if error := _validate_zone_input(zone, installation.get(CONF_CUSTOM_PROFILES, {})):
+                raise ValueError(error)
+            valve = cast(str, zone[CONF_ZONE_VALVE])
+            if valve in valves:
+                raise ValueError("Portable zones cannot share a valve")
+            valves.add(valve)
+            zones.append(zone)
+        imported_entity_ids = IrrigationManager._import_entity_ids(
+            installation,
+            [{"config": zone} for zone in zones],
+        )
+        if any(self.hass.states.get(entity_id) is None for entity_id in imported_entity_ids):
+            raise ValueError("Portable import references unavailable target entities")
+        candidate_ownership = self._import_owned_entities(installation, zones)
+        if len(candidate_ownership) != sum(
+            1
+            for data in (installation, *zones)
+            for key in (
+                (CONF_MAIN_VALVE, CONF_MAIN_VALVE_FEEDBACK)
+                if data is installation
+                else (CONF_ZONE_VALVE, CONF_ZONE_VALVE_FEEDBACK)
+            )
+            if isinstance(data.get(key), str)
+        ):
+            raise ValueError("Portable import assigns one actuator or feedback more than once")
+        return installation, zones
+
+    def _import_ownership_conflicts(
+        self,
+        installation: Mapping[str, object],
+        zones: list[dict[str, Any]],
+    ) -> bool:
+        """Return whether any existing installation already owns an imported endpoint."""
+        candidate = self._import_owned_entities(installation, zones)
+        existing: set[str] = set()
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            existing.update(self._import_owned_entities(entry.data, []))
+            existing.update(
+                entity_id
+                for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+                for key in (CONF_ZONE_VALVE, CONF_ZONE_VALVE_FEEDBACK)
+                if isinstance((entity_id := subentry.data.get(key)), str)
+            )
+        return not candidate.isdisjoint(existing)
+
+    @staticmethod
+    def _import_owned_entities(
+        installation: Mapping[str, object],
+        zones: list[dict[str, Any]],
+    ) -> set[str]:
+        """Collect actuators and feedback entities exclusively owned by one import."""
+        owned = {
+            entity_id
+            for key in (CONF_MAIN_VALVE, CONF_MAIN_VALVE_FEEDBACK)
+            if isinstance((entity_id := installation.get(key)), str)
+        }
+        owned.update(
+            entity_id
+            for zone in zones
+            for key in (CONF_ZONE_VALVE, CONF_ZONE_VALVE_FEEDBACK)
+            if isinstance((entity_id := zone.get(key)), str)
+        )
+        return owned
 
     @classmethod
     @callback

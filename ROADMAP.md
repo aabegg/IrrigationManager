@@ -11,7 +11,7 @@ Die Implementierung erfolgt in vertikalen, simulierbaren Stufen. Keine Zwischens
 - [x] zentrale Architekturentscheidungen dokumentieren
 - [x] Scheduler-, Wetter-, Zähler- und Sicherheitsverhalten spezifizieren
 - [ ] konkrete Profilwerte und Standardgrenzen fachlich validieren
-- [ ] unterstützte Home-Assistant-Mindestversion festlegen
+- [x] unterstützte Home-Assistant-Mindestversion auf 2026.7.2 festlegen
 - [x] Akzeptanzszenarien aus den Anforderungen ableiten
 
 ## Phase 1: Fundament und Simulation
@@ -79,23 +79,24 @@ Die Implementierung erfolgt in vertikalen, simulierbaren Stufen. Keine Zwischens
 
 ## Phase 5: Qualifikation vor realer Anlage
 
-- Referenztests für ET-Modelle und Einheiten
-- deterministische Langzeitsimulation trockener und regnerischer Perioden
-- Fault Injection für alle Ventil-, Zähler-, Sensor- und Neustartfehler
-- Tests für Zeitfenster über Mitternacht und Zeitumstellung
-- Tests für Quellen-Reset, grobe Impulse und Messlatenz
-- Tests für konkurrierende manuelle und automatische Aufträge
-- Tests für Teilgaben, Pausen, Budgets und Prognoseaufschub
-- Tests für Config/Options Flow, verzögerte Konfigurationsaktivierung und Migrationen
-- Tests für Aktionen, Ereignisse, Kalender und persistente manuelle Aufträge
-- Tests für Karten-Grundfunktionen und grafische Editoren
-- Tests für Benachrichtigungen, Winter-, Wartungs- und Dead-Man-Abläufe
-- Tests für Statistik, Energie-Dashboard-Sensoren, Import und Exporte
-- Prüfung der deutschen und englischen Benutzertexte
-- Sicherheitsreview gegen `docs/11_Safety.md`
-- vollständige Abnahme aller Anforderungen aus `docs/02_Requirements.md`
-- vollständiger Abnahmelauf mit simulierten sechs Referenzzonen
-- keine bekannten Fehler mit Risiko für unbegrenzten Wasserfluss
+- [x] Referenztests für ET-Modelle und Einheiten
+- [x] deterministische 28-Tage-Wasserbilanz trockener und regnerischer Perioden über den produktiven Managerpfad
+- [x] Fault Injection für implementierte Ventil-, Zähler-, Sensor- und Neustartpfade
+- [x] Tests für Zeitfenster über Mitternacht und beide Zeitumstellungen
+- [x] Tests für Quellen-Reset, grobe Impulse und Messlatenz
+- [x] Tests für konkurrierende manuelle und automatische Aufträge
+- [x] Tests für Teilgaben, Pausen, Budgets und Prognoseaufschub
+- [x] Tests für Config/Options Flow, verzögerte Konfigurationsaktivierung und Migrationen
+- [x] Tests für Aktionen, Ereignisse, Kalender und persistente manuelle Aufträge
+- [x] Tests für Karten-Grundfunktionen und grafische Editoren auf Build-/Komponentenebene
+- [x] Tests für Benachrichtigungen, Winter-, Wartungs- und Dead-Man-Abläufe
+- [x] Tests für Statistik, Energie-Dashboard-Sensoren, Import und Exporte
+- [x] maschinelle Konsistenzprüfung der deutschen und englischen Benutzertexte
+- [x] Sicherheitsreview gegen `docs/11_Safety.md`
+- [ ] vollständige Abnahme aller Anforderungen aus `docs/02_Requirements.md`; offene Gates siehe `docs/15_Traceability.md`
+- [ ] vollständiger produktionsnaher Mehrwochen-Abnahmelauf mit allen Scheduler-, Executor-, Fehler- und Neustartereignissen; derzeit durch fokussierte Produktionspfadtests abgedeckt
+- [x] keine bekannten **Softwarefehler** mit Risiko für unbegrenzten Wasserfluss in den simulierten Pfaden
+- [ ] Hardware-, Feld- und Agronomie-Gates aus `docs/15_Traceability.md` schließen
 
 ## Phase 6: Privater Feldtest
 

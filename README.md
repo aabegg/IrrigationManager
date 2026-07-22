@@ -2,6 +2,10 @@
 
 IrrigationManager ist eine geplante Home-Assistant-Integration für intelligente, vollständig über die Benutzeroberfläche konfigurierbare Bewässerung privater Gärten.
 
+Unterstützte Mindestversion: **Home Assistant 2026.7.2**. Die Grenze steht in
+`hacs.json`; Home Assistants `manifest.json` besitzt kein zulässiges Feld für eine
+Mindestversion. Dort wird deshalb bewusst kein nicht standardkonformer Schlüssel ergänzt.
+
 ## Projektziele
 
 - Einrichtung vollständig über die Home-Assistant-UI
@@ -42,3 +46,29 @@ Impuls-/Zählwerte und direkte Durchflussraten. Portable Konfigurationen können
 die Options Flow-Vorschau oder die Aktion `irrigation_manager.import_config`
 geprüft und mit expliziter Zuordnung übernommen werden. Der physische Zählerstand
 wird mit `irrigation_manager.correct_physical_meter` korrigiert.
+
+Ein portabler Export kann weiterhin mit Vorschau in eine bestehende Anlage übernommen
+werden. Der normale Einrichtungsdialog bietet außerdem „Neue Anlage“ oder „Import“ an.
+Der Import validiert Export und Entity-Neuzuordnung, prüft die exklusive Aktor- und
+Rückmeldungszuordnung gegen alle vorhandenen Anlagen erneut unter einer Importsperre und
+erzeugt den neuen Config Entry samt aller Zonen-Subentries atomar über Home Assistants
+öffentliche Config-Flow-API. Für Anlage und Zonen entstehen neue Unique IDs.
+
+## Lokale Validierung
+
+```bash
+uv sync --frozen --dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest
+
+npm --prefix custom_components/irrigation_manager/frontend ci
+npm --prefix custom_components/irrigation_manager/frontend run check
+npm --prefix custom_components/irrigation_manager/frontend run build
+```
+
+HACS- und Hassfest-Prüfungen laufen in `.github/workflows/home-assistant.yml`. Für diese
+Repository-Validatoren existiert hier kein gleichwertiger installierter lokaler Runner;
+ein erfolgreicher Remote-Lauf wird deshalb erst nach einem tatsächlichen GitHub-Actions-
+Ergebnis behauptet.

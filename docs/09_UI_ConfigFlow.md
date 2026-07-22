@@ -171,6 +171,17 @@ Bestätigung und den Hash genau der zuvor geprüften Konfiguration; bei zwischen
 Änderung wird abgebrochen. Der Import erzeugt oder übernimmt keine Konfiguration
 anderer Integrationen.
 
+Der normale Config-Flow-Einstieg bietet für eine neue Anlage die Auswahl zwischen
+manueller Einrichtung und portablem Import. Nach Schema- und Entity-Neuzuordnung zeigt
+der Import eine Bestätigung. Unmittelbar vor dem Erstellen prüft er unter einer
+prozessweiten Importsperre alle vorhandenen Irrigation-Manager-Entries und Subentries:
+Haupt-/Zonenaktoren und separate Rückmeldungen dürfen auch rollenübergreifend nicht
+doppelt besessen werden. Danach erzeugt Home Assistants öffentliche atomare
+`async_create_entry(..., subentries=...)`-Operation den Config Entry und alle Zonen;
+dadurch kann kein halber Entry mit nur einem Teil der Zonen persistiert werden.
+Installation und Zonen erhalten neue Unique IDs. Es werden weder `.storage`-Dateien
+geschrieben noch Einträge anderer Integrationen angelegt.
+
 Der Historienexport ist auf höchstens 1000 Vorgänge begrenzt. JSON und CSV enthalten
 den bereinigten Auftrag, Vorgang, persistierte Teilgaben, Berechnungssnapshot,
 Quelle, Messherkunft, Messqualität und Warnungen. Ventil-Entities und Zonennamen

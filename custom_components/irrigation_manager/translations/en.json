@@ -302,6 +302,13 @@
   "config": {
     "step": {
       "user": {
+        "title": "Set up Irrigation Manager",
+        "menu_options": {
+          "create": "Create a new irrigation installation",
+          "import": "Import a portable irrigation installation"
+        }
+      },
+      "create": {
         "title": "Create irrigation installation",
         "description": "Configure the shared water supply. Irrigation zones are added afterwards.",
         "data": {
@@ -378,10 +385,27 @@
           "weather_wind_height_m": "Defaults to 10 m because weather providers commonly report standardized 10 m wind. Change it when the provider documents another height.",
           "weather_backfill_days": "Safety and retention cap for missing daily periods processed after downtime. Older periods are outside retained automatic backfill."
         }
+      },
+      "import": {
+        "title": "Import a new irrigation installation",
+        "description": "Validate a portable export and explicit entity remapping before creating a separate installation.",
+        "data": {
+          "payload": "Portable configuration",
+          "entity_remapping": "Entity remapping"
+        }
+      },
+      "import_confirm": {
+        "title": "Confirm new installation",
+        "description": "Create a new installation and all zone subentries with fresh identities. Preview: {preview}",
+        "data": {"confirm_create": "Create installation"}
       }
     },
     "abort": {
-      "already_configured": "This irrigation installation is already configured."
+      "already_configured": "This irrigation installation is already configured.",
+      "actuator_already_owned": "An existing irrigation installation already owns one of the imported actuators or feedback entities.",
+      "invalid_import": "The portable configuration is invalid.",
+      "import_not_pending": "There is no validated import awaiting confirmation.",
+      "import_cancelled": "The portable import was cancelled."
     },
     "error": {
       "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time.",
