@@ -2,6 +2,9 @@
 
 IrrigationManager ist eine geplante Home-Assistant-Integration für intelligente, vollständig über die Benutzeroberfläche konfigurierbare Bewässerung privater Gärten.
 
+- Repository: <https://github.com/aabegg/IrrigationManager>
+- Fehler und Vorschläge: <https://github.com/aabegg/IrrigationManager/issues>
+
 Unterstützte Mindestversion: **Home Assistant 2026.7.2**. Die Grenze steht in
 `hacs.json`; Home Assistants `manifest.json` besitzt kein zulässiges Feld für eine
 Mindestversion. Dort wird deshalb bewusst kein nicht standardkonformer Schlüssel ergänzt.
@@ -39,7 +42,10 @@ dokumentiert. Das Frontend-Modul wird von der Integration automatisch registrier
 
 ## Projektstatus
 
-Aktive Entwicklung. Backend, Config Flow und die ersten Lovelace-Karten sind implementiert und getestet; der in den Fachdokumenten beschriebene Gesamtumfang ist noch nicht vollständig umgesetzt.
+Private Release-Vorbereitung. Backend, geführter Config Flow, Sicherheitslogik,
+Wetter- und Wasserbilanz, Scheduler sowie Lovelace-Karten sind implementiert und
+simuliert. Die noch offenen Agronomie-, Hardware- und Feldtest-Gates sind in
+[`docs/15_Traceability.md`](docs/15_Traceability.md) dokumentiert.
 
 Die Messschicht unterstützt kumulative Volumenzähler, explizit umgerechnete
 Impuls-/Zählwerte und direkte Durchflussraten. Portable Konfigurationen können über
