@@ -220,7 +220,10 @@ SUPERVISED_TEST_SCHEMA = vol.Schema(
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
         vol.Required(ATTR_DURATION): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
-        vol.Optional(ATTR_BYPASS_CHECKS, default=[]): vol.All(cv.ensure_list, [vol.In({"flow"})]),
+        vol.Optional(ATTR_BYPASS_CHECKS, default=[]): vol.All(
+            cv.ensure_list,
+            [vol.In({"feedback", "flow", "weather", "external"})],
+        ),
     }
 )
 CALIBRATION_SCHEMA = vol.Schema(

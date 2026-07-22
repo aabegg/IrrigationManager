@@ -140,6 +140,12 @@
     "weather_failure_policy": {
       "options": {"fail_safe": "Fail safe (block affected watering)"}
     },
+    "external_failure_policy": {
+      "options": {"fail_safe": "Fail safe (block on unavailable or stale input)"}
+    },
+    "wind_manual_policy": {
+      "options": {"allow": "Allow manual irrigation", "block": "Block manual irrigation"}
+    },
     "et0_priority": {
       "options": {
         "direct": "Prefer direct ET0",
@@ -183,6 +189,12 @@
       },
       "rain_stop": {
         "name": "Automatic rain stop"
+      },
+      "external_safety": {
+        "name": "External safety block"
+      },
+      "wind_interlock": {
+        "name": "Strong-wind interlock"
       }
     },
     "sensor": {
@@ -268,6 +280,7 @@
         "data": {
           "name": "Name",
           "main_valve": "Main valve",
+          "main_valve_feedback": "Main valve feedback",
           "water_meter": "Cumulative water meter",
           "raw_meter": "Raw pulse or count meter",
           "liters_per_count": "Liters per pulse or count",
@@ -306,6 +319,11 @@
           "installation_max_delivery_runtime": "Maximum installation delivery runtime",
           "installation_max_operation_lifetime": "Maximum operation lifetime",
           "actuator_transition_grace_seconds": "Actuator feedback transition grace",
+          "actuator_feedback_max_age_seconds": "Maximum actuator feedback age",
+          "external_permit": "External permit sensor",
+          "external_block": "External block sensor",
+          "external_max_age_seconds": "Maximum external safety input age",
+          "external_failure_policy": "External input failure policy",
            "notify_entities": "Critical notification targets"
           ,"maintenance_max_duration": "Maximum maintenance test duration"
           ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
@@ -338,6 +356,7 @@
       "invalid_profiles": "Profile data or a profile reference is invalid.",
       "multiple_meter_sources": "Select either a cumulative volume meter or a raw count meter, not both.",
       "raw_meter_requires_factor": "A raw meter and its liters-per-count factor must be configured together."
+      ,"main_feedback_requires_main_valve": "Main-valve feedback requires a configured main valve."
     }
   },
   "options": {
@@ -356,6 +375,7 @@
         "data": {
           "name": "Name",
           "main_valve": "Main valve",
+          "main_valve_feedback": "Main valve feedback",
           "water_meter": "Cumulative water meter",
           "raw_meter": "Raw pulse or count meter",
           "liters_per_count": "Liters per pulse or count",
@@ -394,6 +414,11 @@
           "installation_max_delivery_runtime": "Maximum installation delivery runtime",
           "installation_max_operation_lifetime": "Maximum operation lifetime",
           "actuator_transition_grace_seconds": "Actuator feedback transition grace",
+          "actuator_feedback_max_age_seconds": "Maximum actuator feedback age",
+          "external_permit": "External permit sensor",
+          "external_block": "External block sensor",
+          "external_max_age_seconds": "Maximum external safety input age",
+          "external_failure_policy": "External input failure policy",
            "notify_entities": "Critical notification targets"
           ,"maintenance_max_duration": "Maximum maintenance test duration"
           ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
@@ -426,6 +451,14 @@
         "data": {
           "name": "Name",
           "zone_valve": "Zone valve",
+          "zone_valve_feedback": "Zone valve feedback",
+          "external_permit": "External permit sensor",
+          "external_block": "External block sensor",
+          "external_max_age_seconds": "Maximum external safety input age",
+          "external_failure_policy": "External input failure policy",
+          "wind_interlock_entity": "Wind interlock source",
+          "wind_interlock_threshold": "Strong-wind threshold (m/s)",
+          "wind_manual_policy": "Manual wind policy",
           "default_duration": "Default manual duration",
           "min_flow": "Minimum expected flow",
           "max_flow": "Maximum expected flow",
@@ -494,7 +527,9 @@
       "invalid_profiles": "Profile data or a profile reference is invalid.",
       "multiple_meter_sources": "Select either a cumulative volume meter or a raw count meter, not both.",
       "raw_meter_requires_factor": "A raw meter and its liters-per-count factor must be configured together.",
+      "main_feedback_requires_main_valve": "Main-valve feedback requires a configured main valve.",
       "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
+      ,"wind_interlock_requires_source_and_threshold": "Wind source and threshold must be configured together."
       ,"invalid_import": "The portable file, version, entity mappings, or zone mappings are invalid."
     }
   },
@@ -508,6 +543,14 @@
           "data": {
             "name": "Name",
             "zone_valve": "Zone valve",
+            "zone_valve_feedback": "Zone valve feedback",
+            "external_permit": "External permit sensor",
+            "external_block": "External block sensor",
+            "external_max_age_seconds": "Maximum external safety input age",
+            "external_failure_policy": "External input failure policy",
+            "wind_interlock_entity": "Wind interlock source",
+            "wind_interlock_threshold": "Strong-wind threshold (m/s)",
+            "wind_manual_policy": "Manual wind policy",
             "default_duration": "Default manual duration",
             "min_flow": "Minimum expected flow",
             "max_flow": "Maximum expected flow",
@@ -570,6 +613,14 @@
           "data": {
             "name": "Name",
             "zone_valve": "Zone valve",
+            "zone_valve_feedback": "Zone valve feedback",
+            "external_permit": "External permit sensor",
+            "external_block": "External block sensor",
+            "external_max_age_seconds": "Maximum external safety input age",
+            "external_failure_policy": "External input failure policy",
+            "wind_interlock_entity": "Wind interlock source",
+            "wind_interlock_threshold": "Strong-wind threshold (m/s)",
+            "wind_manual_policy": "Manual wind policy",
             "default_duration": "Default manual duration",
             "min_flow": "Minimum expected flow",
             "max_flow": "Maximum expected flow",
@@ -638,6 +689,7 @@
         "agronomic_confirmation_required": "Review and confirm the generic or customized agronomic values before enabling automatic irrigation.",
         "invalid_profiles": "Profile data, Teilflaechen, or a profile reference is invalid.",
         "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
+        ,"wind_interlock_requires_source_and_threshold": "Wind source and threshold must be configured together."
       }
     }
   }

@@ -3,13 +3,20 @@
 import pytest
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
     UnitOfVolume,
     UnitOfVolumeFlowRate,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.irrigation_manager.adapters import HomeAssistantFlow, HomeAssistantMeter
+from custom_components.irrigation_manager.adapters import (
+    HomeAssistantActuators,
+    HomeAssistantFlow,
+    HomeAssistantMeter,
+)
 
 
 async def test_flow_adapter_rejects_non_finite_values(
@@ -65,3 +72,57 @@ async def test_raw_count_meter_uses_explicit_liters_per_count(hass: HomeAssistan
 
     assert await meter.read_raw_liters() == 105
     assert await meter.read_liters() == 105
+
+
+async def test_separate_feedback_supports_binary_switch_and_valve_states(
+    hass: HomeAssistant,
+) -> None:
+    """Observe the configured feedback while keeping commands on the actuator entity."""
+    calls: list[tuple[str, str]] = []
+
+    async def turn_on(call) -> None:
+        calls.append(("turn_on", call.data["entity_id"]))
+        hass.states.async_set("binary_sensor.zone_feedback", STATE_ON)
+
+    async def turn_off(call) -> None:
+        calls.append(("turn_off", call.data["entity_id"]))
+        hass.states.async_set("binary_sensor.zone_feedback", STATE_OFF)
+
+    hass.services.async_register("switch", "turn_on", turn_on)
+    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.states.async_set("switch.zone", STATE_OFF)
+    hass.states.async_set("binary_sensor.zone_feedback", STATE_OFF)
+    actuators = HomeAssistantActuators(
+        hass,
+        transition_grace_seconds=0.1,
+        feedback_entities={"switch.zone": "binary_sensor.zone_feedback"},
+    )
+
+    await actuators.open("switch.zone")
+    assert await actuators.is_open("switch.zone")
+    await actuators.close("switch.zone")
+
+    assert calls == [("turn_on", "switch.zone"), ("turn_off", "switch.zone")]
+
+
+async def test_separate_feedback_fails_closed_when_unavailable_or_stale(
+    hass: HomeAssistant,
+) -> None:
+    """Reject unavailable and expired feedback instead of trusting command state."""
+    actuators = HomeAssistantActuators(
+        hass,
+        feedback_entities={"switch.zone": "binary_sensor.zone_feedback"},
+        feedback_max_age_seconds=1,
+    )
+    hass.states.async_set("binary_sensor.zone_feedback", STATE_UNAVAILABLE)
+    with pytest.raises(HomeAssistantError, match="not available"):
+        await actuators.is_open("switch.zone")
+
+    hass.states.async_set("binary_sensor.zone_feedback", STATE_OFF)
+    actuators = HomeAssistantActuators(
+        hass,
+        feedback_entities={"switch.zone": "binary_sensor.zone_feedback"},
+        feedback_max_age_seconds=-1,
+    )
+    with pytest.raises(HomeAssistantError, match="stale"):
+        await actuators.is_open("switch.zone")

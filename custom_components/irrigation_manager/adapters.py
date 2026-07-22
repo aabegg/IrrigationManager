@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from homeassistant.const import (
@@ -25,33 +26,73 @@ from .meter import CumulativeMeter, ImplausibleMeterRegressionError
 class HomeAssistantActuators:
     """Control switch and valve entities through native HA actions."""
 
-    def __init__(self, hass: HomeAssistant, transition_grace_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        transition_grace_seconds: float = 5.0,
+        *,
+        feedback_entities: Mapping[str, str] | None = None,
+        feedback_max_age_seconds: float = 300.0,
+    ) -> None:
         """Initialize the actuator adapter."""
         self._hass = hass
         self._transition_grace_seconds = transition_grace_seconds
+        self._feedback_entities = dict(feedback_entities or {})
+        self._feedback_max_age_seconds = feedback_max_age_seconds
 
-    async def open(self, entity_id: str) -> None:
+    async def open(self, entity_id: str, *, verify: bool = True) -> None:
         """Open a switch or valve and wait for the action call."""
         domain = entity_id.partition(".")[0]
         service = "open_valve" if domain == "valve" else "turn_on"
         await self._hass.services.async_call(
             domain, service, {ATTR_ENTITY_ID: entity_id}, blocking=True
         )
-        await self._async_wait_for_state(entity_id, {STATE_ON, "open"})
+        if verify:
+            await self._async_wait_for_state(self.feedback_entity(entity_id), {STATE_ON, "open"})
 
-    async def close(self, entity_id: str) -> None:
+    async def close(self, entity_id: str, *, verify: bool = True) -> None:
         """Close a switch or valve and wait for the action call."""
         domain = entity_id.partition(".")[0]
         service = "close_valve" if domain == "valve" else "turn_off"
         await self._hass.services.async_call(
             domain, service, {ATTR_ENTITY_ID: entity_id}, blocking=True
         )
-        await self._async_wait_for_state(entity_id, {STATE_OFF, "closed"})
+        if verify:
+            await self._async_wait_for_state(self.feedback_entity(entity_id), {STATE_OFF, "closed"})
 
     async def is_open(self, entity_id: str) -> bool:
         """Read immediate logical feedback after an actuator command."""
-        state = self._hass.states.get(entity_id)
-        return state is not None and state.state in {STATE_ON, "open"}
+        state = self.feedback_state(entity_id)
+        return state.state in {STATE_ON, "open"}
+
+    def feedback_entity(self, entity_id: str) -> str:
+        """Return the observation entity used for one commanded actuator."""
+        return self._feedback_entities.get(entity_id, entity_id)
+
+    def actuator_for_feedback(self, entity_id: str) -> str:
+        """Resolve an observation entity back to its commanded actuator."""
+        return next(
+            (
+                actuator
+                for actuator, feedback in self._feedback_entities.items()
+                if feedback == entity_id
+            ),
+            entity_id,
+        )
+
+    def feedback_state(self, entity_id: str) -> State:
+        """Return fresh binary/switch/valve feedback or fail closed."""
+        feedback_entity = self.feedback_entity(entity_id)
+        state = self._hass.states.get(feedback_entity)
+        if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
+            raise HomeAssistantError(f"Actuator feedback {feedback_entity} is not available")
+        if (
+            datetime.now(UTC) - state.last_reported
+        ).total_seconds() > self._feedback_max_age_seconds:
+            raise HomeAssistantError(f"Actuator feedback {feedback_entity} is stale")
+        if state.state not in {STATE_ON, STATE_OFF, "open", "closed"}:
+            raise HomeAssistantError(f"Actuator feedback {feedback_entity} is not binary")
+        return state
 
     async def _async_wait_for_state(self, entity_id: str, expected_states: set[str]) -> None:
         """Wait briefly for delayed actuator feedback."""
@@ -67,6 +108,10 @@ class HomeAssistantActuators:
         try:
             current = self._hass.states.get(entity_id)
             if current is not None and current.state in expected_states:
+                if (
+                    datetime.now(UTC) - current.last_reported
+                ).total_seconds() > self._feedback_max_age_seconds:
+                    raise HomeAssistantError(f"Actuator feedback {entity_id} is stale")
                 return
             async with asyncio.timeout(self._transition_grace_seconds):
                 await changed.wait()

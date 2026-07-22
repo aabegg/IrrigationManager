@@ -12,10 +12,10 @@ CLEANUP_FEEDBACK_BUDGET_SECONDS = 5.0
 class ActuatorPort(Protocol):
     """Control and observe logical irrigation valves."""
 
-    async def open(self, entity_id: str) -> None:
+    async def open(self, entity_id: str, *, verify: bool = True) -> None:
         """Open one logical valve."""
 
-    async def close(self, entity_id: str) -> None:
+    async def close(self, entity_id: str, *, verify: bool = True) -> None:
         """Close one logical valve."""
 
     async def is_open(self, entity_id: str) -> bool:
@@ -77,6 +77,7 @@ class ExecutionRequest:
     flow_freshness_seconds: float = 30.0
     on_flow_sample: Callable[[float], Awaitable[None]] | None = None
     on_actuator_command: Callable[[str, bool], Awaitable[None]] | None = None
+    feedback_bypass_entities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject ambiguous targets and volume requests without a hard limit."""
@@ -258,10 +259,16 @@ class IrrigationExecutor:
                     if request.amount_liters is not None and deadline is not None:
                         async with asyncio.timeout(max(0.0, deadline - self._clock.monotonic())):
                             await self._notify_actuator_command(request, request.zone_valve, False)
-                            await self._actuators.close(request.zone_valve)
+                            await self._actuators.close(
+                                request.zone_valve,
+                                verify=request.zone_valve not in request.feedback_bypass_entities,
+                            )
                     else:
                         await self._notify_actuator_command(request, request.zone_valve, False)
-                        await self._actuators.close(request.zone_valve)
+                        await self._actuators.close(
+                            request.zone_valve,
+                            verify=request.zone_valve not in request.feedback_bypass_entities,
+                        )
                     zone_closed = True
                 except TimeoutError:
                     deadline_expired = True
@@ -302,6 +309,7 @@ class IrrigationExecutor:
                     cleanup_entities,
                     budget_seconds=CLEANUP_FEEDBACK_BUDGET_SECONDS,
                     on_command=request.on_actuator_command,
+                    feedback_bypass_entities=request.feedback_bypass_entities,
                 )
                 for entity_id, cleanup_error in cleanup_errors.items():
                     if entity_id == request.zone_valve:
@@ -403,7 +411,10 @@ class IrrigationExecutor:
             if request.amount_liters is not None and self._clock.monotonic() >= deadline:
                 self._record_hard_timeout(request, violations, progress)
                 return None
-            if not await self._actuators.is_open(request.zone_valve):
+            if (
+                request.zone_valve not in request.feedback_bypass_entities
+                and not await self._actuators.is_open(request.zone_valve)
+            ):
                 violations.append(f"{request.zone_valve} closed unexpectedly")
                 progress.target_reached = False
                 return "zone"
@@ -648,8 +659,9 @@ class IrrigationExecutor:
     async def _open_and_confirm(self, request: ExecutionRequest, entity_id: str) -> None:
         """Open one actuator and reject missing feedback."""
         await self._notify_actuator_command(request, entity_id, True)
-        await self._actuators.open(entity_id)
-        if not await self._actuators.is_open(entity_id):
+        bypass = entity_id in request.feedback_bypass_entities
+        await self._actuators.open(entity_id, verify=not bypass)
+        if not bypass and not await self._actuators.is_open(entity_id):
             raise ValveDidNotOpenError(entity_id)
 
     async def _close_with_shared_feedback_budget(
@@ -658,6 +670,7 @@ class IrrigationExecutor:
         *,
         budget_seconds: float,
         on_command: Callable[[str, bool], Awaitable[None]] | None = None,
+        feedback_bypass_entities: tuple[str, ...] = (),
     ) -> dict[str, BaseException]:
         """Start every fail-safe close and share one bounded feedback budget.
 
@@ -667,7 +680,12 @@ class IrrigationExecutor:
         if on_command is not None:
             await asyncio.gather(*(on_command(entity_id, False) for entity_id in entity_ids))
         tasks = {
-            entity_id: asyncio.create_task(self._actuators.close(entity_id))
+            entity_id: asyncio.create_task(
+                self._actuators.close(
+                    entity_id,
+                    verify=entity_id not in feedback_bypass_entities,
+                )
+            )
             for entity_id in dict.fromkeys(entity_ids)
         }
         if not tasks:

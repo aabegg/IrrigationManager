@@ -17,6 +17,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import (
     CONF_NAME,
     Platform,
+    UnitOfSpeed,
     UnitOfTemperature,
     UnitOfTime,
     UnitOfVolume,
@@ -40,6 +41,7 @@ from homeassistant.helpers.selector import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_ACTUATOR_FEEDBACK_MAX_AGE_SECONDS,
     CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
     CONF_AGRONOMIC_VALUES_CONFIRMED,
     CONF_APPLICATION_EFFICIENCY,
@@ -53,6 +55,10 @@ from .const import (
     CONF_ET0_PRIORITY,
     CONF_ET0_SENSORS,
     CONF_EXPOSURE_PROFILE,
+    CONF_EXTERNAL_BLOCK,
+    CONF_EXTERNAL_FAILURE_POLICY,
+    CONF_EXTERNAL_MAX_AGE_SECONDS,
+    CONF_EXTERNAL_PERMIT,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
@@ -78,6 +84,7 @@ from .const import (
     CONF_LITERS_PER_COUNT,
     CONF_LOCAL_WIND_HEIGHT_M,
     CONF_MAIN_VALVE,
+    CONF_MAIN_VALVE_FEEDBACK,
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
     CONF_MANDATORY_AMOUNT_LITERS,
@@ -134,14 +141,19 @@ from .const import (
     CONF_WEATHER_OBSERVATION_MAX_AGE_HOURS,
     CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
     CONF_WEATHER_WIND_HEIGHT_M,
+    CONF_WIND_INTERLOCK_ENTITY,
+    CONF_WIND_INTERLOCK_THRESHOLD,
+    CONF_WIND_MANUAL_POLICY,
     CONF_WIND_SPEED_SENSORS,
     CONF_ZONE_DAILY_BUDGET_LITERS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
+    CONF_ZONE_VALVE_FEEDBACK,
     CONF_ZONE_WEEKLY_BUDGET_LITERS,
     DOMAIN,
     ET0_PRIORITY_CALCULATED,
     ET0_PRIORITY_DIRECT,
+    EXTERNAL_FAILURE_FAIL_SAFE,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
     SOIL_MOISTURE_ROLE_CORRECTION,
@@ -151,6 +163,8 @@ from .const import (
     WATERING_MODE_DEMAND,
     WATERING_MODE_MINIMUM,
     WEATHER_FAILURE_FAIL_SAFE,
+    WIND_MANUAL_ALLOW,
+    WIND_MANUAL_BLOCK,
 )
 from .manager import IrrigationManager
 from .profiles import (
@@ -169,6 +183,9 @@ INSTALLATION_SCHEMA = vol.Schema(
         vol.Required(CONF_NAME): TextSelector(),
         vol.Optional(CONF_MAIN_VALVE): EntitySelector(
             EntitySelectorConfig(domain=[Platform.SWITCH, Platform.VALVE])
+        ),
+        vol.Optional(CONF_MAIN_VALVE_FEEDBACK): EntitySelector(
+            EntitySelectorConfig(domain=[Platform.BINARY_SENSOR, Platform.SWITCH, Platform.VALVE])
         ),
         vol.Optional(CONF_WATER_METER): EntitySelector(
             EntitySelectorConfig(domain=Platform.SENSOR)
@@ -371,6 +388,26 @@ INSTALLATION_SCHEMA = vol.Schema(
                 unit_of_measurement=UnitOfTime.SECONDS,
             )
         ),
+        vol.Optional(CONF_ACTUATOR_FEEDBACK_MAX_AGE_SECONDS, default=300): NumberSelector(
+            NumberSelectorConfig(min=1, max=86_400, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_EXTERNAL_PERMIT): EntitySelector(
+            EntitySelectorConfig(domain=Platform.BINARY_SENSOR)
+        ),
+        vol.Optional(CONF_EXTERNAL_BLOCK): EntitySelector(
+            EntitySelectorConfig(domain=Platform.BINARY_SENSOR)
+        ),
+        vol.Optional(CONF_EXTERNAL_MAX_AGE_SECONDS, default=300): NumberSelector(
+            NumberSelectorConfig(min=1, max=86_400, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(
+            CONF_EXTERNAL_FAILURE_POLICY, default=EXTERNAL_FAILURE_FAIL_SAFE
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[EXTERNAL_FAILURE_FAIL_SAFE],
+                translation_key=CONF_EXTERNAL_FAILURE_POLICY,
+            )
+        ),
         vol.Optional(CONF_NOTIFY_ENTITIES, default=[]): EntitySelector(
             EntitySelectorConfig(domain=Platform.NOTIFY, multiple=True)
         ),
@@ -410,6 +447,44 @@ ZONE_SCHEMA = vol.Schema(
         vol.Required(CONF_NAME): TextSelector(),
         vol.Required(CONF_ZONE_VALVE): EntitySelector(
             EntitySelectorConfig(domain=[Platform.SWITCH, Platform.VALVE])
+        ),
+        vol.Optional(CONF_ZONE_VALVE_FEEDBACK): EntitySelector(
+            EntitySelectorConfig(domain=[Platform.BINARY_SENSOR, Platform.SWITCH, Platform.VALVE])
+        ),
+        vol.Optional(CONF_EXTERNAL_PERMIT): EntitySelector(
+            EntitySelectorConfig(domain=Platform.BINARY_SENSOR)
+        ),
+        vol.Optional(CONF_EXTERNAL_BLOCK): EntitySelector(
+            EntitySelectorConfig(domain=Platform.BINARY_SENSOR)
+        ),
+        vol.Optional(CONF_EXTERNAL_MAX_AGE_SECONDS, default=300): NumberSelector(
+            NumberSelectorConfig(min=1, max=86_400, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(
+            CONF_EXTERNAL_FAILURE_POLICY, default=EXTERNAL_FAILURE_FAIL_SAFE
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[EXTERNAL_FAILURE_FAIL_SAFE],
+                translation_key=CONF_EXTERNAL_FAILURE_POLICY,
+            )
+        ),
+        vol.Optional(CONF_WIND_INTERLOCK_ENTITY): EntitySelector(
+            EntitySelectorConfig(domain=Platform.SENSOR)
+        ),
+        vol.Optional(CONF_WIND_INTERLOCK_THRESHOLD): NumberSelector(
+            NumberSelectorConfig(
+                min=0.1,
+                max=100,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
+            )
+        ),
+        vol.Optional(CONF_WIND_MANUAL_POLICY, default=WIND_MANUAL_ALLOW): SelectSelector(
+            SelectSelectorConfig(
+                options=[WIND_MANUAL_ALLOW, WIND_MANUAL_BLOCK],
+                translation_key=CONF_WIND_MANUAL_POLICY,
+            )
         ),
         vol.Required(CONF_DEFAULT_DURATION, default=600): NumberSelector(
             NumberSelectorConfig(
@@ -684,6 +759,10 @@ def _validate_zone_input(user_input: dict[str, Any], custom_profiles: object = N
         and float(user_input.get(CONF_SOIL_MOISTURE_CORRECTION_LIMIT_MM, 0)) <= 0
     ):
         return "soil_moisture_correction_limit_required"
+    if bool(user_input.get(CONF_WIND_INTERLOCK_ENTITY)) != bool(
+        user_input.get(CONF_WIND_INTERLOCK_THRESHOLD)
+    ):
+        return "wind_interlock_requires_source_and_threshold"
     return None
 
 
@@ -705,6 +784,8 @@ def _validate_installation_input(user_input: dict[str, Any]) -> str | None:
         return "multiple_meter_sources"
     if bool(raw) != bool(factor):
         return "raw_meter_requires_factor"
+    if user_input.get(CONF_MAIN_VALVE_FEEDBACK) and not user_input.get(CONF_MAIN_VALVE):
+        return "main_feedback_requires_main_valve"
     return None
 
 
@@ -712,7 +793,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create and reconfigure irrigation installations."""
 
     VERSION = 1
-    MINOR_VERSION = 3
+    MINOR_VERSION = 4
 
     @override
     @staticmethod

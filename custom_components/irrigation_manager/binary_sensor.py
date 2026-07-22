@@ -55,6 +55,11 @@ async def async_setup_entry(
                 entry=entry,
                 installation_id=installation_id,
             ),
+            ExternalSafetyBinarySensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+            ),
         ]
     )
     for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
@@ -69,6 +74,20 @@ async def async_setup_entry(
                     zone_name=subentry.title,
                 ),
                 ZoneAutomationNeededBinarySensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                ),
+                ZoneExternalSafetyBinarySensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                ),
+                ZoneWindInterlockBinarySensor(
                     coordinator=entry.runtime_data.coordinator,
                     entry=entry,
                     installation_id=installation_id,
@@ -307,6 +326,90 @@ class RainStopBinarySensor(_WeatherSafetyBinarySensor):
     @override
     def is_on(self) -> bool:
         return self.coordinator.data.rain_stop_active
+
+
+class ExternalSafetyBinarySensor(_WeatherSafetyBinarySensor):
+    """Expose installation-level external permit/block state."""
+
+    _attr_translation_key = "external_safety"
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+    ) -> None:
+        """Initialize the installation external-safety indicator."""
+        super().__init__(
+            coordinator=coordinator,
+            entry=entry,
+            installation_id=installation_id,
+            suffix="external_safety",
+        )
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        return self.coordinator.data.external_safety_blocked
+
+
+class _ZoneSafetyIndicator(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):
+    """Base for one zone-scoped safety indicator."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_id: str,
+        zone_name: str,
+        suffix: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._zone_id = zone_id
+        self._attr_unique_id = f"{zone_id}_{suffix}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, zone_id)},
+            name=zone_name,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation zone",
+            via_device=(DOMAIN, installation_id),
+        )
+
+
+class ZoneExternalSafetyBinarySensor(_ZoneSafetyIndicator):
+    """Expose zonal external permit/block state."""
+
+    _attr_translation_key = "external_safety"
+
+    def __init__(self, **kwargs: object) -> None:
+        """Initialize one zone external-safety indicator."""
+        super().__init__(**kwargs, suffix="external_safety")  # type: ignore[arg-type]
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        return self.coordinator.data.zone_external_safety_blocked.get(self._zone_id, False)
+
+
+class ZoneWindInterlockBinarySensor(_ZoneSafetyIndicator):
+    """Expose automatic strong-wind blocking for one zone."""
+
+    _attr_translation_key = "wind_interlock"
+
+    def __init__(self, **kwargs: object) -> None:
+        """Initialize one zone wind-interlock indicator."""
+        super().__init__(**kwargs, suffix="wind_interlock")  # type: ignore[arg-type]
+
+    @property
+    @override
+    def is_on(self) -> bool:
+        return self.coordinator.data.zone_wind_blocked.get(self._zone_id, False)
 
 
 class ZoneSafetyLockBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):

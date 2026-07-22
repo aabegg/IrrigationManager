@@ -1,5 +1,12 @@
 """Migration tests for immutable resolved calculation inputs."""
 
+from types import MappingProxyType
+
+from homeassistant.config_entries import ConfigSubentry
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.irrigation_manager import async_migrate_entry
 from custom_components.irrigation_manager.models import ManualIrrigationRequest
 from custom_components.irrigation_manager.storage import _StateStore
 
@@ -84,3 +91,28 @@ def test_request_round_trip_retains_resolved_profile_snapshot() -> None:
     restored = ManualIrrigationRequest.from_dict(request.as_dict())
 
     assert restored.resolved_inputs == request.resolved_inputs
+
+
+async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant) -> None:
+    """Migrate existing installations and zones without weakening external inputs."""
+    entry = MockConfigEntry(
+        domain="irrigation_manager",
+        title="Garden",
+        data={"name": "Garden"},
+        version=1,
+        minor_version=3,
+    )
+    entry.add_to_hass(hass)
+    zone = ConfigSubentry(
+        data=MappingProxyType({"name": "Lawn", "zone_valve": "switch.lawn"}),
+        subentry_id="zone-1",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    assert await async_migrate_entry(hass, entry)
+    assert entry.minor_version == 4
+    assert entry.data["external_failure_policy"] == "fail_safe"
+    assert entry.subentries["zone-1"].data["external_failure_policy"] == "fail_safe"

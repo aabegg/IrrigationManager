@@ -140,6 +140,12 @@
     "weather_failure_policy": {
       "options": {"fail_safe": "Ausfallsicher (betroffene Bewässerung sperren)"}
     },
+    "external_failure_policy": {
+      "options": {"fail_safe": "Ausfallsicher (bei ungültigem oder veraltetem Eingang sperren)"}
+    },
+    "wind_manual_policy": {
+      "options": {"allow": "Manuelle Bewässerung erlauben", "block": "Manuelle Bewässerung sperren"}
+    },
     "et0_priority": {
       "options": {
         "direct": "Direkte ET0 bevorzugen",
@@ -183,6 +189,12 @@
       },
       "rain_stop": {
         "name": "Automatischer Regenstopp"
+      },
+      "external_safety": {
+        "name": "Externe Sicherheitssperre"
+      },
+      "wind_interlock": {
+        "name": "Starkwindsperre"
       }
     },
     "sensor": {
@@ -268,6 +280,7 @@
         "data": {
           "name": "Name",
           "main_valve": "Hauptventil",
+          "main_valve_feedback": "Rückmeldung des Hauptventils",
           "water_meter": "Kumulativer Wasserzähler",
           "raw_meter": "Roher Impuls- oder Zählwert",
           "liters_per_count": "Liter je Impuls oder Zählschritt",
@@ -306,6 +319,11 @@
           "installation_max_delivery_runtime": "Maximale Bewässerungslaufzeit der Anlage",
           "installation_max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
           "actuator_transition_grace_seconds": "Übergangsfrist für Aktorrückmeldung",
+          "actuator_feedback_max_age_seconds": "Maximales Alter der Aktorrückmeldung",
+          "external_permit": "Externer Freigabesensor",
+          "external_block": "Externer Sperrsensor",
+          "external_max_age_seconds": "Maximales Alter externer Sicherheitseingänge",
+          "external_failure_policy": "Ausfallstrategie externer Eingänge",
            "notify_entities": "Ziele für kritische Benachrichtigungen"
           ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
           ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
@@ -338,6 +356,7 @@
       "invalid_profiles": "Profildaten oder eine Profilreferenz sind ungültig.",
       "multiple_meter_sources": "Wähle entweder einen kumulativen Volumenzähler oder einen Rohzähler, nicht beide.",
       "raw_meter_requires_factor": "Rohzähler und Liter-je-Zählschritt müssen gemeinsam konfiguriert werden."
+      ,"main_feedback_requires_main_valve": "Eine Hauptventil-Rückmeldung benötigt ein konfiguriertes Hauptventil."
     }
   },
   "options": {
@@ -356,6 +375,7 @@
         "data": {
           "name": "Name",
           "main_valve": "Hauptventil",
+          "main_valve_feedback": "Rückmeldung des Hauptventils",
           "water_meter": "Kumulativer Wasserzähler",
           "raw_meter": "Roher Impuls- oder Zählwert",
           "liters_per_count": "Liter je Impuls oder Zählschritt",
@@ -394,6 +414,11 @@
           "installation_max_delivery_runtime": "Maximale Bewässerungslaufzeit der Anlage",
           "installation_max_operation_lifetime": "Maximale Lebensdauer eines Vorgangs",
           "actuator_transition_grace_seconds": "Übergangsfrist für Aktorrückmeldung",
+          "actuator_feedback_max_age_seconds": "Maximales Alter der Aktorrückmeldung",
+          "external_permit": "Externer Freigabesensor",
+          "external_block": "Externer Sperrsensor",
+          "external_max_age_seconds": "Maximales Alter externer Sicherheitseingänge",
+          "external_failure_policy": "Ausfallstrategie externer Eingänge",
            "notify_entities": "Ziele für kritische Benachrichtigungen"
           ,"maintenance_max_duration": "Maximale Dauer eines Wartungstests"
           ,"maintenance_confirmation_interval": "Intervall der Dead-Man-Bestätigung"
@@ -426,6 +451,14 @@
         "data": {
           "name": "Name",
           "zone_valve": "Zonenventil",
+          "zone_valve_feedback": "Rückmeldung des Zonenventils",
+          "external_permit": "Externer Freigabesensor",
+          "external_block": "Externer Sperrsensor",
+          "external_max_age_seconds": "Maximales Alter externer Sicherheitseingänge",
+          "external_failure_policy": "Ausfallstrategie externer Eingänge",
+          "wind_interlock_entity": "Quelle der Starkwindsperre",
+          "wind_interlock_threshold": "Starkwind-Schwellwert (m/s)",
+          "wind_manual_policy": "Windrichtlinie für manuelle Bewässerung",
           "default_duration": "Standarddauer für manuelle Bewässerung",
           "min_flow": "Minimal erwarteter Durchfluss",
           "max_flow": "Maximal erwarteter Durchfluss",
@@ -494,7 +527,9 @@
       "invalid_profiles": "Profildaten oder eine Profilreferenz sind ungültig.",
       "multiple_meter_sources": "Wähle entweder einen kumulativen Volumenzähler oder einen Rohzähler, nicht beide.",
       "raw_meter_requires_factor": "Rohzähler und Liter-je-Zählschritt müssen gemeinsam konfiguriert werden.",
+      "main_feedback_requires_main_valve": "Eine Hauptventil-Rückmeldung benötigt ein konfiguriertes Hauptventil.",
       "soil_moisture_correction_limit_required": "Die konservative Korrektur benötigt eine ausdrücklich positive Korrekturgrenze."
+      ,"wind_interlock_requires_source_and_threshold": "Windquelle und Schwellwert müssen gemeinsam konfiguriert werden."
       ,"invalid_import": "Portable Datei, Version oder Entity-/Zonenzuordnung ist ungültig."
     }
   },
@@ -508,6 +543,14 @@
           "data": {
             "name": "Name",
             "zone_valve": "Zonenventil",
+            "zone_valve_feedback": "Rückmeldung des Zonenventils",
+            "external_permit": "Externer Freigabesensor",
+            "external_block": "Externer Sperrsensor",
+            "external_max_age_seconds": "Maximales Alter externer Sicherheitseingänge",
+            "external_failure_policy": "Ausfallstrategie externer Eingänge",
+            "wind_interlock_entity": "Quelle der Starkwindsperre",
+            "wind_interlock_threshold": "Starkwind-Schwellwert (m/s)",
+            "wind_manual_policy": "Windrichtlinie für manuelle Bewässerung",
             "default_duration": "Standarddauer für manuelle Bewässerung",
             "min_flow": "Minimal erwarteter Durchfluss",
             "max_flow": "Maximal erwarteter Durchfluss",
@@ -570,6 +613,14 @@
           "data": {
             "name": "Name",
             "zone_valve": "Zonenventil",
+            "zone_valve_feedback": "Rückmeldung des Zonenventils",
+            "external_permit": "Externer Freigabesensor",
+            "external_block": "Externer Sperrsensor",
+            "external_max_age_seconds": "Maximales Alter externer Sicherheitseingänge",
+            "external_failure_policy": "Ausfallstrategie externer Eingänge",
+            "wind_interlock_entity": "Quelle der Starkwindsperre",
+            "wind_interlock_threshold": "Starkwind-Schwellwert (m/s)",
+            "wind_manual_policy": "Windrichtlinie für manuelle Bewässerung",
             "default_duration": "Standarddauer für manuelle Bewässerung",
             "min_flow": "Minimal erwarteter Durchfluss",
             "max_flow": "Maximal erwarteter Durchfluss",
@@ -638,6 +689,7 @@
         "agronomic_confirmation_required": "Prüfe und bestätige die generischen oder angepassten agronomischen Werte vor der Automatikfreigabe.",
         "invalid_profiles": "Profildaten, Teilflächen oder eine Profilreferenz sind ungültig.",
         "soil_moisture_correction_limit_required": "Die konservative Korrektur benötigt eine ausdrücklich positive Korrekturgrenze."
+        ,"wind_interlock_requires_source_and_threshold": "Windquelle und Schwellwert müssen gemeinsam konfiguriert werden."
       }
     }
   }

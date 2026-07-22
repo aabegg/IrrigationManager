@@ -49,6 +49,8 @@ Vor jedem automatischen oder manuellen Vorgang:
 - Zähler- und Durchflussqualität passend zur Zielart oder erlaubtem Fallback
 - keine harte Frostsperre
 - externe Freigaben erfüllt
+- konfigurierte Freigabe- und Sperrsensoren sind frisch; fehlende, unbekannte oder
+  veraltete Werte sperren ausfallsicher
 - Maximalgrenzen gültig
 - manueller Auftrag noch nicht abgelaufen
 
@@ -91,6 +93,9 @@ Das Hauptventil wird zwischen Zonen und Teilgaben geschlossen.
 
 - begrenzte, konfigurierte Wiederholungsversuche
 - optional separates Feedback-Entity auswerten
+- separate Rückmeldungen dürfen `binary_sensor`, `switch` oder `valve` sein; Befehle
+  werden weiterhin ausschließlich an den zugeordneten Aktor gesendet
+- Rückmeldungen werden auf Datenalter und innerhalb der konfigurierten Übergangsfrist geprüft
 - nach Fehlschlag sicher schließen und sperren
 
 ## Durchflussfehler
@@ -124,6 +129,11 @@ Das Hauptventil wird zwischen Zonen und Teilgaben geschlossen.
 - verwendeten Fallback sichtbar kennzeichnen
 - nach Ablauf erlaubter Fallbackdauer automatische Bedarfsbewässerung aussetzen
 - kritische Gerätesensoren können Starts blockieren
+- zonaler Starkwind blockiert automatische Bewässerung; für manuelle Bewässerung gilt
+  die konfigurierte zonale Richtlinie; der Schwellwert wird kanonisch in m/s gespeichert
+  und Sensorwerte werden vor dem Vergleich aus ihrer nativen Einheit umgerechnet
+- Änderungen an Rückmeldung, externer Freigabe/Sperre und zonalem Wind werden während
+  einer Wasserabgabe unmittelbar ausgewertet
 
 ## Betrieb ohne Wasserzähler oder Durchflusssensor
 

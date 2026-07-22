@@ -134,7 +134,7 @@ class FakeHaIrrigationPlant:
         self.set_flow(0.0)
         self.set_weather("sunny", temperature=24.0, humidity=50.0)
 
-    async def open(self, entity_id: str) -> None:
+    async def open(self, entity_id: str, *, verify: bool = True) -> None:
         """Apply an open command unless injected feedback remains closed."""
         self.operations.append((self.clock.monotonic(), "open", entity_id))
         if entity_id in self.fail_open:
@@ -147,7 +147,7 @@ class FakeHaIrrigationPlant:
             len(open_zones),
         )
 
-    async def close(self, entity_id: str) -> None:
+    async def close(self, entity_id: str, *, verify: bool = True) -> None:
         """Apply a close command or inject stuck-open feedback."""
         self.operations.append((self.clock.monotonic(), "close", entity_id))
         if entity_id in self.fail_close:

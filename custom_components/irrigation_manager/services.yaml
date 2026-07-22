@@ -520,7 +520,10 @@ start_maintenance_test:
         select:
           multiple: true
           options:
+            - feedback
             - flow
+            - weather
+            - external
 confirm_maintenance_test:
   fields:
     config_entry_id:

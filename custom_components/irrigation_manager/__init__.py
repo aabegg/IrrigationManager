@@ -7,7 +7,13 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_AGRONOMIC_VALUES_CONFIRMED, CONF_CUSTOM_PROFILES, DOMAIN
+from .const import (
+    CONF_AGRONOMIC_VALUES_CONFIRMED,
+    CONF_CUSTOM_PROFILES,
+    CONF_EXTERNAL_FAILURE_POLICY,
+    DOMAIN,
+    EXTERNAL_FAILURE_FAIL_SAFE,
+)
 from .coordinator import IrrigationCoordinator
 from .frontend import async_register_frontend, async_unregister_frontend
 from .manager import IrrigationManager
@@ -114,6 +120,25 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     if entry.minor_version < 3:
         hass.config_entries.async_update_entry(entry, minor_version=3)
+    if entry.minor_version < 4:
+        for subentry in entry.get_subentries_of_type("zone"):
+            if CONF_EXTERNAL_FAILURE_POLICY not in subentry.data:
+                hass.config_entries.async_update_subentry(
+                    entry,
+                    subentry,
+                    data={
+                        CONF_EXTERNAL_FAILURE_POLICY: EXTERNAL_FAILURE_FAIL_SAFE,
+                        **subentry.data,
+                    },
+                )
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                CONF_EXTERNAL_FAILURE_POLICY: EXTERNAL_FAILURE_FAIL_SAFE,
+                **entry.data,
+            },
+            minor_version=4,
+        )
     return True
 
 

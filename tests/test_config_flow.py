@@ -3,10 +3,12 @@
 from unittest.mock import patch
 
 from homeassistant.config_entries import SOURCE_USER
+from homeassistant.const import UnitOfSpeed
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.irrigation_manager.config_flow import ZONE_SCHEMA
 from custom_components.irrigation_manager.const import (
     CONF_AUTOMATION_ENABLED,
     CONF_FLOW_SENSOR,
@@ -20,6 +22,15 @@ from custom_components.irrigation_manager.const import (
     CONF_WEATHER_ENTITY,
     DOMAIN,
 )
+
+
+def test_wind_threshold_selector_uses_canonical_meters_per_second() -> None:
+    """Make the stored wind-threshold unit explicit in every zone form."""
+    selector = next(
+        value for key, value in ZONE_SCHEMA.schema.items() if str(key) == "wind_interlock_threshold"
+    )
+
+    assert selector.config["unit_of_measurement"] == UnitOfSpeed.METERS_PER_SECOND
 
 
 async def test_user_can_create_an_irrigation_installation(
@@ -57,6 +68,8 @@ async def test_user_can_create_an_irrigation_installation(
     assert result["data"][CONF_LEAK_MONITORING] is True
     assert result["data"][CONF_LEAK_FLOW_THRESHOLD] == 0.5
     assert result["data"][CONF_LEAK_DURATION_SECONDS] == 30
+    assert result["data"]["actuator_feedback_max_age_seconds"] == 300
+    assert result["data"]["external_failure_policy"] == "fail_safe"
 
 
 async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:
@@ -101,6 +114,8 @@ async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:
     assert subentry.data[CONF_METER_FAILURE_STRATEGY] == "abort"
     assert subentry.data[CONF_AUTOMATION_ENABLED] is False
     assert subentry.data[CONF_WATERING_WINDOWS] == ["04:00-06:00"]
+    assert subentry.data["external_failure_policy"] == "fail_safe"
+    assert subentry.data["wind_manual_policy"] == "allow"
 
 
 async def test_options_flow_updates_installation_and_zone_expert_settings(

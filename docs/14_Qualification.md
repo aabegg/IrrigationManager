@@ -39,7 +39,8 @@ wird aus diesem Bericht ausdrücklich nicht abgeleitet.
 | Konfigurationsänderungen werden erst im vollständigen Leerlauf aktiviert | `test_config_reload_waits_for_idle_and_unload_cleans_runtime_tasks`, `test_options_update_during_watering_reloads_only_after_complete_idle`, Snapshot-Tests in `test_automatic_scheduling.py` |
 | Unload entfernt Listener und beendet oder erwartet alle eigenen Tasks | `test_config_reload_waits_for_idle_and_unload_cleans_runtime_tasks`, `test_short_idle_flow_artifact_is_ignored_and_unload_cancels_monitoring`, `test_unload_awaits_an_already_confirmed_leak_application` |
 | Not-Aus ist persistent und nicht durch normale manuelle Bedienung übersteuerbar | `test_stop_actions_close_active_valves_and_account_partial_water`, `test_emergency_stop_blocks_manual_watering` |
-| Frost-, Winter- und Wartungssperren sowie der Wartungs-Dead-Man sind nicht übersteuerbar | Noch kein vollständiger ausführbarer Nachweis; bleibt Freigabesperre für den vollständigen Erstumfang. |
+| Feedback, externe Freigaben und zonaler Wind werden beim Start und kontinuierlich ausfallsicher geprüft | `test_own_command_feedback_transition_does_not_trigger_false_lock`, `test_feedback_loss_during_operation_stops_and_locks_zone`, `test_zone_external_permit_change_stops_and_locks_only_zone`, `test_strong_wind_change_stops_relevant_manual_operation` |
+| Wartungsübersteuerungen gelten einzeln nur für den beaufsichtigten Test; Not-Aus, Winter, Exklusivität und Dead-Man bleiben wirksam | `test_supervised_overrides_are_individual_and_test_scoped`, `test_emergency_stop_cancels_supervised_test_and_remains_locked`, `test_deadman_confirmation_is_capped_and_fixed_expiry_is_enforced`, Executor-Exklusivitätstests |
 
 ## Speicher- und Wetterannahmen
 
@@ -65,7 +66,6 @@ reale Durchfluss- und Nachlaufkalibrierung sowie einen unabhängig geprüften Ha
 
 ## Verbleibende Software-Lücken
 
-- Frost-, Winter- und Wartungs-Dead-Man-Abläufe besitzen noch keinen vollständigen Abnahmepfad.
 - Eine deterministische Mehrwochen-Simulation mit sechs Referenzzonen ist nicht Teil dieses Slices.
 - Reale Zeitzonen-/DST-Übergänge und Sonnenfenster sind nicht vollständig qualifiziert; feste Fenster über Mitternacht sind getestet.
 - Wetterquellen-Fallbackketten, Prognoseaufschub und lang andauernde Wetterausfälle sind nur teilweise implementiert und getestet.

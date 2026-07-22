@@ -432,6 +432,9 @@ class InstallationSnapshot:
     zone_planning_reason: dict[str, str] = field(default_factory=dict)
     frost_blocked: bool = False
     rain_stop_active: bool = False
+    external_safety_blocked: bool = False
+    zone_external_safety_blocked: dict[str, bool] = field(default_factory=dict)
+    zone_wind_blocked: dict[str, bool] = field(default_factory=dict)
     weather_safety_status: str = "not_configured"
     weather_model_quality: str = "unavailable"
     weather_model_method: str = "unavailable"

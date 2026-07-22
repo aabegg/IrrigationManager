@@ -20,8 +20,10 @@ from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
     PERCENTAGE,
     STATE_OFF,
+    STATE_ON,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
+    UnitOfSpeed,
     UnitOfTemperature,
 )
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
@@ -29,7 +31,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.util import dt as dt_util
-from homeassistant.util.unit_conversion import TemperatureConverter
+from homeassistant.util.unit_conversion import SpeedConverter, TemperatureConverter
 
 from .adapters import (
     HomeAssistantActuators,
@@ -38,6 +40,7 @@ from .adapters import (
     HomeAssistantMeter,
 )
 from .const import (
+    CONF_ACTUATOR_FEEDBACK_MAX_AGE_SECONDS,
     CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
     CONF_AGRONOMIC_VALUES_CONFIRMED,
     CONF_APPLICATION_EFFICIENCY,
@@ -49,6 +52,10 @@ from .const import (
     CONF_CUSTOM_PROFILES,
     CONF_ET0_SENSORS,
     CONF_EXPOSURE_PROFILE,
+    CONF_EXTERNAL_BLOCK,
+    CONF_EXTERNAL_FAILURE_POLICY,
+    CONF_EXTERNAL_MAX_AGE_SECONDS,
+    CONF_EXTERNAL_PERMIT,
     CONF_FLOW_GRACE_SECONDS,
     CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
@@ -73,6 +80,7 @@ from .const import (
     CONF_LEAK_MONITORING,
     CONF_LITERS_PER_COUNT,
     CONF_MAIN_VALVE,
+    CONF_MAIN_VALVE_FEEDBACK,
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
     CONF_MANDATORY_AMOUNT_LITERS,
@@ -126,16 +134,21 @@ from .const import (
     CONF_WEATHER_FINALIZATION_TIME,
     CONF_WEATHER_MAX_AGE_SECONDS,
     CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
+    CONF_WIND_INTERLOCK_ENTITY,
+    CONF_WIND_INTERLOCK_THRESHOLD,
+    CONF_WIND_MANUAL_POLICY,
     CONF_WIND_SPEED_SENSORS,
     CONF_ZONE_DAILY_BUDGET_LITERS,
     CONF_ZONE_PRIORITY,
     CONF_ZONE_VALVE,
+    CONF_ZONE_VALVE_FEEDBACK,
     CONF_ZONE_WEEKLY_BUDGET_LITERS,
     EXPORT_SCHEMA_VERSION,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
     SOIL_MOISTURE_ROLE_INHIBIT,
     SUBENTRY_TYPE_ZONE,
+    WIND_MANUAL_BLOCK,
 )
 from .coordinator import IrrigationCoordinator
 from .events import IrrigationEventPublisher
@@ -296,12 +309,28 @@ class IrrigationManager:
         meter_entity = self._installation_data.get(CONF_WATER_METER)
         raw_meter_entity = self._installation_data.get(CONF_RAW_METER)
         self._has_meter = bool(meter_entity or raw_meter_entity)
+        feedback_entities: dict[str, str] = {}
+        main_valve = self._installation_data.get(CONF_MAIN_VALVE)
+        main_feedback = self._installation_data.get(CONF_MAIN_VALVE_FEEDBACK)
+        if isinstance(main_valve, str) and isinstance(main_feedback, str):
+            feedback_entities[main_valve] = main_feedback
+        for zone in self._zone_configs:
+            valve = zone.data.get(CONF_ZONE_VALVE)
+            feedback = zone.data.get(CONF_ZONE_VALVE_FEEDBACK)
+            if isinstance(valve, str) and isinstance(feedback, str):
+                feedback_entities[valve] = feedback
         self._actuators = HomeAssistantActuators(
             hass,
             self._number(
                 self._installation_data,
                 CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
                 5.0,
+            ),
+            feedback_entities=feedback_entities,
+            feedback_max_age_seconds=self._number(
+                self._installation_data,
+                CONF_ACTUATOR_FEEDBACK_MAX_AGE_SECONDS,
+                300.0,
             ),
         )
         self._meter = HomeAssistantMeter(
@@ -371,7 +400,7 @@ class IrrigationManager:
         self._state_event_tasks: set[asyncio.Task[None]] = set()
         self._state_unsubscribers: list[Callable[[], None]] = []
         self._active_external_violation: tuple[str, str, str | None] | None = None
-        self._expected_actuator_states: dict[str, tuple[bool, float]] = {}
+        self._expected_actuator_states: dict[str, list[tuple[bool, float]]] = {}
         self._commanded_actuator_states: dict[str, bool] = {}
         self._feedback_watchdog_tasks: dict[str, asyncio.Task[None]] = {}
         self._weather_watchdog_event = asyncio.Event()
@@ -604,9 +633,11 @@ class IrrigationManager:
         entity_ids = self._zone_valves()
         active_could_have_flowed = False
         if active := self._stored_state.active_execution:
-            zone_state = self._hass.states.get(active.zone_valve)
+            zone_state = self._hass.states.get(self._actuators.feedback_entity(active.zone_valve))
             main_state = (
-                self._hass.states.get(active.main_valve) if active.main_valve is not None else None
+                self._hass.states.get(self._actuators.feedback_entity(active.main_valve))
+                if active.main_valve is not None
+                else None
             )
             active_could_have_flowed = (
                 zone_state is not None
@@ -621,7 +652,14 @@ class IrrigationManager:
                 entity_ids.append(active.main_valve)
         if main_valve := self._installation_data.get(CONF_MAIN_VALVE):
             entity_ids.append(main_valve)
-        await self._async_close_entities(list(dict.fromkeys(entity_ids)))
+        try:
+            await self._async_close_entities(list(dict.fromkeys(entity_ids)))
+        except Exception as err:  # noqa: BLE001
+            self._stored_state = replace(
+                self._stored_state,
+                installation_safety_lock=f"Startup valve feedback failed: {err}",
+            )
+            await self._store.async_save(self._stored_state)
         await self._async_recover_interrupted_execution(could_have_flowed=active_could_have_flowed)
         with suppress(HomeAssistantError):
             await self._async_reconcile_meter_source()
@@ -647,15 +685,25 @@ class IrrigationManager:
         await self._async_expire_requests()
         await self._async_initialize_zone_balances()
         await self._async_ensure_idle_meter_baseline()
-        for entity_id in self._all_known_valves():
+        for entity_id in self._supervised_feedback_entities():
             self._state_unsubscribers.append(
                 async_track_state_change_event(self._hass, entity_id, self._actuator_state_changed)
             )
         weather_entities: set[str] = set()
-        for key in (CONF_FROST_ENTITY, CONF_RAIN_STOP_ENTITY):
+        for key in (
+            CONF_FROST_ENTITY,
+            CONF_RAIN_STOP_ENTITY,
+            CONF_EXTERNAL_PERMIT,
+            CONF_EXTERNAL_BLOCK,
+        ):
             value = self._installation_data.get(key)
             if isinstance(value, str):
                 weather_entities.add(value)
+        for zone in self._zone_configs:
+            for key in (CONF_EXTERNAL_PERMIT, CONF_EXTERNAL_BLOCK, CONF_WIND_INTERLOCK_ENTITY):
+                value = zone.data.get(key)
+                if isinstance(value, str):
+                    weather_entities.add(value)
         for entity_id in weather_entities:
             self._state_unsubscribers.append(
                 async_track_state_change_event(self._hass, entity_id, self._weather_state_changed)
@@ -696,8 +744,18 @@ class IrrigationManager:
     async def _async_verify_supervised_valves_after_startup(self) -> None:
         """Close and lock any valve opened in the startup listener-registration gap."""
         for entity_id in self._all_known_valves():
-            state = self._hass.states.get(entity_id)
-            if state is not None and state.state in {"on", "open"}:
+            try:
+                state = self._actuators.feedback_state(entity_id)
+            except HomeAssistantError as err:
+                if self._actuators.feedback_entity(entity_id) == entity_id:
+                    continue
+                self._stored_state = replace(
+                    self._stored_state,
+                    installation_safety_lock=f"{entity_id} feedback invalid at startup: {err}",
+                )
+                await self._store.async_save(self._stored_state)
+                continue
+            if state.state in {"on", "open"}:
                 await self._async_apply_actuator_violation(
                     entity_id,
                     reason=f"{entity_id} opened unexpectedly during startup",
@@ -861,14 +919,14 @@ class IrrigationManager:
             return
         open_ = new_state.state in {"on", "open"}
         closed = new_state.state in {STATE_OFF, "closed"}
-        entity_id = new_state.entity_id
+        entity_id = self._actuators.actuator_for_feedback(new_state.entity_id)
         active = self._stored_state.active_execution
         if not open_ and not closed:
             if active is not None:
                 expected = self._expected_actuator_states.get(entity_id)
                 self._schedule_feedback_watchdog(
                     entity_id,
-                    check_at=expected[1] if expected is not None else None,
+                    check_at=expected[-1][1] if expected else None,
                 )
             return
         if self._actuator_transition_expected(entity_id, open_=open_):
@@ -888,22 +946,37 @@ class IrrigationManager:
 
     def _actuator_transition_expected(self, entity_id: str, *, open_: bool) -> bool:
         """Consume command intent within its bounded feedback window."""
-        expected = self._expected_actuator_states.get(entity_id)
-        if expected is not None:
-            expected_open, expires_at = expected
-            if asyncio.get_running_loop().time() <= expires_at and expected_open == open_:
-                self._expected_actuator_states.pop(entity_id, None)
+        if self._feedback_bypassed_for_actuator(entity_id):
+            return True
+        expected = self._expected_actuator_states.get(entity_id, [])
+        now = asyncio.get_running_loop().time()
+        retained = [(state, expiry) for state, expiry in expected if now <= expiry]
+        for index, (expected_open, _) in enumerate(retained):
+            if expected_open == open_:
+                retained.pop(index)
+                if retained:
+                    self._expected_actuator_states[entity_id] = retained
+                else:
+                    self._expected_actuator_states.pop(entity_id, None)
                 self._cancel_feedback_watchdog(entity_id)
                 return True
-            if asyncio.get_running_loop().time() > expires_at:
-                self._expected_actuator_states.pop(entity_id, None)
+        if retained:
+            self._expected_actuator_states[entity_id] = retained
+        else:
+            self._expected_actuator_states.pop(entity_id, None)
         return False
 
     async def _async_expect_actuator_state(self, entity_id: str, open_: bool) -> None:
         """Record executor command intent before the actuator service is called."""
         expires_at = asyncio.get_running_loop().time() + self._actuator_transition_grace_seconds
         self._commanded_actuator_states[entity_id] = open_
-        self._expected_actuator_states[entity_id] = (open_, expires_at)
+        expected = self._expected_actuator_states.setdefault(entity_id, [])
+        expected[:] = (
+            []
+            if open_
+            else [item for item in expected if asyncio.get_running_loop().time() <= item[1]]
+        )
+        expected.append((open_, expires_at))
         self._schedule_feedback_watchdog(entity_id, check_at=expires_at)
 
     @property
@@ -964,11 +1037,16 @@ class IrrigationManager:
             active = self._stored_state.active_execution
             if active is None:
                 return
-            state = self._hass.states.get(entity_id)
+            if self._feedback_bypassed_for_actuator(entity_id):
+                return
+            try:
+                state = self._actuators.feedback_state(entity_id)
+            except HomeAssistantError:
+                state = None
             expected = self._expected_actuator_states.get(entity_id)
             expected_open = (
-                expected[0]
-                if expected is not None
+                expected[-1][0]
+                if expected
                 else self._commanded_actuator_states.get(
                     entity_id, self._active_expected_open(entity_id, active)
                 )
@@ -989,6 +1067,17 @@ class IrrigationManager:
         finally:
             if self._feedback_watchdog_tasks.get(entity_id) is current_task:
                 self._feedback_watchdog_tasks.pop(entity_id, None)
+
+    def _feedback_bypassed_for_actuator(self, entity_id: str) -> bool:
+        """Limit a feedback override to actuators owned by the one active test."""
+        test = self._stored_state.maintenance_test
+        active = self._stored_state.active_execution
+        return (
+            test is not None
+            and "feedback" in test.bypass_checks
+            and active is not None
+            and entity_id in {active.zone_valve, active.main_valve}
+        )
 
     async def _async_handle_unexpected_actuator_state(self, entity_id: str, *, open_: bool) -> None:
         """Fail closed for unsolicited openings and active valve closures."""
@@ -1035,6 +1124,12 @@ class IrrigationManager:
         with suppress(Exception):
             await self._async_close_entities(close_entities)
         self._events.fire(
+            "actuator_feedback_fault",
+            reason="unexpected_state" if opening else "feedback_mismatch",
+            target=event_target,
+            context={"safety_scope": scope, "lock_active": True},
+        )
+        self._events.fire(
             "safety_lock_activated",
             reason="unexpected_actuator_state",
             target=event_target,
@@ -1056,6 +1151,10 @@ class IrrigationManager:
 
     async def _async_apply_weather_interlocks(self) -> None:
         """Stop active watering when a hard frost or automatic rain stop applies."""
+        if await self._async_apply_feedback_freshness():
+            return
+        if await self._async_apply_external_interlocks():
+            return
         weather = self._weather_safety()
         async with self._command_lock:
             active = self._stored_state.active_execution
@@ -1065,13 +1164,31 @@ class IrrigationManager:
                 return
             request = self._request(active.request_id) if active.request_id else None
             maintenance = self._stored_state.maintenance_test
+            if maintenance is not None and "weather" in maintenance.bypass_checks:
+                return
             reason = None
+            reason_code = None
+            event_target = self._events.installation_target()
             if weather.frost_blocked:
                 reason = "Frost safety interlock activated"
+                reason_code = "frost"
             elif weather.rain_stop_active and (
                 maintenance is not None or (request is not None and request.source == "automatic")
             ):
                 reason = "Rain stop threshold reached"
+                reason_code = "rain_stop"
+            elif request is not None:
+                zone = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+                if zone is not None and self._wind_blocks(zone.data, source=request.source):
+                    reason = "Wind interlock threshold reached"
+                    reason_code = "wind"
+                    event_target = self._events.zone_target(active.zone_id)
+            elif maintenance is not None:
+                zone = self._zone_configs_by_subentry_id.get(maintenance.zone_subentry_id)
+                if zone is not None and self._wind_blocks(zone.data, source="automatic"):
+                    reason = "Wind interlock threshold reached"
+                    reason_code = "wind"
+                    event_target = self._events.zone_target(active.zone_id)
             if reason is None:
                 return
             identity = self._active_run_identity()
@@ -1082,8 +1199,8 @@ class IrrigationManager:
                     task.cancel()
         self._events.fire(
             "weather_interlock_activated",
-            reason="frost" if weather.frost_blocked else "rain_stop",
-            target=self._events.installation_target(),
+            reason=reason_code or "weather_interlock",
+            target=event_target,
             quality=weather.status,
         )
 
@@ -1128,6 +1245,120 @@ class IrrigationManager:
             status=",".join(failures) if failures else "valid" if configured else "not_configured",
         )
 
+    def _external_violation(self, data: Mapping[str, Any]) -> str | None:
+        """Return a stable reason when native external safety inputs do not permit water."""
+        max_age = self._number(data, CONF_EXTERNAL_MAX_AGE_SECONDS, 300)
+        for key, expected_on in ((CONF_EXTERNAL_PERMIT, True), (CONF_EXTERNAL_BLOCK, False)):
+            entity_id = data.get(key)
+            if not isinstance(entity_id, str):
+                continue
+            state = self._hass.states.get(entity_id)
+            if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
+                return f"{key}_unavailable"
+            if (datetime.now(UTC) - state.last_reported).total_seconds() > max_age:
+                return f"{key}_stale"
+            if state.state not in {STATE_ON, STATE_OFF}:
+                return f"{key}_invalid"
+            if (state.state == STATE_ON) != expected_on:
+                return f"{key}_active"
+        return None
+
+    def _wind_blocks(self, data: Mapping[str, Any], *, source: str) -> bool:
+        """Evaluate a fresh zonal wind source under automatic/manual policy."""
+        entity_id = data.get(CONF_WIND_INTERLOCK_ENTITY)
+        threshold = self._optional_float(data, CONF_WIND_INTERLOCK_THRESHOLD)
+        if not isinstance(entity_id, str) or threshold is None:
+            return False
+        if source != "automatic" and data.get(CONF_WIND_MANUAL_POLICY) != WIND_MANUAL_BLOCK:
+            return False
+        try:
+            value = self._numeric_weather_value(
+                entity_id,
+                max_age=self._number(self._installation_data, CONF_WEATHER_MAX_AGE_SECONDS, 900),
+            )
+            state = self._hass.states.get(entity_id)
+            unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
+            if unit in SpeedConverter.VALID_UNITS:
+                value = SpeedConverter.convert(value, unit, UnitOfSpeed.METERS_PER_SECOND)
+            elif unit is not None:
+                raise HomeAssistantError("Wind interlock source has an unsupported unit")
+            return value >= threshold
+        except HomeAssistantError, ValueError:
+            return True
+
+    async def _async_apply_external_interlocks(self) -> bool:
+        """Persist the correct lock scope when an active external input changes."""
+        async with self._command_lock:
+            active = self._stored_state.active_execution
+            if active is None:
+                return False
+            test = self._stored_state.maintenance_test
+            if test is not None and "external" in test.bypass_checks:
+                return False
+            violation = self._external_violation(self._installation_data)
+            scope = "installation"
+            zone = next(
+                (
+                    item
+                    for item in self._zone_configs
+                    if (item.unique_id or item.subentry_id) == active.zone_id
+                ),
+                None,
+            )
+            if violation is None and zone is not None:
+                violation = self._external_violation(zone.data)
+                scope = "zone"
+            if violation is None:
+                return False
+            reason = f"External safety interlock: {violation}"
+            identity = self._active_run_identity()
+            if scope == "installation":
+                self._stored_state = replace(
+                    self._stored_state,
+                    installation_safety_lock=reason,
+                )
+            else:
+                zone_locks = dict(self._stored_state.zone_safety_locks)
+                zone_locks[active.zone_id] = reason
+                self._stored_state = replace(self._stored_state, zone_safety_locks=zone_locks)
+            if identity is not None:
+                self._active_external_violation = (identity, reason, scope)
+            await self._store.async_save(self._stored_state)
+            for task in (self._active_task, self._maintenance_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            self._publish(status="safety_lock", active_zone_id=active.zone_id)
+            event_target = (
+                self._events.installation_target()
+                if scope == "installation"
+                else self._events.zone_target(active.zone_id)
+            )
+        self._events.fire(
+            "external_interlock_activated",
+            reason=violation,
+            target=event_target,
+            context={"safety_scope": scope, "lock_active": True},
+        )
+        return True
+
+    async def _async_apply_feedback_freshness(self) -> bool:
+        """Fail closed when active actuator feedback expires without a state event."""
+        active = self._stored_state.active_execution
+        if active is None:
+            return False
+        for entity_id in (active.zone_valve, active.main_valve):
+            if entity_id is None or self._feedback_bypassed_for_actuator(entity_id):
+                continue
+            try:
+                self._actuators.feedback_state(entity_id)
+            except HomeAssistantError as err:
+                await self._async_apply_actuator_violation(
+                    entity_id,
+                    reason=f"{entity_id} feedback safety failed: {err}",
+                )
+                return True
+        return False
+
     def _numeric_weather_value(self, entity_id: str, *, max_age: float) -> float:
         """Read one finite, fresh native numeric entity value."""
         state = self._hass.states.get(entity_id)
@@ -1147,16 +1378,55 @@ class IrrigationManager:
         """Return time until the oldest configured sample becomes stale while active."""
         if self._stored_state.active_execution is None:
             return None
-        max_age = self._number(self._installation_data, CONF_WEATHER_MAX_AGE_SECONDS, 900)
         expiries = []
-        for key in (CONF_FROST_ENTITY, CONF_RAIN_STOP_ENTITY):
-            entity_id = self._installation_data.get(key)
+        weather_max_age = self._number(self._installation_data, CONF_WEATHER_MAX_AGE_SECONDS, 900)
+        sources: list[tuple[Mapping[str, Any], str, float]] = [
+            (self._installation_data, key, weather_max_age)
+            for key in (CONF_FROST_ENTITY, CONF_RAIN_STOP_ENTITY)
+        ]
+        external_max_age = self._number(self._installation_data, CONF_EXTERNAL_MAX_AGE_SECONDS, 300)
+        sources.extend(
+            (self._installation_data, key, external_max_age)
+            for key in (CONF_EXTERNAL_PERMIT, CONF_EXTERNAL_BLOCK)
+        )
+        active = self._stored_state.active_execution
+        zone = next(
+            (
+                item
+                for item in self._zone_configs
+                if active is not None and (item.unique_id or item.subentry_id) == active.zone_id
+            ),
+            None,
+        )
+        if zone is not None:
+            zone_external_age = self._number(zone.data, CONF_EXTERNAL_MAX_AGE_SECONDS, 300)
+            sources.extend(
+                (zone.data, key, zone_external_age)
+                for key in (CONF_EXTERNAL_PERMIT, CONF_EXTERNAL_BLOCK)
+            )
+            sources.append((zone.data, CONF_WIND_INTERLOCK_ENTITY, weather_max_age))
+        if active is not None:
+            feedback_max_age = self._number(
+                self._installation_data,
+                CONF_ACTUATOR_FEEDBACK_MAX_AGE_SECONDS,
+                300,
+            )
+            for actuator in (active.zone_valve, active.main_valve):
+                if actuator is None or self._feedback_bypassed_for_actuator(actuator):
+                    continue
+                feedback_entity = self._actuators.feedback_entity(actuator)
+                state = self._hass.states.get(feedback_entity)
+                if state is None:
+                    return 0.0
+                expiries.append(state.last_reported + timedelta(seconds=feedback_max_age))
+        for data, key, source_max_age in sources:
+            entity_id = data.get(key)
             if not isinstance(entity_id, str):
                 continue
             state = self._hass.states.get(entity_id)
             if state is None:
                 return 0.0
-            expiries.append(state.last_reported + timedelta(seconds=max_age))
+            expiries.append(state.last_reported + timedelta(seconds=source_max_age))
         if not expiries:
             return None
         return max(0.0, (min(expiries) - datetime.now(UTC)).total_seconds())
@@ -1441,6 +1711,14 @@ class IrrigationManager:
             if active.main_valve is not None:
                 entity_ids.append(active.main_valve)
         return list(dict.fromkeys(entity_ids))
+
+    def _supervised_feedback_entities(self) -> list[str]:
+        """Return every actuator observation entity exactly once."""
+        return list(
+            dict.fromkeys(
+                self._actuators.feedback_entity(entity_id) for entity_id in self._all_known_valves()
+            )
+        )
 
     async def _async_ensure_idle_meter_baseline(self) -> None:
         """Persist a raw idle baseline without treating an existing total as use."""
@@ -1839,6 +2117,7 @@ class IrrigationManager:
         ignore_installation_lock: bool = False,
         ignore_winter_lock: bool = False,
         ignore_emergency_stop: bool = False,
+        bypass_checks: frozenset[str] = frozenset(),
     ) -> None:
         """Prove all managed valves are available and hydraulically closed."""
         if self._stored_state.emergency_stop and not ignore_emergency_stop:
@@ -1849,7 +2128,7 @@ class IrrigationManager:
             raise HomeAssistantError("The irrigation installation has a safety lock")
         if target_zone_id in self._stored_state.zone_safety_locks:
             raise HomeAssistantError("The irrigation zone has a safety lock")
-        if not ignore_weather:
+        if not ignore_weather and "weather" not in bypass_checks:
             weather = self._weather_safety()
             if weather.frost_blocked:
                 raise HomeAssistantError(f"Frost safety blocks irrigation ({weather.status})")
@@ -1879,6 +2158,20 @@ class IrrigationManager:
                     and moisture.safety_blocked
                 ):
                     raise HomeAssistantError("Soil-moisture safety preflight is wet or incomplete")
+            if (
+                "external" not in bypass_checks
+                and (violation := self._external_violation(target_zone.data)) is not None
+            ):
+                raise HomeAssistantError(f"Zone external safety preflight failed ({violation})")
+            if "weather" not in bypass_checks and self._wind_blocks(
+                target_zone.data, source=source
+            ):
+                raise HomeAssistantError("Wind interlock blocks irrigation")
+        if (
+            "external" not in bypass_checks
+            and (violation := self._external_violation(self._installation_data)) is not None
+        ):
+            raise HomeAssistantError(f"Installation external safety preflight failed ({violation})")
         entity_ids = self._zone_valves()
         if main_valve := self._installation_data.get(CONF_MAIN_VALVE):
             entity_ids.append(main_valve)
@@ -1888,8 +2181,18 @@ class IrrigationManager:
             state = self._hass.states.get(entity_id)
             if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
                 unavailable.append(entity_id)
-            elif state.state not in {STATE_OFF, "closed"}:
-                unexpectedly_open.append(entity_id)
+                continue
+            if "feedback" in bypass_checks:
+                if state.state not in {STATE_OFF, "closed"}:
+                    unexpectedly_open.append(entity_id)
+                continue
+            try:
+                feedback = self._actuators.feedback_state(entity_id)
+            except HomeAssistantError:
+                unavailable.append(entity_id)
+            else:
+                if feedback.state not in {STATE_OFF, "closed"}:
+                    unexpectedly_open.append(entity_id)
         if unavailable:
             raise HomeAssistantError(
                 f"Irrigation valve state is unavailable: {', '.join(unavailable)}"
@@ -2096,6 +2399,9 @@ class IrrigationManager:
                     or zone_id in self._stored_state.zone_safety_locks
                     or weather.frost_blocked
                     or weather.rain_stop_active
+                    or self._external_violation(self._installation_data) is not None
+                    or self._external_violation(data) is not None
+                    or self._wind_blocks(data, source="automatic")
                     or (self._weather_model_configured and not self._weather_automation_available)
                     or hardware["status"] == "blocked"
                     or (
@@ -4613,6 +4919,7 @@ class IrrigationManager:
         """Return versioned portable config using only declared non-secret fields."""
         installation_keys = {
             CONF_MAIN_VALVE,
+            CONF_MAIN_VALVE_FEEDBACK,
             CONF_WATER_METER,
             CONF_RAW_METER,
             CONF_LITERS_PER_COUNT,
@@ -4635,6 +4942,11 @@ class IrrigationManager:
             CONF_INSTALLATION_WEEKLY_BUDGET_LITERS,
             CONF_PAUSE_TIMEOUT_SECONDS,
             CONF_ACTUATOR_TRANSITION_GRACE_SECONDS,
+            CONF_ACTUATOR_FEEDBACK_MAX_AGE_SECONDS,
+            CONF_EXTERNAL_PERMIT,
+            CONF_EXTERNAL_BLOCK,
+            CONF_EXTERNAL_MAX_AGE_SECONDS,
+            CONF_EXTERNAL_FAILURE_POLICY,
             CONF_MAINTENANCE_MAX_DURATION,
             CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
             CONF_CALIBRATION_SETTLE_SECONDS,
@@ -4646,6 +4958,14 @@ class IrrigationManager:
         zone_keys = {
             "name",
             CONF_ZONE_VALVE,
+            CONF_ZONE_VALVE_FEEDBACK,
+            CONF_EXTERNAL_PERMIT,
+            CONF_EXTERNAL_BLOCK,
+            CONF_EXTERNAL_MAX_AGE_SECONDS,
+            CONF_EXTERNAL_FAILURE_POLICY,
+            CONF_WIND_INTERLOCK_ENTITY,
+            CONF_WIND_INTERLOCK_THRESHOLD,
+            CONF_WIND_MANUAL_POLICY,
             "default_duration",
             CONF_MIN_FLOW,
             CONF_MAX_FLOW,
@@ -4922,12 +5242,15 @@ class IrrigationManager:
                 installation,
                 {
                     CONF_MAIN_VALVE: {"switch", "valve"},
+                    CONF_MAIN_VALVE_FEEDBACK: {"binary_sensor", "switch", "valve"},
                     CONF_WATER_METER: {"sensor"},
                     CONF_RAW_METER: {"sensor"},
                     CONF_FLOW_SENSOR: {"sensor"},
                     CONF_FROST_ENTITY: {"sensor"},
                     CONF_RAIN_STOP_ENTITY: {"sensor"},
                     CONF_WEATHER_ENTITY: {"weather"},
+                    CONF_EXTERNAL_PERMIT: {"binary_sensor"},
+                    CONF_EXTERNAL_BLOCK: {"binary_sensor"},
                     CONF_TEMPERATURE_SENSORS: {"sensor"},
                     CONF_HUMIDITY_SENSORS: {"sensor"},
                     CONF_WIND_SPEED_SENSORS: {"sensor"},
@@ -4945,6 +5268,10 @@ class IrrigationManager:
                 zone,
                 {
                     CONF_ZONE_VALVE: {"switch", "valve"},
+                    CONF_ZONE_VALVE_FEEDBACK: {"binary_sensor", "switch", "valve"},
+                    CONF_EXTERNAL_PERMIT: {"binary_sensor"},
+                    CONF_EXTERNAL_BLOCK: {"binary_sensor"},
+                    CONF_WIND_INTERLOCK_ENTITY: {"sensor"},
                     CONF_SOIL_MOISTURE_SENSORS: {"sensor"},
                     CONF_HARDWARE_BATTERY_SENSOR: {"sensor"},
                     CONF_HARDWARE_CONNECTIVITY_SENSOR: {"sensor", "binary_sensor"},
@@ -5006,6 +5333,7 @@ class IrrigationManager:
         """Collect declared entity references without inspecting other integrations."""
         entity_keys = {
             CONF_MAIN_VALVE,
+            CONF_MAIN_VALVE_FEEDBACK,
             CONF_WATER_METER,
             CONF_RAW_METER,
             CONF_FLOW_SENSOR,
@@ -5013,6 +5341,10 @@ class IrrigationManager:
             CONF_RAIN_STOP_ENTITY,
             CONF_WEATHER_ENTITY,
             CONF_ZONE_VALVE,
+            CONF_ZONE_VALVE_FEEDBACK,
+            CONF_EXTERNAL_PERMIT,
+            CONF_EXTERNAL_BLOCK,
+            CONF_WIND_INTERLOCK_ENTITY,
             CONF_HARDWARE_BATTERY_SENSOR,
             CONF_HARDWARE_CONNECTIVITY_SENSOR,
             CONF_HARDWARE_FAULT_SENSOR,
@@ -5156,6 +5488,27 @@ class IrrigationManager:
                 "frost_blocked": weather.frost_blocked,
                 "rain_stop_active": weather.rain_stop_active,
                 "failure_policy": "fail_safe",
+            },
+            "external_safety": {
+                "installation_blocked": self._external_violation(self._installation_data)
+                is not None,
+                "zone_blocked_ids": sorted(
+                    zone.unique_id or zone.subentry_id
+                    for zone in self._zone_configs
+                    if self._external_violation(zone.data) is not None
+                ),
+                "failure_policy": "fail_safe",
+            },
+            "actuator_feedback": {
+                "separate_feedback_count": sum(
+                    self._actuators.feedback_entity(entity_id) != entity_id
+                    for entity_id in self._all_known_valves()
+                ),
+                "max_age_seconds": self._number(
+                    self._installation_data,
+                    CONF_ACTUATOR_FEEDBACK_MAX_AGE_SECONDS,
+                    300,
+                ),
             },
             "weather_model": {
                 "configured": self._weather_model_configured,
@@ -6021,7 +6374,7 @@ class IrrigationManager:
         kind: str = "maintenance",
     ) -> dict[str, object]:
         """Start exactly one bounded, supervised valve test and return immediately."""
-        allowed_bypasses = {"flow"}
+        allowed_bypasses = {"feedback", "flow", "weather", "external"}
         unknown_bypasses = set(bypass_checks) - allowed_bypasses
         if unknown_bypasses:
             raise HomeAssistantError(
@@ -6050,7 +6403,9 @@ class IrrigationManager:
                 )
             await self._async_preflight(
                 target_zone_id=subentry.unique_id or subentry.subentry_id,
+                source="automatic",
                 ignore_weather=False,
+                bypass_checks=frozenset(bypass_checks),
             )
             confirmation_interval = self._number(
                 self._installation_data, CONF_MAINTENANCE_CONFIRMATION_INTERVAL, 30.0
@@ -6229,6 +6584,18 @@ class IrrigationManager:
                     on_zone_opening=self._async_mark_zone_opening,
                     on_zone_opened=self._async_mark_zone_opened,
                     on_actuator_command=self._async_expect_actuator_state,
+                    feedback_bypass_entities=(
+                        tuple(
+                            entity_id
+                            for entity_id in (
+                                str(subentry.data[CONF_ZONE_VALVE]),
+                                self._installation_data.get(CONF_MAIN_VALVE),
+                            )
+                            if isinstance(entity_id, str)
+                        )
+                        if "feedback" in test.bypass_checks
+                        else ()
+                    ),
                 )
             )
         except asyncio.CancelledError:
@@ -6798,6 +7165,20 @@ class IrrigationManager:
                 },
                 frost_blocked=weather.frost_blocked,
                 rain_stop_active=weather.rain_stop_active,
+                external_safety_blocked=(
+                    self._external_violation(self._installation_data) is not None
+                ),
+                zone_external_safety_blocked={
+                    zone.unique_id or zone.subentry_id: self._external_violation(zone.data)
+                    is not None
+                    for zone in self._zone_configs
+                },
+                zone_wind_blocked={
+                    zone.unique_id or zone.subentry_id: self._wind_blocks(
+                        zone.data, source="automatic"
+                    )
+                    for zone in self._zone_configs
+                },
                 weather_safety_status=weather.status,
                 weather_model_quality=self._weather_model_quality,
                 weather_model_method=self._weather_model_method,

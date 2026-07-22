@@ -26,12 +26,12 @@ class FakeActuators:
         self.open_valves: set[str] = set()
         self.operations: list[tuple[str, str]] = []
 
-    async def open(self, entity_id: str) -> None:
+    async def open(self, entity_id: str, *, verify: bool = True) -> None:
         self.operations.append(("open", entity_id))
         if entity_id != self.failing_valve:
             self.open_valves.add(entity_id)
 
-    async def close(self, entity_id: str) -> None:
+    async def close(self, entity_id: str, *, verify: bool = True) -> None:
         self.operations.append(("close", entity_id))
         if entity_id == self.failing_close:
             raise RuntimeError(f"Could not close {entity_id}")
@@ -646,7 +646,7 @@ async def test_volume_deadline_bounds_hanging_close_feedback_and_retries_cleanup
             super().__init__()
             self.completed_closes: list[str] = []
 
-        async def close(self, entity_id: str) -> None:
+        async def close(self, entity_id: str, *, verify: bool = True) -> None:
             self.operations.append(("close", entity_id))
             self.open_valves.discard(entity_id)
             await asyncio.sleep(0.2)
