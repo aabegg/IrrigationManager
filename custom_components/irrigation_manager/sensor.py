@@ -19,11 +19,17 @@ from homeassistant.const import (
     UnitOfVolume,
     UnitOfVolumeFlowRate,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .card_entities import (
+    INSTALLATION_CARD_ROLES,
+    ZONE_CARD_ROLES,
+    registry_card_entities,
+)
 from .const import CONF_WATER_TARIFF_PER_M3, DOMAIN, INTEGRATION_NAME, SUBENTRY_TYPE_ZONE
 from .coordinator import IrrigationCoordinator
 from .models import InstallationSnapshot
@@ -97,6 +103,7 @@ async def async_setup_entry(
                 for key in ("current_flow", "physical_meter", "meter_measurement_quality")
             ],
             InstallationStatusSensor(
+                hass=hass,
                 coordinator=entry.runtime_data.coordinator,
                 entry=entry,
                 installation_id=installation_id,
@@ -191,6 +198,7 @@ async def async_setup_entry(
         async_add_entities(
             [
                 ZoneWaterSensor(
+                    hass=hass,
                     coordinator=entry.runtime_data.coordinator,
                     entry=entry,
                     installation_id=installation_id,
@@ -489,6 +497,7 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
     def __init__(
         self,
         *,
+        hass: HomeAssistant,
         coordinator: IrrigationCoordinator,
         entry: IrrigationConfigEntry,
         installation_id: str,
@@ -496,6 +505,9 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
     ) -> None:
         """Initialize the installation status entity."""
         super().__init__(coordinator)
+        self._hass = hass
+        self._installation_id = installation_id
+        self._card_name = entry.title
         self._config_entry_id = config_entry_id
         self._attr_options = [
             "idle",
@@ -527,8 +539,27 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
         """Expose the native-action installation identifier."""
         return {
             "config_entry_id": self._config_entry_id,
+            "card_name": self._card_name,
+            "card_entities": registry_card_entities(
+                self._hass, self._installation_id, INSTALLATION_CARD_ROLES
+            ),
             "recent_history": list(self.coordinator.data.recent_history),
         }
+
+    @override
+    async def async_added_to_hass(self) -> None:
+        """Refresh the mapping after entity-registry renames."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._hass.bus.async_listen(
+                er.EVENT_ENTITY_REGISTRY_UPDATED, self._handle_registry_update
+            )
+        )
+
+    @callback
+    def _handle_registry_update(self, event: Event[er.EventEntityRegistryUpdatedData]) -> None:
+        """Publish current entity IDs after any registry mutation."""
+        self.async_write_ha_state()
 
 
 class WeatherModelSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
@@ -860,6 +891,7 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
     def __init__(
         self,
         *,
+        hass: HomeAssistant,
         coordinator: IrrigationCoordinator,
         entry: IrrigationConfigEntry,
         installation_id: str,
@@ -870,6 +902,9 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
     ) -> None:
         """Initialize a cumulative water sensor for one zone."""
         super().__init__(coordinator)
+        self._hass = hass
+        self._installation_id = installation_id
+        self._card_name = zone_name
         self._zone_id = zone_id
         self._config_entry_id = config_entry_id
         self._zone_subentry_id = zone_subentry_id
@@ -895,6 +930,11 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
         return {
             "config_entry_id": self._config_entry_id,
             "zone_subentry_id": self._zone_subentry_id,
+            "card_name": self._card_name,
+            "card_entities": registry_card_entities(self._hass, self._zone_id, ZONE_CARD_ROLES),
+            "installation_card_entities": registry_card_entities(
+                self._hass, self._installation_id, INSTALLATION_CARD_ROLES
+            ),
             "measurement_quality": self.coordinator.data.zone_measurement_quality.get(
                 self._zone_id, "unknown"
             ),
@@ -905,6 +945,21 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
                 if value.get("zone_id") == self._zone_id
             ],
         }
+
+    @override
+    async def async_added_to_hass(self) -> None:
+        """Refresh the mappings after entity-registry renames."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._hass.bus.async_listen(
+                er.EVENT_ENTITY_REGISTRY_UPDATED, self._handle_registry_update
+            )
+        )
+
+    @callback
+    def _handle_registry_update(self, event: Event[er.EventEntityRegistryUpdatedData]) -> None:
+        """Publish current entity IDs after any registry mutation."""
+        self.async_write_ha_state()
 
 
 class _ZoneObservationSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):

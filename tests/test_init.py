@@ -483,7 +483,63 @@ async def test_setup_creates_installation_and_zone_water_sensors(
 
     status_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "installation-1_status")
     assert status_entity_id is not None
-    assert hass.states.get(status_entity_id).attributes["config_entry_id"] == entry.entry_id
+    status_state = hass.states.get(status_entity_id)
+    assert status_state.attributes["config_entry_id"] == entry.entry_id
+    assert status_state.attributes["card_entities"] == {
+        "status": status_entity_id,
+        "emergency": registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, "installation-1_emergency_stop"
+        ),
+        "lock": registry.async_get_entity_id("binary_sensor", DOMAIN, "installation-1_safety_lock"),
+        "active_zone": registry.async_get_entity_id("sensor", DOMAIN, "installation-1_active_zone"),
+        "dose": registry.async_get_entity_id("sensor", DOMAIN, "installation-1_current_dose"),
+        "pending": registry.async_get_entity_id(
+            "sensor", DOMAIN, "installation-1_pending_requests"
+        ),
+        "next": registry.async_get_entity_id("sensor", DOMAIN, "installation-1_next_zone"),
+        "today_consumption": registry.async_get_entity_id(
+            "sensor", DOMAIN, "installation-1_water_today"
+        ),
+        "month_consumption": registry.async_get_entity_id(
+            "sensor", DOMAIN, "installation-1_water_month"
+        ),
+        "model_quality": registry.async_get_entity_id(
+            "sensor", DOMAIN, "installation-1_weather_model_quality"
+        ),
+        "winter": registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, "installation-1_winter_lock"
+        ),
+        "maintenance": registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, "installation-1_maintenance_mode"
+        ),
+        "automation_release": registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, "installation-1_automation_release"
+        ),
+        "maintenance_due": registry.async_get_entity_id(
+            "sensor", DOMAIN, "installation-1_maintenance_due"
+        ),
+    }
+    zone_state = hass.states.get(zone_entity_id)
+    assert zone_state.attributes["card_entities"]["zone"] == zone_entity_id
+    assert zone_state.attributes["card_entities"]["deficit"] == registry.async_get_entity_id(
+        "sensor", DOMAIN, "zone-1_water_deficit"
+    )
+    assert zone_state.attributes["installation_card_entities"]["status"] == status_entity_id
+
+    renamed_deficit = "sensor.rasen_fehlmenge"
+    original_deficit = zone_state.attributes["card_entities"]["deficit"]
+    registry.async_update_entity(original_deficit, new_entity_id=renamed_deficit)
+    await hass.async_block_till_done()
+    assert hass.states.get(zone_entity_id).attributes["card_entities"]["deficit"] == renamed_deficit
+
+    renamed_status = "sensor.garten_anlagenstatus"
+    registry.async_update_entity(status_entity_id, new_entity_id=renamed_status)
+    await hass.async_block_till_done()
+    assert hass.states.get(renamed_status).attributes["card_entities"]["status"] == renamed_status
+    assert (
+        hass.states.get(zone_entity_id).attributes["installation_card_entities"]["status"]
+        == renamed_status
+    )
 
     assert await hass.config_entries.async_unload(entry.entry_id)
 

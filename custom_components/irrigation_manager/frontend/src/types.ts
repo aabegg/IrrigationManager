@@ -15,11 +15,14 @@ export interface HomeAssistant {
 }
 
 export type DisplayMode = "compact" | "detailed";
+export type ConfigurationMode = "simple" | "expert";
 
 export interface OverviewCardConfig {
   type: string;
   name?: string;
-  status_entity: string;
+  configuration_mode?: ConfigurationMode;
+  installation?: string;
+  status_entity?: string;
   emergency_entity?: string;
   lock_entity?: string;
   active_zone_entity?: string;
@@ -41,7 +44,9 @@ export interface OverviewCardConfig {
 export interface ZoneCardConfig {
   type: string;
   name?: string;
-  zone_entity: string;
+  configuration_mode?: ConfigurationMode;
+  zone?: string;
+  zone_entity?: string;
   automation_needed_entity?: string;
   safety_lock_entity?: string;
   deficit_entity?: string;

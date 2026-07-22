@@ -25,7 +25,9 @@ describe("Lovelace card catalog", () => {
       const element = new constructor!() as HTMLElement & {
         setConfig(config: unknown): void;
       };
-      expect(() => element.setConfig(constructor!.getStubConfig())).not.toThrow();
+      const stub = constructor!.getStubConfig();
+      expect(stub).toMatchObject({ configuration_mode: "simple" });
+      expect(() => element.setConfig(stub)).not.toThrow();
     }
   });
 });

@@ -94,6 +94,12 @@ const messages = {
     actual_flow: "Actual flow",
     flow_deviation: "Flow deviation",
     history: "History",
+    configuration_mode: "Configuration",
+    simple: "Simple",
+    expert: "Expert",
+    simple_description: "Select one installation or zone. Related entities are resolved automatically.",
+    expert_description: "Select individual entities. Explicit selections override automatic resolution.",
+    installation: "Irrigation installation",
   },
   de: {
     overview: "Bewässerungsübersicht",
@@ -188,6 +194,12 @@ const messages = {
     actual_flow: "Tatsächlicher Durchfluss",
     flow_deviation: "Durchflussabweichung",
     history: "Historie",
+    configuration_mode: "Konfiguration",
+    simple: "Einfach",
+    expert: "Experte",
+    simple_description: "Eine Anlage oder Zone auswählen. Zugehörige Entities werden automatisch ermittelt.",
+    expert_description: "Entities einzeln auswählen. Explizite Auswahlen überschreiben die automatische Ermittlung.",
+    installation: "Bewässerungsanlage",
   },
 } as const;
 

@@ -134,7 +134,7 @@ async def test_forecast_budget_and_duplicate_planning_survive_restart(
     )
     manager = entry.runtime_data.manager
     await _stop_background_tasks(manager)
-    now = datetime(2026, 7, 21, 12, tzinfo=UTC)
+    now = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     zone_ids = {f"qualification-zone-{index}" for index in range(1, 7)}
     manager._stored_state = replace(
         manager._stored_state,

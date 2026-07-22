@@ -197,7 +197,15 @@ Jeder Vorgang verwendet seinen beim Preflight validierten Konfigurationssnapshot
 
 ### Grafischer Karteneditor
 
-- Anlage beziehungsweise Zone auswählen
+- Neue Karten starten im einfachen Modus mit genau einer Auswahl der Bewässerungsanlage
+  beziehungsweise Bewässerungszone nach ihrem konfigurierten Namen.
+- Die kanonische Status- beziehungsweise Zonenverbrauchs-Entity dient als stabiler Anker. Ihre
+  begrenzten semantischen `card_entities`-Zuordnungen werden aus der Home-Assistant-Entity-Registry
+  ermittelt und folgen daher Entity-Umbenennungen. Zonenanker trennen zonenspezifische Rollen von
+  den gemeinsam genutzten Rollen der zugehörigen Anlage.
+- Der Expertenmodus behält alle einzelnen Entity-Selektoren als Überschreibungen. Explizite
+  Überschreibungen gewinnen immer und werden beim Moduswechsel nicht gelöscht. Bestehende Karten
+  mit einzelnen Entity-Feldern werden ohne Migration als Expertenkonfiguration behandelt.
 - sichtbare Kennzahlen und Aktionen wählen
 - kompakte und ausführliche Darstellung
 - responsive Vorschau

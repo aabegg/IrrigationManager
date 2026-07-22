@@ -6,6 +6,7 @@ import {
   activeRequestForZone,
   entity,
   progress,
+  resolveZoneConfig,
   statusIcon,
   stringAttribute,
   usable,
@@ -42,7 +43,11 @@ export class IrrigationManagerZoneCard extends LitElement {
   }
 
   static getStubConfig(): ZoneCardConfig {
-    return { type: "custom:irrigation-manager-zone-card", zone_entity: "" };
+    return {
+      type: "custom:irrigation-manager-zone-card",
+      configuration_mode: "simple",
+      zone: "",
+    };
   }
 
   setConfig(config: ZoneCardConfig): void {
@@ -59,7 +64,8 @@ export class IrrigationManagerZoneCard extends LitElement {
   }
 
   private context(): { config_entry_id: string; zone_subentry_id: string } | undefined {
-    const zone = entity(this.hass, this._config.zone_entity);
+    const config = resolveZoneConfig(this.hass, this._config);
+    const zone = entity(this.hass, config.zone_entity);
     const configEntryId = stringAttribute(zone, "config_entry_id");
     const zoneSubentryId = stringAttribute(zone, "zone_subentry_id");
     return configEntryId && zoneSubentryId
@@ -102,7 +108,7 @@ export class IrrigationManagerZoneCard extends LitElement {
 
   private async requestAction(service: "pause_request" | "resume_request"): Promise<void> {
     const context = this.context();
-    const request = entity(this.hass, this._config.request_entity);
+    const request = entity(this.hass, resolveZoneConfig(this.hass, this._config).request_entity);
     const activeRequest = activeRequestForZone(request, context?.zone_subentry_id);
     if (!context || !activeRequest?.requestId) {
       this._error = localize(this.hass, "configuration_error");
@@ -116,7 +122,7 @@ export class IrrigationManagerZoneCard extends LitElement {
 
   private async stop(skip = false): Promise<void> {
     const context = this.context();
-    const request = entity(this.hass, this._config.request_entity);
+    const request = entity(this.hass, resolveZoneConfig(this.hass, this._config).request_entity);
     const activeRequest = activeRequestForZone(request, context?.zone_subentry_id);
     if (!context || !activeRequest) {
       this._error = localize(this.hass, "configuration_error");
@@ -134,19 +140,20 @@ export class IrrigationManagerZoneCard extends LitElement {
 
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
-    if (!this._config.zone_entity) {
+    const config = resolveZoneConfig(this.hass, this._config);
+    if (!config.zone_entity || !entity(this.hass, config.zone_entity)) {
       return html`<ha-card><div class="card"><div class="warning"><ha-icon icon="mdi:water-alert"></ha-icon><span>${localize(this.hass, "missing")}</span></div></div></ha-card>`;
     }
-    const zone = entity(this.hass, this._config.zone_entity);
-    const needed = entity(this.hass, this._config.automation_needed_entity);
-    const lock = entity(this.hass, this._config.safety_lock_entity);
-    const quality = entity(this.hass, this._config.quality_entity);
-    const zoneStatus = entity(this.hass, this._config.status_entity);
-    const release = entity(this.hass, this._config.automation_release_entity);
-    const archived = entity(this.hass, this._config.archived_entity);
-    const deviation = entity(this.hass, this._config.flow_deviation_entity);
-    const active = entity(this.hass, this._config.active_zone_entity);
-    const request = entity(this.hass, this._config.request_entity);
+    const zone = entity(this.hass, config.zone_entity);
+    const needed = entity(this.hass, config.automation_needed_entity);
+    const lock = entity(this.hass, config.safety_lock_entity);
+    const quality = entity(this.hass, config.quality_entity);
+    const zoneStatus = entity(this.hass, config.status_entity);
+    const release = entity(this.hass, config.automation_release_entity);
+    const archived = entity(this.hass, config.archived_entity);
+    const deviation = entity(this.hass, config.flow_deviation_entity);
+    const active = entity(this.hass, config.active_zone_entity);
+    const request = entity(this.hass, config.request_entity);
     const context = this.context();
     const activeRequest = activeRequestForZone(request, context?.zone_subentry_id);
     const percent = progress(active);
@@ -192,20 +199,22 @@ export class IrrigationManagerZoneCard extends LitElement {
 
           <div class="metrics">
             ${this.metric("status", localize(this.hass, "status"), zoneStatus)}
-            ${this.metric("balance", localize(this.hass, "water_balance"), entity(this.hass, this._config.deficit_entity))}
-            ${this.metric("balance", localize(this.hass, "target"), entity(this.hass, this._config.target_entity))}
+            ${this.metric("balance", localize(this.hass, "water_balance"), entity(this.hass, config.deficit_entity))}
+            ${this.metric("balance", localize(this.hass, "target"), entity(this.hass, config.target_entity))}
             ${metrics.includes("balance")
-              ? this.metric("balance", localize(this.hass, "explanation"), entity(this.hass, this._config.planning_reason_entity))
+              ? this.metric("balance", localize(this.hass, "explanation"), entity(this.hass, config.planning_reason_entity))
               : nothing}
-            ${this.metric("next", localize(this.hass, "next_window"), entity(this.hass, this._config.next_window_entity))}
+            ${this.metric("next", localize(this.hass, "next_window"), entity(this.hass, config.next_window_entity))}
             ${this.metric("total", localize(this.hass, "total"), zone)}
-            ${this.metric("recent", localize(this.hass, "last_delivered"), entity(this.hass, this._config.last_delivered_entity))}
-            ${this.metric("recent", localize(this.hass, "last_duration"), entity(this.hass, this._config.last_duration_entity))}
+            ${this.metric("recent", localize(this.hass, "last_delivered"), entity(this.hass, config.last_delivered_entity))}
+            ${this.metric("recent", localize(this.hass, "last_duration"), entity(this.hass, config.last_duration_entity))}
             ${this.metric("quality", localize(this.hass, "quality"), quality)}
-            ${this.metric("calculation", localize(this.hass, "coverage"), entity(this.hass, this._config.coverage_entity))}
-            ${this.metric("calculation", localize(this.hass, "explanation"), entity(this.hass, this._config.calculation_entity))}
-            ${this.metric("flow", localize(this.hass, "expected_flow"), entity(this.hass, this._config.expected_flow_entity))}
-            ${this.metric("flow", localize(this.hass, "actual_flow"), entity(this.hass, this._config.actual_flow_entity))}
+            ${this.metric("calculation", localize(this.hass, "coverage"), entity(this.hass, config.coverage_entity))}
+            ${config.calculation_entity
+              ? this.metric("calculation", localize(this.hass, "explanation"), entity(this.hass, config.calculation_entity))
+              : nothing}
+            ${this.metric("flow", localize(this.hass, "expected_flow"), entity(this.hass, config.expected_flow_entity))}
+            ${this.metric("flow", localize(this.hass, "actual_flow"), entity(this.hass, config.actual_flow_entity))}
             ${this.metric("flow", localize(this.hass, "flow_deviation"), deviation)}
           </div>
           ${metrics.includes("history") && Array.isArray(zone?.attributes.recent_history)
@@ -235,8 +244,8 @@ export class IrrigationManagerZoneCard extends LitElement {
 
           ${this._error ? html`<div class="error" role="alert">${this._error}</div>` : nothing}
           <div class="actions">
-            ${actions.includes("create") ? html`<button ?disabled=${this._busy || lock?.state === "on"} @click=${this.request}><ha-icon icon="mdi:playlist-plus"></ha-icon>${localize(this.hass, "create")}</button>` : nothing}
-            ${actions.includes("start") ? html`<button class="primary" ?disabled=${this._busy || lock?.state === "on"} @click=${this.request}><ha-icon icon="mdi:play"></ha-icon>${localize(this.hass, "start")}</button>` : nothing}
+            ${actions.includes("create") ? html`<button ?disabled=${this._busy || lock?.state === "on" || !context} @click=${this.request}><ha-icon icon="mdi:playlist-plus"></ha-icon>${localize(this.hass, "create")}</button>` : nothing}
+            ${actions.includes("start") ? html`<button class="primary" ?disabled=${this._busy || lock?.state === "on" || !context} @click=${this.request}><ha-icon icon="mdi:play"></ha-icon>${localize(this.hass, "start")}</button>` : nothing}
             ${actions.includes("pause") ? html`<button ?disabled=${this._busy || !activeRequest?.requestId} @click=${() => this.requestAction("pause_request")}><ha-icon icon="mdi:pause"></ha-icon>${localize(this.hass, "pause")}</button>` : nothing}
             ${actions.includes("resume") ? html`<button ?disabled=${this._busy || !activeRequest?.requestId} @click=${() => this.requestAction("resume_request")}><ha-icon icon="mdi:play-pause"></ha-icon>${localize(this.hass, "resume")}</button>` : nothing}
             ${actions.includes("stop") ? html`<button class="danger" ?disabled=${this._busy || !activeRequest} @click=${() => this.stop()}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${localize(this.hass, "stop")}</button>` : nothing}

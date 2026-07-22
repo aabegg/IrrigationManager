@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-rc3 - 2026-07-22
+
+### Changed
+
+- Add simple card configuration that selects an irrigation installation or zone and
+  resolves all matching entities automatically.
+- Retain the individual entity selectors as an expert mode with explicit overrides.
+- Keep automatic mappings stable across entity renames and isolated between zones and
+  installations.
+
 ## 0.1.0-rc2 - 2026-07-22
 
 ### Fixed

@@ -1,6 +1,6 @@
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 
-import { fireConfigChanged } from "./helpers";
+import { anchorChoices, fireConfigChanged, inferConfigurationMode } from "./helpers";
 import { localize } from "./localize";
 import { editorStyles } from "./styles";
 import type { HomeAssistant, OverviewCardConfig, ZoneCardConfig } from "./types";
@@ -46,6 +46,9 @@ const zoneFields = [
   ["flow_deviation_entity", "Flow deviation"],
   ["calculation_entity", "Calculation"],
 ] as const;
+
+const overviewEntityFields = overviewFields.map(([key]) => key);
+const zoneEntityFields = zoneFields.map(([key]) => key);
 
 const germanLabels: Record<string, string> = {
   "Installation status": "Anlagenzustand",
@@ -131,6 +134,49 @@ abstract class BaseEditor<T extends CardConfig> extends LitElement {
     `;
   }
 
+  protected configurationMode(entityFields: readonly string[]): TemplateResult {
+    const mode = inferConfigurationMode(this._config, entityFields);
+    return html`
+      <label class="selector">
+        <span>${localize(this.hass, "configuration_mode")}</span>
+        <select
+          data-testid="configuration-mode"
+          .value=${mode}
+          @change=${(event: Event) =>
+            this.updateValue("configuration_mode", (event.target as HTMLSelectElement).value)}
+        >
+          <option value="simple">${localize(this.hass, "simple")}</option>
+          <option value="expert">${localize(this.hass, "expert")}</option>
+        </select>
+        <small>${localize(this.hass, mode === "simple" ? "simple_description" : "expert_description")}</small>
+      </label>
+    `;
+  }
+
+  protected anchorSelector(
+    key: keyof T,
+    kind: "installation" | "zone",
+    fallback?: string,
+  ): TemplateResult {
+    const choices = anchorChoices(this.hass, kind);
+    return html`
+      <label class="selector">
+        <span>${localize(this.hass, kind)}</span>
+        <select
+          data-testid="anchor-selector"
+          .value=${String(this._config[key] ?? fallback ?? "")}
+          @change=${(event: Event) =>
+            this.updateValue(key, (event.target as HTMLSelectElement).value)}
+        >
+          <option value="">${localize(this.hass, "missing")}</option>
+          ${choices.map(
+            (choice) => html`<option value=${choice.value}>${choice.label}</option>`,
+          )}
+        </select>
+      </label>
+    `;
+  }
+
   protected choices(key: "visible_metrics" | "visible_actions", values: string[]): TemplateResult {
     const selected = this._config[key] ?? values;
     return html`
@@ -161,16 +207,22 @@ abstract class BaseEditor<T extends CardConfig> extends LitElement {
 export class IrrigationManagerOverviewCardEditor extends BaseEditor<OverviewCardConfig> {
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
+    const mode = inferConfigurationMode(this._config, overviewEntityFields);
     return html`
       <div class="editor">
-        <section>
-          <h3>${localize(this.hass, "required_entity")}</h3>
-          ${this.entitySelector("status_entity", overviewFields[0][1], true)}
-        </section>
-        <section>
-          <h3>${localize(this.hass, "optional_entities")}</h3>
-          ${overviewFields.slice(1).map(([key, label]) => this.entitySelector(key, label, false))}
-        </section>
+        <section>${this.configurationMode(overviewEntityFields)}</section>
+        ${mode === "simple"
+          ? html`<section>${this.anchorSelector("installation", "installation")}</section>`
+          : html`
+              <section>
+                <h3>${localize(this.hass, "required_entity")}</h3>
+                ${this.entitySelector("status_entity", overviewFields[0][1], true)}
+              </section>
+              <section>
+                <h3>${localize(this.hass, "optional_entities")}</h3>
+                ${overviewFields.slice(1).map(([key, label]) => this.entitySelector(key, label, false))}
+              </section>
+            `}
         <section>${this.displayMode()}</section>
         <section>
           <h3>${localize(this.hass, "metrics")}</h3>
@@ -188,16 +240,22 @@ export class IrrigationManagerOverviewCardEditor extends BaseEditor<OverviewCard
 export class IrrigationManagerZoneCardEditor extends BaseEditor<ZoneCardConfig> {
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
+    const mode = inferConfigurationMode(this._config, zoneEntityFields);
     return html`
       <div class="editor">
-        <section>
-          <h3>${localize(this.hass, "required_entity")}</h3>
-          ${this.entitySelector("zone_entity", zoneFields[0][1], true)}
-        </section>
-        <section>
-          <h3>${localize(this.hass, "optional_entities")}</h3>
-          ${zoneFields.slice(1).map(([key, label]) => this.entitySelector(key, label, false))}
-        </section>
+        <section>${this.configurationMode(zoneEntityFields)}</section>
+        ${mode === "simple"
+          ? html`<section>${this.anchorSelector("zone", "zone")}</section>`
+          : html`
+              <section>
+                <h3>${localize(this.hass, "required_entity")}</h3>
+                ${this.entitySelector("zone_entity", zoneFields[0][1], true)}
+              </section>
+              <section>
+                <h3>${localize(this.hass, "optional_entities")}</h3>
+                ${zoneFields.slice(1).map(([key, label]) => this.entitySelector(key, label, false))}
+              </section>
+            `}
         <section>${this.displayMode()}</section>
         <section>
           <h3>${localize(this.hass, "metrics")}</h3>
