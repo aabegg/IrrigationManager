@@ -32,6 +32,8 @@ class ZoneWaterBalance:
 
     deficit_mm: float
     maximum_deficit_mm: float
+    total_available_water_mm: float | None = None
+    readily_available_water_mm: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,9 +94,14 @@ def apply_water_balance(balance: ZoneWaterBalance, period: WaterBalancePeriod) -
         - period.effective_rain_mm
         - period.effective_irrigation_mm
     )
+    total_available = balance.total_available_water_mm or balance.maximum_deficit_mm
     return ZoneWaterBalance(
-        deficit_mm=min(balance.maximum_deficit_mm, max(0.0, updated_deficit_mm)),
-        maximum_deficit_mm=balance.maximum_deficit_mm,
+        deficit_mm=min(total_available, max(0.0, updated_deficit_mm)),
+        maximum_deficit_mm=total_available,
+        total_available_water_mm=total_available,
+        readily_available_water_mm=(
+            balance.readily_available_water_mm or balance.maximum_deficit_mm
+        ),
     )
 
 

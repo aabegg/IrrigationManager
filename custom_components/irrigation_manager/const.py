@@ -100,6 +100,7 @@ CONF_EXPOSURE_PROFILE: Final = "exposure_profile"
 CONF_IRRIGATION_PROFILE: Final = "irrigation_profile"
 CONF_SUBAREAS: Final = "subareas"
 CONF_PROFILE_OVERRIDES: Final = "profile_overrides"
+CONF_PHENOLOGY_STAGE_SCHEDULE: Final = "phenology_stage_schedule"
 CONF_AGRONOMIC_VALUES_CONFIRMED: Final = "agronomic_values_confirmed"
 CONF_SOIL_MOISTURE_SENSORS: Final = "soil_moisture_sensors"
 CONF_SOIL_MOISTURE_ROLE: Final = "soil_moisture_role"
@@ -139,3 +140,4 @@ SUBENTRY_TYPE_ZONE: Final = "zone"
 
 EVENT_IRRIGATION_MANAGER: Final = "irrigation_manager_event"
 EXPORT_SCHEMA_VERSION: Final = 1
+PROFILE_CATALOG_VERSION: Final = 1

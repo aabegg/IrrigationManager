@@ -4,6 +4,7 @@ from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_ET0_SENSORS,
@@ -31,7 +32,9 @@ from .const import (
     CONF_WIND_SPEED_SENSORS,
     CONF_ZONE_VALVE,
     CONF_ZONE_VALVE_FEEDBACK,
+    PROFILE_CATALOG_VERSION,
 )
+from .profiles import builtin_profiles, profile_selection_summary
 from .runtime import IrrigationConfigEntry
 
 TO_REDACT = {
@@ -64,6 +67,22 @@ TO_REDACT = {
 }
 
 
+def _profile_diagnostics(entry: IrrigationConfigEntry) -> list[dict[str, object]]:
+    """Resolve profile provenance without making diagnostics fail on stale configuration."""
+    result: list[dict[str, object]] = []
+    for subentry in entry.subentries.values():
+        try:
+            selection: object = profile_selection_summary(
+                subentry.data,
+                entry.data.get("custom_profiles", {}),
+                dt_util.now().date(),
+            )
+        except (TypeError, ValueError) as err:
+            selection = {"error": str(err)}
+        result.append({"subentry_id": subentry.subentry_id, "selection": selection})
+    return result
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: IrrigationConfigEntry
 ) -> dict[str, Any]:
@@ -91,4 +110,9 @@ async def async_get_config_entry_diagnostics(
             for subentry in entry.subentries.values()
         ],
         "state_decisions": manager.diagnostics_state_decisions(),
+        "profile_catalog": {
+            "version": PROFILE_CATALOG_VERSION,
+            "built_in": builtin_profiles(),
+            "resolved_zones": _profile_diagnostics(entry),
+        },
     }

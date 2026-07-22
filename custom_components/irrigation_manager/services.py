@@ -48,6 +48,7 @@ ATTR_PAYLOAD = "payload"
 ATTR_ENTITY_REMAPPING = "entity_remapping"
 ATTR_ZONE_REMAPPING = "zone_remapping"
 ATTR_CONFIRM_OVERWRITE = "confirm_overwrite"
+ATTR_CONFIRM_RESEARCHED_PROFILES = "confirm_researched_profiles"
 ATTR_UNTIL = "until"
 ATTR_TASK_ID = "task_id"
 ATTR_ITEM_ID = "item_id"
@@ -296,6 +297,7 @@ IMPORT_CONFIG_SCHEMA = vol.Schema(
         vol.Optional(ATTR_ZONE_REMAPPING, default={}): dict,
         vol.Optional(ATTR_DRY_RUN, default=True): cv.boolean,
         vol.Optional(ATTR_CONFIRM_OVERWRITE, default=False): cv.boolean,
+        vol.Optional(ATTR_CONFIRM_RESEARCHED_PROFILES, default=False): cv.boolean,
         vol.Optional(ATTR_CONFIG_HASH): cv.string,
     }
 )
@@ -635,6 +637,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             dry_run=cast(bool, call.data[ATTR_DRY_RUN]),
             confirm_overwrite=cast(bool, call.data[ATTR_CONFIRM_OVERWRITE]),
             expected_config_hash=cast(str | None, call.data.get(ATTR_CONFIG_HASH)),
+            confirm_researched_profiles=cast(bool, call.data[ATTR_CONFIRM_RESEARCHED_PROFILES]),
             user=user,
         )
 

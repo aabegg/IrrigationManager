@@ -45,6 +45,8 @@ class ManualIrrigationRequest:
     balance_area_m2: float | None = None
     balance_application_efficiency: float | None = None
     balance_maximum_deficit_mm: float | None = None
+    balance_total_available_water_mm: float | None = None
+    balance_readily_available_water_mm: float | None = None
     balance_minimum_effective_liters: float | None = None
     resolved_inputs: dict[str, object] = field(default_factory=dict)
     revision: int = 1
@@ -152,6 +154,12 @@ class ManualIrrigationRequest:
                 data, "balance_application_efficiency"
             ),
             balance_maximum_deficit_mm=_optional_stored_float(data, "balance_maximum_deficit_mm"),
+            balance_total_available_water_mm=_optional_stored_float(
+                data, "balance_total_available_water_mm"
+            ),
+            balance_readily_available_water_mm=_optional_stored_float(
+                data, "balance_readily_available_water_mm"
+            ),
             balance_minimum_effective_liters=_optional_stored_float(
                 data, "balance_minimum_effective_liters"
             ),
@@ -189,6 +197,8 @@ class IrrigationExecutionState:
     balance_area_m2: float | None = None
     balance_application_efficiency: float | None = None
     balance_maximum_deficit_mm: float | None = None
+    balance_total_available_water_mm: float | None = None
+    balance_readily_available_water_mm: float | None = None
     balance_minimum_effective_liters: float | None = None
     resolved_inputs: dict[str, object] = field(default_factory=dict)
     measurement_quality: str = "unknown"
@@ -243,6 +253,12 @@ class IrrigationExecutionState:
                 data, "balance_application_efficiency"
             ),
             balance_maximum_deficit_mm=_optional_stored_float(data, "balance_maximum_deficit_mm"),
+            balance_total_available_water_mm=_optional_stored_float(
+                data, "balance_total_available_water_mm"
+            ),
+            balance_readily_available_water_mm=_optional_stored_float(
+                data, "balance_readily_available_water_mm"
+            ),
             balance_minimum_effective_liters=_optional_stored_float(
                 data, "balance_minimum_effective_liters"
             ),
@@ -508,6 +524,8 @@ class ActiveExecutionState:
     balance_area_m2: float | None = None
     balance_application_efficiency: float | None = None
     balance_maximum_deficit_mm: float | None = None
+    balance_total_available_water_mm: float | None = None
+    balance_readily_available_water_mm: float | None = None
     balance_minimum_effective_liters: float | None = None
     resolved_inputs: dict[str, object] = field(default_factory=dict)
 
@@ -567,6 +585,8 @@ class ActiveExecutionState:
             balance_area_m2=optional_float("balance_area_m2"),
             balance_application_efficiency=optional_float("balance_application_efficiency"),
             balance_maximum_deficit_mm=optional_float("balance_maximum_deficit_mm"),
+            balance_total_available_water_mm=optional_float("balance_total_available_water_mm"),
+            balance_readily_available_water_mm=optional_float("balance_readily_available_water_mm"),
             balance_minimum_effective_liters=optional_float("balance_minimum_effective_liters"),
             resolved_inputs=_stored_object_dict(data, "resolved_inputs"),
         )
@@ -599,6 +619,8 @@ class ActiveExecutionState:
             "balance_area_m2": self.balance_area_m2,
             "balance_application_efficiency": self.balance_application_efficiency,
             "balance_maximum_deficit_mm": self.balance_maximum_deficit_mm,
+            "balance_total_available_water_mm": self.balance_total_available_water_mm,
+            "balance_readily_available_water_mm": self.balance_readily_available_water_mm,
             "balance_minimum_effective_liters": self.balance_minimum_effective_liters,
             "resolved_inputs": deepcopy(self.resolved_inputs),
         }

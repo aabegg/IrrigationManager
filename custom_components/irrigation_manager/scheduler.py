@@ -32,6 +32,7 @@ class ZonePlanningInput:
     window_end: datetime
     enabled: bool = True
     blocked: bool = False
+    demand_threshold_reached: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,10 +269,19 @@ def decide_zone_schedule(
     mandatory_due = zone.mode is WateringMode.MINIMUM and maximum_due
     target = max(calculated, zone.minimum_target_liters if mandatory_due else 0.0)
     target = min(target, zone.maximum_target_liters)
-    needed = mandatory_due or target >= minimum_trigger_liters
+    needed = mandatory_due or (zone.demand_threshold_reached and target >= minimum_trigger_liters)
     if not needed:
         return ZoneScheduleDecision(
-            None, False, target, "demand_below_trigger", active_window, next_window_start
+            None,
+            False,
+            target,
+            (
+                "demand_below_trigger"
+                if zone.demand_threshold_reached
+                else "readily_available_water_not_depleted"
+            ),
+            active_window,
+            next_window_start,
         )
     if active_window is None:
         return ZoneScheduleDecision(

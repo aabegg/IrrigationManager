@@ -185,6 +185,26 @@ def test_demand_mode_skips_below_trigger_even_after_maximum_interval() -> None:
     assert decision.reason == "demand_below_trigger"
 
 
+def test_demand_mode_waits_until_readily_available_water_is_depleted() -> None:
+    """Do not release a large refill target before the physical RAW threshold."""
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    decision = decide_zone_schedule(
+        now=now,
+        zone=replace(
+            _automatic_zone(mode=WateringMode.DEMAND, target=50),
+            demand_threshold_reached=False,
+        ),
+        watering_windows=["03:00-05:00"],
+        last_effective_irrigation=now - timedelta(days=2),
+        minimum_interval=timedelta(days=1),
+        maximum_interval=timedelta(days=7),
+        minimum_trigger_liters=5,
+    )
+
+    assert decision.order is None
+    assert decision.reason == "readily_available_water_not_depleted"
+
+
 def test_minimum_mode_releases_mandatory_amount_at_maximum_interval() -> None:
     """Guarantee the configured minimum only when the maximum interval is due."""
     now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)

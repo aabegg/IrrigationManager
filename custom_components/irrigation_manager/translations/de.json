@@ -398,6 +398,11 @@
         "title": "Neue Anlage bestätigen",
         "description": "Legt eine neue Anlage und alle Zonen-Subentries mit neuen Identitäten an. Vorschau: {preview}",
         "data": {"confirm_create": "Anlage erstellen"}
+      },
+      "import_profile_confirmation": {
+        "title": "Importierte Forschungsprofile bestätigen",
+        "description": "Prüfe Quellen, Annahmen, TAW und RAW der Forschungsprofile lokal. Importierte Bestätigungsmerkmale werden ignoriert. Vorschau: {preview}",
+        "data": {"confirm_researched_profiles": "Ich habe diese Profilannahmen geprüft und akzeptiere sie"}
       }
     },
     "abort": {
@@ -500,6 +505,7 @@
         "data": {"zone_subentry_id": "Bewässerungszone"}
       },
       "import_config": {"title": "Konfigurationsimport prüfen", "description": "Verwende nur einen portablen Irrigation-Manager-Export und ausdrückliche Zuordnungen.", "data": {"payload": "Portable Konfiguration", "entity_remapping": "Entity-Neuzuordnung", "zone_remapping": "Zonen-Neuzuordnung"}},
+      "import_profile_confirmation": {"title": "Importierte Forschungsprofile bestätigen", "description": "Prüfe die betroffenen Forschungsprofile sowie die aufgelösten TAW-/RAW-Werte lokal. Importierte Bestätigungsmerkmale werden ignoriert. Vorschau: {preview}", "data": {"confirm_researched_profiles": "Ich habe diese Profilannahmen geprüft und akzeptiere sie"}},
       "import_confirm": {"title": "Überschreiben der Konfiguration bestätigen", "description": "Trockenlauf-Vorschau: {preview}", "data": {"confirm_overwrite": "Zugeordnete Anlage und Zonen überschreiben"}},
       "profile_impact": {
         "title": "Profiländerungen bestätigen",
@@ -560,6 +566,7 @@
           "irrigation_profile": "ID des Bewässerungsprofils",
           "subareas": "Teilflächen",
           "profile_overrides": "Profilüberschreibungen",
+          "phenology_stage_schedule": "Lokaler Phänologiezeitplan",
           "soil_moisture_sensors": "Bodenfeuchtesensoren",
           "soil_moisture_role": "Rolle der Bodenfeuchte",
           "soil_moisture_aggregation": "Zusammenführung der Bodenfeuchte",
@@ -572,6 +579,11 @@
           "hardware_fault_sensor": "Störungssensor des Ventils",
           "hardware_health_max_age_seconds": "Maximales Alter des Hardwarezustands"
         }
+      },
+      "zone_profile_confirmation": {
+        "title": "Auswahl des Forschungsprofils bestätigen",
+        "description": "Prüfe Wertebereiche, Vertrauensstufe, Quellen, Annahmen, Warnungen sowie die aufgelösten TAW- und RAW-Werte vor dem Speichern: {preview}",
+        "data": {"confirm_profile_selection": "Diese Profilannahmen verwenden"}
       }
     },
     "abort": {
@@ -582,6 +594,8 @@
       "configuration_changed": "Die Anlage wurde geändert, während dieses Formular geöffnet war. Öffne es erneut und wende die Änderungen nochmals an."
       ,"installation_not_loaded": "Die Bewässerungsanlage ist nicht geladen."
       ,"import_not_pending": "Es gibt keinen geprüften Import zur Bestätigung."
+      ,"profile_selection_not_pending": "Es wartet keine Auswahl eines Forschungsprofils auf Bestätigung."
+      ,"profile_selection_cancelled": "Die Auswahl des Forschungsprofils wurde nicht gespeichert."
     },
     "error": {
       "invalid_weather_curve": "Gib zwölf kommagetrennte Monatswerte und einen gültigen Finalisierungszeitpunkt ein.",
@@ -653,6 +667,7 @@
             "irrigation_profile": "ID des Bewässerungsprofils",
             "subareas": "Teilflächen",
             "profile_overrides": "Profilüberschreibungen",
+            "phenology_stage_schedule": "Lokaler Phänologiezeitplan",
             "soil_moisture_sensors": "Bodenfeuchtesensoren",
             "soil_moisture_role": "Rolle der Bodenfeuchte",
             "soil_moisture_aggregation": "Zusammenführung der Bodenfeuchte",
@@ -667,8 +682,14 @@
           },
           "data_description": {
             "meter_failure_strategy": "Gilt beim Ausfall eines konfigurierten kumulativen Zählers. Ohne Zähler laufen automatische Ziele zeitgesteuert anhand des Durchflussprofils.",
-            "watering_windows": "Regeln verwenden HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed oder mon@sunrise-00:30..sunset+01:00. Datumsregeln überschreiben Wochentage; Wochentage überschreiben Standardregeln."
+            "watering_windows": "Regeln verwenden HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed oder mon@sunrise-00:30..sunset+01:00. Datumsregeln überschreiben Wochentage; Wochentage überschreiben Standardregeln.",
+            "phenology_stage_schedule": "Für gestufte Profile season_start als MM-TT sowie initial_days, development_days, mid_days und late_days oder wiederkehrende Datumsgrenzen angeben. Es wird keine Hemisphäre angenommen."
           }
+        },
+        "profile_confirmation": {
+          "title": "Auswahl des Forschungsprofils bestätigen",
+          "description": "Prüfe Wertebereiche, Vertrauensstufe, Quellen, Annahmen, Warnungen sowie die aufgelösten TAW- und RAW-Werte vor dem Speichern: {preview}",
+          "data": {"confirm_profile_selection": "Diese Profilannahmen verwenden"}
         },
         "reconfigure": {
           "title": "Bewässerungszone bearbeiten",
@@ -723,6 +744,7 @@
             "irrigation_profile": "ID des Bewässerungsprofils",
             "subareas": "Teilflächen",
             "profile_overrides": "Profilüberschreibungen",
+            "phenology_stage_schedule": "Lokaler Phänologiezeitplan",
             "soil_moisture_sensors": "Bodenfeuchtesensoren",
             "soil_moisture_role": "Rolle der Bodenfeuchte",
             "soil_moisture_aggregation": "Zusammenführung der Bodenfeuchte",
@@ -737,12 +759,15 @@
           },
           "data_description": {
             "meter_failure_strategy": "Gilt beim Ausfall eines konfigurierten kumulativen Zählers. Ohne Zähler laufen automatische Ziele zeitgesteuert anhand des Durchflussprofils.",
-            "watering_windows": "Regeln verwenden HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed oder mon@sunrise-00:30..sunset+01:00. Datumsregeln überschreiben Wochentage; Wochentage überschreiben Standardregeln."
+            "watering_windows": "Regeln verwenden HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed oder mon@sunrise-00:30..sunset+01:00. Datumsregeln überschreiben Wochentage; Wochentage überschreiben Standardregeln.",
+            "phenology_stage_schedule": "Für gestufte Profile season_start als MM-TT sowie initial_days, development_days, mid_days und late_days oder wiederkehrende Datumsgrenzen angeben. Es wird keine Hemisphäre angenommen."
           }
         }
       },
       "abort": {
-        "already_configured": "Dieses Zonenventil ist bereits konfiguriert."
+        "already_configured": "Dieses Zonenventil ist bereits konfiguriert.",
+        "profile_selection_not_pending": "Es wartet keine Auswahl eines Forschungsprofils auf Bestätigung.",
+        "profile_selection_cancelled": "Die Auswahl des Forschungsprofils wurde nicht gespeichert."
       },
       "error": {
         "invalid_intervals": "Der maximale Abstand darf nicht kürzer als der minimale Abstand sein.",

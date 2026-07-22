@@ -398,6 +398,11 @@
         "title": "Confirm new installation",
         "description": "Create a new installation and all zone subentries with fresh identities. Preview: {preview}",
         "data": {"confirm_create": "Create installation"}
+      },
+      "import_profile_confirmation": {
+        "title": "Confirm imported researched profiles",
+        "description": "Review the researched profile sources, assumptions, TAW, and RAW locally. Imported confirmation flags are ignored. Preview: {preview}",
+        "data": {"confirm_researched_profiles": "I reviewed and accept these profile assumptions"}
       }
     },
     "abort": {
@@ -500,6 +505,7 @@
         "data": {"zone_subentry_id": "Irrigation zone"}
       },
       "import_config": {"title": "Preview configuration import", "description": "Provide only an Irrigation Manager portable export and explicit mappings.", "data": {"payload": "Portable configuration", "entity_remapping": "Entity remapping", "zone_remapping": "Zone remapping"}},
+      "import_profile_confirmation": {"title": "Confirm imported researched profiles", "description": "Review the researched profile zones and resolved TAW/RAW locally. Imported confirmation flags are ignored. Preview: {preview}", "data": {"confirm_researched_profiles": "I reviewed and accept these profile assumptions"}},
       "import_confirm": {"title": "Confirm configuration overwrite", "description": "Dry-run preview: {preview}", "data": {"confirm_overwrite": "Overwrite the mapped installation and zones"}},
       "profile_impact": {
         "title": "Confirm profile changes",
@@ -560,6 +566,7 @@
           "irrigation_profile": "Irrigation profile ID",
           "subareas": "Teilflaechen",
           "profile_overrides": "Profile overrides",
+          "phenology_stage_schedule": "Local phenology schedule",
           "soil_moisture_sensors": "Soil moisture sensors",
           "soil_moisture_role": "Soil moisture role",
           "soil_moisture_aggregation": "Soil moisture aggregation",
@@ -572,6 +579,11 @@
           "hardware_fault_sensor": "Valve fault sensor",
           "hardware_health_max_age_seconds": "Maximum hardware-health age"
         }
+      },
+      "zone_profile_confirmation": {
+        "title": "Confirm researched profile selection",
+        "description": "Review profile ranges, confidence, sources, assumptions, warnings, and the resolved TAW and RAW before saving: {preview}",
+        "data": {"confirm_profile_selection": "Use these profile assumptions"}
       }
     },
     "abort": {
@@ -582,6 +594,8 @@
       "configuration_changed": "The installation changed while this form was open. Reopen it and apply your changes again."
       ,"installation_not_loaded": "The irrigation installation is not loaded."
       ,"import_not_pending": "There is no previewed import to confirm."
+      ,"profile_selection_not_pending": "There is no researched profile selection awaiting confirmation."
+      ,"profile_selection_cancelled": "The researched profile selection was not saved."
     },
     "error": {
       "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time.",
@@ -653,6 +667,7 @@
             "irrigation_profile": "Irrigation profile ID",
             "subareas": "Teilflaechen",
             "profile_overrides": "Profile overrides",
+            "phenology_stage_schedule": "Local phenology schedule",
             "soil_moisture_sensors": "Soil moisture sensors",
             "soil_moisture_role": "Soil moisture role",
             "soil_moisture_aggregation": "Soil moisture aggregation",
@@ -667,8 +682,14 @@
           },
           "data_description": {
             "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
-            "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults."
+            "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults.",
+            "phenology_stage_schedule": "For staged profiles, provide season_start as MM-DD plus initial_days, development_days, mid_days, and late_days, or explicit recurring stage boundary dates. No hemisphere is assumed."
           }
+        },
+        "profile_confirmation": {
+          "title": "Confirm researched profile selection",
+          "description": "Review profile ranges, confidence, sources, assumptions, warnings, and the resolved TAW and RAW before saving: {preview}",
+          "data": {"confirm_profile_selection": "Use these profile assumptions"}
         },
         "reconfigure": {
           "title": "Update irrigation zone",
@@ -723,6 +744,7 @@
             "irrigation_profile": "Irrigation profile ID",
             "subareas": "Teilflaechen",
             "profile_overrides": "Profile overrides",
+            "phenology_stage_schedule": "Local phenology schedule",
             "soil_moisture_sensors": "Soil moisture sensors",
             "soil_moisture_role": "Soil moisture role",
             "soil_moisture_aggregation": "Soil moisture aggregation",
@@ -737,12 +759,15 @@
           },
           "data_description": {
             "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
-            "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults."
+            "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults.",
+            "phenology_stage_schedule": "For staged profiles, provide season_start as MM-DD plus initial_days, development_days, mid_days, and late_days, or explicit recurring stage boundary dates. No hemisphere is assumed."
           }
         }
       },
       "abort": {
-        "already_configured": "This zone valve is already configured."
+        "already_configured": "This zone valve is already configured.",
+        "profile_selection_not_pending": "There is no researched profile selection awaiting confirmation.",
+        "profile_selection_cancelled": "The researched profile selection was not saved."
       },
       "error": {
         "invalid_intervals": "The maximum interval must not be shorter than the minimum interval.",

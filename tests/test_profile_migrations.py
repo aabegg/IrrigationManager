@@ -24,7 +24,14 @@ async def test_storage_21_adds_resolved_inputs_to_durable_records() -> None:
         },
     )
 
-    assert migrated["manual_requests"] == [{"request_id": "request-1", "resolved_inputs": {}}]
+    assert migrated["manual_requests"] == [
+        {
+            "request_id": "request-1",
+            "resolved_inputs": {},
+            "balance_total_available_water_mm": None,
+            "balance_readily_available_water_mm": None,
+        }
+    ]
     assert migrated["irrigation_executions"] == [
         {
             "execution_id": "execution-1",
@@ -33,12 +40,16 @@ async def test_storage_21_adds_resolved_inputs_to_durable_records() -> None:
             "measurement_origin": "unknown",
             "warnings": [],
             "doses": [],
+            "balance_total_available_water_mm": None,
+            "balance_readily_available_water_mm": None,
         }
     ]
     assert migrated["active_execution"] == {
         "zone_id": "zone-1",
         "resolved_inputs": {},
         "fallback_quality": "estimated",
+        "balance_total_available_water_mm": None,
+        "balance_readily_available_water_mm": None,
     }
 
 
@@ -86,11 +97,32 @@ def test_request_round_trip_retains_resolved_profile_snapshot() -> None:
         created_at="2026-07-22T00:00:00+00:00",
         expires_at="2026-07-22T01:00:00+00:00",
         resolved_inputs={"profile_schema_version": 1, "area_m2": 12.0},
+        balance_total_available_water_mm=60,
+        balance_readily_available_water_mm=24,
     )
 
     restored = ManualIrrigationRequest.from_dict(request.as_dict())
 
     assert restored.resolved_inputs == request.resolved_inputs
+    assert restored.balance_total_available_water_mm == 60
+    assert restored.balance_readily_available_water_mm == 24
+
+
+async def test_storage_27_preserves_legacy_one_limit_as_equal_taw_and_raw() -> None:
+    """Migrate persisted snapshots without changing legacy scheduling behavior."""
+    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
+        None,
+        1,
+        26,
+        {
+            "manual_requests": [{"request_id": "request-1", "balance_maximum_deficit_mm": 40}],
+            "irrigation_executions": [],
+        },
+    )
+
+    request = migrated["manual_requests"][0]
+    assert request["balance_total_available_water_mm"] == 40
+    assert request["balance_readily_available_water_mm"] == 40
 
 
 async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant) -> None:
@@ -113,7 +145,8 @@ async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant
     hass.config_entries.async_add_subentry(entry, zone)
 
     assert await async_migrate_entry(hass, entry)
-    assert entry.minor_version == 5
+    assert entry.minor_version == 6
     assert entry.data["automation_enabled"] is True
     assert entry.data["external_failure_policy"] == "fail_safe"
     assert entry.subentries["zone-1"].data["external_failure_policy"] == "fail_safe"
+    assert "plant_profile" not in entry.subentries["zone-1"].data

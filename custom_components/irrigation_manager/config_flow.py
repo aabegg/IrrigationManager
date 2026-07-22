@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, time
 from typing import Any, cast, override
 from uuid import uuid4
@@ -111,6 +111,7 @@ from .const import (
     CONF_NOTIFY_ENTITIES,
     CONF_OPEN_METEO_ENABLED,
     CONF_PAUSE_TIMEOUT_SECONDS,
+    CONF_PHENOLOGY_STAGE_SCHEDULE,
     CONF_PLANT_PROFILE,
     CONF_PRESSURE_SENSORS,
     CONF_PROFILE_OVERRIDES,
@@ -164,6 +165,7 @@ from .const import (
     EXTERNAL_FAILURE_FAIL_SAFE,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
+    PROFILE_CATALOG_VERSION,
     SOIL_MOISTURE_ROLE_CORRECTION,
     SOIL_MOISTURE_ROLE_INHIBIT,
     SOIL_MOISTURE_ROLE_PLAUSIBILITY,
@@ -178,7 +180,10 @@ from .manager import IrrigationManager
 from .profiles import (
     dependent_profile_ids,
     profile_impacted_zones,
+    profile_select_options,
+    profile_selection_summary,
     resolve_effective_zone_profile,
+    selection_requires_confirmation,
     validate_custom_profiles,
 )
 from .scheduler import parse_window_rule
@@ -593,6 +598,7 @@ ZONE_SCHEMA = vol.Schema(
         ): TextSelector(),
         vol.Optional(CONF_SUBAREAS, default=[]): ObjectSelector(),
         vol.Optional(CONF_PROFILE_OVERRIDES, default={}): ObjectSelector(),
+        vol.Optional(CONF_PHENOLOGY_STAGE_SCHEDULE, default={}): ObjectSelector(),
         vol.Optional(CONF_AREA_M2, default=1): NumberSelector(
             NumberSelectorConfig(min=0.1, max=100_000, step=0.1, mode=NumberSelectorMode.BOX)
         ),
@@ -742,6 +748,70 @@ ZONE_SCHEMA = vol.Schema(
 )
 
 
+def _zone_schema(custom_profiles: object, language: str) -> vol.Schema:
+    """Replace profile ID text boxes with source-annotated catalog selectors."""
+    kinds = {
+        CONF_PLANT_PROFILE: "plant",
+        CONF_SOIL_PROFILE: "soil",
+        CONF_EXPOSURE_PROFILE: "exposure",
+        CONF_IRRIGATION_PROFILE: "irrigation",
+    }
+    schema: dict[object, object] = {}
+    for key, selector in ZONE_SCHEMA.schema.items():
+        kind = kinds.get(str(key))
+        schema[key] = (
+            SelectSelector(
+                SelectSelectorConfig(
+                    options=cast(Any, profile_select_options(custom_profiles, kind, language))
+                )
+            )
+            if kind is not None
+            else selector
+        )
+    return vol.Schema(schema)
+
+
+def _profile_preview(
+    data: Mapping[str, Any], custom_profiles: object, language: str
+) -> tuple[str, bool]:
+    """Return a compact profile-impact preview and whether confirmation is required."""
+    summary = profile_selection_summary(data, custom_profiles, dt_util.now().date(), language)
+    profiles = cast(list[dict[str, object]], summary["profiles"])
+    preview = json.dumps(
+        {
+            "profiles": [
+                {
+                    "name": profile["name"],
+                    "ranges": profile["ranges"],
+                    "confidence": profile["confidence"],
+                    "sources": _profile_source_ids(profile["sources"]),
+                    "assumptions": profile["assumptions"],
+                }
+                for profile in profiles
+            ],
+            "resolved_total_available_water_mm": summary["total_available_water_mm"],
+            "resolved_readily_available_water_mm": summary["readily_available_water_mm"],
+            "water_limit_origin": summary["water_limit_origin"],
+            "legacy_water_limit": summary["legacy_water_limit"],
+            "warnings": summary["warnings"],
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    return preview, selection_requires_confirmation(data, custom_profiles)
+
+
+def _profile_source_ids(sources: object) -> list[str]:
+    """Safely reduce optional custom-profile source metadata for a flow preview."""
+    if not isinstance(sources, Sequence) or isinstance(sources, str | bytes):
+        return []
+    return [
+        str(source["id"])
+        for source in sources
+        if isinstance(source, Mapping) and source.get("id") is not None
+    ]
+
+
 def _validate_zone_input(user_input: dict[str, Any], custom_profiles: object = None) -> str | None:
     """Return a form error for invalid interval/window automation settings."""
     try:
@@ -853,13 +923,16 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create and reconfigure irrigation installations."""
 
     VERSION = 1
-    MINOR_VERSION = 5
+    MINOR_VERSION = 6
 
     def __init__(self) -> None:
         """Initialize transient portable-import data."""
         self._pending_import_installation: dict[str, Any] | None = None
         self._pending_import_zones: list[dict[str, Any]] = []
         self._import_preview = ""
+        self._import_profile_preview = ""
+        self._import_profile_confirmation_required = False
+        self._import_profile_confirmation_zone_indexes: set[int] = set()
 
     @override
     @staticmethod
@@ -916,6 +989,35 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             },
             sort_keys=True,
         )
+        if self._import_profile_confirmation_required:
+            return await self.async_step_import_profile_confirmation()
+        return await self.async_step_import_confirm()
+
+    async def async_step_import_profile_confirmation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Require local confirmation instead of trusting imported agronomic flags."""
+        if self._pending_import_installation is None:
+            return self.async_abort(reason="import_not_pending")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="import_profile_confirmation",
+                data_schema=vol.Schema(
+                    {vol.Required("confirm_researched_profiles", default=False): BooleanSelector()}
+                ),
+                description_placeholders={"preview": self._import_profile_preview},
+            )
+        if user_input.get("confirm_researched_profiles") is not True:
+            return self.async_abort(reason="profile_selection_cancelled")
+        self._pending_import_zones = [
+            {
+                **zone,
+                CONF_AGRONOMIC_VALUES_CONFIRMED: True,
+            }
+            if index in self._import_profile_confirmation_zone_indexes
+            else zone
+            for index, zone in enumerate(self._pending_import_zones)
+        ]
         return await self.async_step_import_confirm()
 
     async def async_step_import_confirm(
@@ -956,6 +1058,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         self._pending_import_installation = None
         self._pending_import_zones = []
+        self._import_profile_confirmation_zone_indexes.clear()
         return result
 
     def _validate_new_entry_import(
@@ -969,6 +1072,8 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             not isinstance(payload, Mapping)
             or payload.get("integration") != DOMAIN
             or payload.get("schema_version") != EXPORT_SCHEMA_VERSION
+            or not isinstance(payload.get("profile_catalog_version", 1), int)
+            or cast(int, payload.get("profile_catalog_version", 1)) > PROFILE_CATALOG_VERSION
             or not isinstance(entity_remapping, Mapping)
             or not all(
                 isinstance(source, str) and isinstance(target, str)
@@ -996,6 +1101,8 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         if error := _validate_installation_input(installation):
             raise ValueError(error)
         zones: list[dict[str, Any]] = []
+        researched_summaries: list[dict[str, object]] = []
+        self._import_profile_confirmation_zone_indexes.clear()
         source_ids: set[str] = set()
         valves: set[str] = set()
         for raw_zone in raw_zones:
@@ -1014,13 +1121,37 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                 )
             )
-            if error := _validate_zone_input(zone, installation.get(CONF_CUSTOM_PROFILES, {})):
+            custom_profiles = installation.get(CONF_CUSTOM_PROFILES, {})
+            imported_confirmation = zone.get(CONF_AGRONOMIC_VALUES_CONFIRMED) is True
+            requires_confirmation = selection_requires_confirmation(zone, custom_profiles)
+            requires_local_confirmation = requires_confirmation or imported_confirmation
+            validation_zone = (
+                {**zone, CONF_AGRONOMIC_VALUES_CONFIRMED: True}
+                if requires_local_confirmation
+                else zone
+            )
+            if error := _validate_zone_input(validation_zone, custom_profiles):
                 raise ValueError(error)
+            zone[CONF_AGRONOMIC_VALUES_CONFIRMED] = False
+            if requires_local_confirmation:
+                self._import_profile_confirmation_zone_indexes.add(len(zones))
+                researched_summaries.append(
+                    {
+                        "zone": zone[CONF_NAME],
+                        "profiles": profile_selection_summary(
+                            zone, custom_profiles, dt_util.now().date(), self.hass.config.language
+                        ),
+                    }
+                )
             valve = cast(str, zone[CONF_ZONE_VALVE])
             if valve in valves:
                 raise ValueError("Portable zones cannot share a valve")
             valves.add(valve)
             zones.append(zone)
+        self._import_profile_confirmation_required = bool(researched_summaries)
+        self._import_profile_preview = json.dumps(
+            researched_summaries, ensure_ascii=True, sort_keys=True
+        )
         imported_entity_ids = IrrigationManager._import_entity_ids(
             installation,
             [{"config": zone} for zone in zones],
@@ -1091,6 +1222,12 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
 class ZoneSubentryFlow(ConfigSubentryFlow):
     """Create and reconfigure one irrigation zone."""
 
+    def __init__(self) -> None:
+        """Initialize the explicit researched-profile confirmation state."""
+        self._pending_zone_input: dict[str, Any] | None = None
+        self._pending_reconfigure = False
+        self._profile_preview = ""
+
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Add a zone to the parent irrigation installation."""
         if user_input is not None:
@@ -1098,17 +1235,37 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 user_input, self._get_entry().data.get(CONF_CUSTOM_PROFILES, {})
             ):
                 return self.async_show_form(
-                    step_id="user", data_schema=ZONE_SCHEMA, errors={"base": error}
+                    step_id="user",
+                    data_schema=_zone_schema(
+                        self._get_entry().data.get(CONF_CUSTOM_PROFILES, {}),
+                        self.hass.config.language,
+                    ),
+                    errors={"base": error},
                 )
             if self._valve_is_configured(user_input[CONF_ZONE_VALVE]):
                 return self.async_abort(reason="already_configured")
+            preview, required = _profile_preview(
+                user_input,
+                self._get_entry().data.get(CONF_CUSTOM_PROFILES, {}),
+                self.hass.config.language,
+            )
+            if required:
+                self._pending_zone_input = user_input
+                self._pending_reconfigure = False
+                self._profile_preview = preview
+                return await self.async_step_profile_confirmation()
             return self.async_create_entry(
                 title=user_input[CONF_NAME],
                 data=user_input,
                 unique_id=uuid4().hex,
             )
 
-        return self.async_show_form(step_id="user", data_schema=ZONE_SCHEMA)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_zone_schema(
+                self._get_entry().data.get(CONF_CUSTOM_PROFILES, {}), self.hass.config.language
+            ),
+        )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -1120,7 +1277,12 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             if error := _validate_zone_input(user_input, entry.data.get(CONF_CUSTOM_PROFILES, {})):
                 return self.async_show_form(
                     step_id="reconfigure",
-                    data_schema=self.add_suggested_values_to_schema(ZONE_SCHEMA, user_input),
+                    data_schema=self.add_suggested_values_to_schema(
+                        _zone_schema(
+                            entry.data.get(CONF_CUSTOM_PROFILES, {}), self.hass.config.language
+                        ),
+                        user_input,
+                    ),
                     errors={"base": error},
                 )
             if self._valve_is_configured(
@@ -1128,6 +1290,16 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 excluding_subentry_id=subentry.subentry_id,
             ):
                 return self.async_abort(reason="already_configured")
+            preview, required = _profile_preview(
+                user_input,
+                entry.data.get(CONF_CUSTOM_PROFILES, {}),
+                self.hass.config.language,
+            )
+            if required:
+                self._pending_zone_input = user_input
+                self._pending_reconfigure = True
+                self._profile_preview = preview
+                return await self.async_step_profile_confirmation()
             return self.async_update_and_abort(
                 entry,
                 subentry,
@@ -1138,9 +1310,40 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=self.add_suggested_values_to_schema(
-                ZONE_SCHEMA,
+                _zone_schema(entry.data.get(CONF_CUSTOM_PROFILES, {}), self.hass.config.language),
                 subentry.data,
             ),
+        )
+
+    async def async_step_profile_confirmation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Show provenance and resolved deficit before saving a researched profile."""
+        pending = self._pending_zone_input
+        if pending is None:
+            return self.async_abort(reason="profile_selection_not_pending")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="profile_confirmation",
+                data_schema=vol.Schema(
+                    {vol.Required("confirm_profile_selection", default=False): BooleanSelector()}
+                ),
+                description_placeholders={"preview": self._profile_preview},
+            )
+        if user_input.get("confirm_profile_selection") is not True:
+            return self.async_abort(reason="profile_selection_cancelled")
+        self._pending_zone_input = None
+        if self._pending_reconfigure:
+            entry = self._get_entry()
+            subentry = self._get_reconfigure_subentry()
+            return self.async_update_and_abort(
+                entry,
+                subentry,
+                title=str(pending[CONF_NAME]),
+                data=pending,
+            )
+        return self.async_create_entry(
+            title=str(pending[CONF_NAME]), data=pending, unique_id=uuid4().hex
         )
 
     def _valve_is_configured(
@@ -1165,6 +1368,9 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         self._installation_config_hash: str | None = None
         self._pending_import: dict[str, Any] | None = None
         self._import_preview = ""
+        self._import_profiles_confirmed = False
+        self._pending_zone_input: dict[str, Any] | None = None
+        self._zone_profile_preview = ""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Offer installation and zone settings."""
@@ -1198,8 +1404,31 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                 )
             self._pending_import = {**user_input, "config_hash": preview["config_hash"]}
             self._import_preview = json.dumps(preview, sort_keys=True)
+            self._import_profiles_confirmed = False
+            if preview.get("profile_confirmation_required") is True:
+                return await self.async_step_import_profile_confirmation()
             return await self.async_step_import_confirm()
         return self.async_show_form(step_id="import_config", data_schema=self._import_schema())
+
+    async def async_step_import_profile_confirmation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Require local review of researched profiles before overwrite confirmation."""
+        if self._pending_import is None:
+            return self.async_abort(reason="import_not_pending")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="import_profile_confirmation",
+                data_schema=vol.Schema(
+                    {vol.Required("confirm_researched_profiles", default=False): BooleanSelector()}
+                ),
+                description_placeholders={"preview": self._import_preview},
+            )
+        if user_input.get("confirm_researched_profiles") is not True:
+            self._pending_import = None
+            return self.async_abort(reason="profile_selection_cancelled")
+        self._import_profiles_confirmed = True
+        return await self.async_step_import_confirm()
 
     async def async_step_import_confirm(
         self, user_input: dict[str, Any] | None = None
@@ -1224,6 +1453,7 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                     dry_run=False,
                     confirm_overwrite=True,
                     expected_config_hash=pending["config_hash"],
+                    confirm_researched_profiles=self._import_profiles_confirmed,
                 )
             except HomeAssistantError:
                 return self.async_abort(reason="configuration_changed")
@@ -1378,7 +1608,13 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             ):
                 return self.async_show_form(
                     step_id="zone_settings",
-                    data_schema=self.add_suggested_values_to_schema(ZONE_SCHEMA, user_input),
+                    data_schema=self.add_suggested_values_to_schema(
+                        _zone_schema(
+                            self.config_entry.data.get(CONF_CUSTOM_PROFILES, {}),
+                            self.hass.config.language,
+                        ),
+                        user_input,
+                    ),
                     errors={"base": error},
                 )
             if any(
@@ -1387,6 +1623,15 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                 for other in self.config_entry.subentries.values()
             ):
                 return self.async_abort(reason="already_configured")
+            preview, required = _profile_preview(
+                user_input,
+                self.config_entry.data.get(CONF_CUSTOM_PROFILES, {}),
+                self.hass.config.language,
+            )
+            if required:
+                self._pending_zone_input = user_input
+                self._zone_profile_preview = preview
+                return await self.async_step_zone_profile_confirmation()
             self.hass.config_entries.async_update_subentry(
                 self.config_entry,
                 subentry,
@@ -1396,5 +1641,38 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             return self.async_create_entry(data={})
         return self.async_show_form(
             step_id="zone_settings",
-            data_schema=self.add_suggested_values_to_schema(ZONE_SCHEMA, subentry.data),
+            data_schema=self.add_suggested_values_to_schema(
+                _zone_schema(
+                    self.config_entry.data.get(CONF_CUSTOM_PROFILES, {}),
+                    self.hass.config.language,
+                ),
+                subentry.data,
+            ),
         )
+
+    async def async_step_zone_profile_confirmation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm a zone's researched profile and derived TAW/RAW limits."""
+        pending = self._pending_zone_input
+        subentry = self.config_entry.subentries.get(self._zone_subentry_id or "")
+        if pending is None or subentry is None:
+            return self.async_abort(reason="profile_selection_not_pending")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="zone_profile_confirmation",
+                data_schema=vol.Schema(
+                    {vol.Required("confirm_profile_selection", default=False): BooleanSelector()}
+                ),
+                description_placeholders={"preview": self._zone_profile_preview},
+            )
+        if user_input.get("confirm_profile_selection") is not True:
+            return self.async_abort(reason="profile_selection_cancelled")
+        self._pending_zone_input = None
+        self.hass.config_entries.async_update_subentry(
+            self.config_entry,
+            subentry,
+            title=str(pending[CONF_NAME]),
+            data=pending,
+        )
+        return self.async_create_entry(data={})

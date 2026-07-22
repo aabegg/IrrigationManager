@@ -355,7 +355,7 @@ async def test_recreated_automatic_request_atomically_replaces_resolved_inputs(
 
     assert report["recreated_request_ids"] == [request_id]
     assert recreated is not None
-    assert recreated.resolved_inputs["profile_schema_version"] == 1
+    assert recreated.resolved_inputs["profile_schema_version"] == 3
     assert recreated.resolved_inputs["resolved_on"] == "2026-07-21"
     assert "stale_incarnation" not in recreated.resolved_inputs
 
@@ -487,7 +487,8 @@ async def test_forecast_rain_defers_without_reducing_balance_or_target(
 ) -> None:
     """Keep forecast data in planning only and bound the delay from its first use."""
     entry, _ = await _setup_automatic_zone(hass)
-    now = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    # Keep the persisted deadline ahead of the real clock while setup briefly starts the planner.
+    now = datetime(2030, 7, 21, 4, 0, tzinfo=UTC)
     _make_zone_due(entry, now, deficit_mm=10)
     manager = entry.runtime_data.manager
     manager._rain_forecast = RainForecast(

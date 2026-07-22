@@ -146,6 +146,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data={CONF_AUTOMATION_ENABLED: True, **entry.data},
             minor_version=5,
         )
+    if entry.minor_version < 6:
+        hass.config_entries.async_update_entry(entry, minor_version=6)
     return True
 
 

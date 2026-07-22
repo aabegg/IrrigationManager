@@ -147,6 +147,7 @@ async def test_events_exports_diagnostics_and_reconciliation(hass: HomeAssistant
         return_response=True,
     )
     assert portable["schema_version"] == 1
+    assert portable["profile_catalog_version"] == 1
     assert portable["zones"][0]["id"] == "zone-1"
     history = await hass.services.async_call(
         DOMAIN,
@@ -162,6 +163,8 @@ async def test_events_exports_diagnostics_and_reconciliation(hass: HomeAssistant
     assert diagnostics["entry"]["data"]["name"] != "Private garden"
     assert diagnostics["zones"][0]["data"]["zone_valve"] != "switch.lawn"
     assert diagnostics["state_decisions"]["uncredited_balance_count"] == 1
+    assert diagnostics["profile_catalog"]["version"] == 1
+    assert diagnostics["profile_catalog"]["built_in"]
 
     response = await hass.services.async_call(
         DOMAIN,
@@ -191,6 +194,7 @@ async def test_portable_import_requires_preview_mapping_confirmation_and_hash(
     """Never silently import entities or overwrite an existing installation."""
     entry, subentry = await _setup_installation(hass)
     manager = entry.runtime_data.manager
+    hass.states.async_set("weather.home", "sunny")
     payload = manager.export_portable_config()
     payload["installation"]["config"]["name"] = "Imported garden"
     hass.states.async_set("weather.imported", "sunny")
@@ -214,8 +218,84 @@ async def test_portable_import_requires_preview_mapping_confirmation_and_hash(
             zone_remapping={"zone-1": subentry.subentry_id},
             dry_run=False,
             confirm_overwrite=False,
+            confirm_researched_profiles=True,
             expected_config_hash=preview["config_hash"],
         )
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_portable_import_does_not_trust_researched_profile_confirmation(
+    hass: HomeAssistant,
+) -> None:
+    """Require a new local confirmation even when the export claims it was confirmed."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    hass.states.async_set("weather.home", "sunny")
+    payload = manager.export_portable_config()
+    payload["zones"][0]["config"].update(
+        {
+            "plant_profile": "builtin:plant:cool-season-turf:v1",
+            "soil_profile": "builtin:soil:sandy-loam:v1",
+            "agronomic_values_confirmed": True,
+        }
+    )
+    preview = await manager.async_import_portable_config(
+        payload=payload,
+        entity_remapping={},
+        zone_remapping={"zone-1": subentry.subentry_id},
+        dry_run=True,
+        confirm_overwrite=False,
+        expected_config_hash=None,
+    )
+
+    assert preview["profile_confirmation_required"] is True
+    assert preview["researched_profile_zones"] == ["zone-1"]
+    with pytest.raises(HomeAssistantError, match="local confirmation"):
+        await manager.async_import_portable_config(
+            payload=payload,
+            entity_remapping={},
+            zone_remapping={"zone-1": subentry.subentry_id},
+            dry_run=False,
+            confirm_overwrite=True,
+            expected_config_hash=preview["config_hash"],
+        )
+
+    await manager.async_import_portable_config(
+        payload=payload,
+        entity_remapping={},
+        zone_remapping={"zone-1": subentry.subentry_id},
+        dry_run=False,
+        confirm_overwrite=True,
+        confirm_researched_profiles=True,
+        expected_config_hash=preview["config_hash"],
+    )
+    assert entry.subentries[subentry.subentry_id].data["agronomic_values_confirmed"] is True
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_portable_import_does_not_trust_generic_agronomic_confirmation(
+    hass: HomeAssistant,
+) -> None:
+    """Reset an exported confirmation even when no researched profile is referenced."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    payload = manager.export_portable_config()
+    payload["zones"][0]["config"]["agronomic_values_confirmed"] = True
+
+    preview = await manager.async_import_portable_config(
+        payload=payload,
+        entity_remapping={},
+        zone_remapping={"zone-1": subentry.subentry_id},
+        dry_run=True,
+        confirm_overwrite=False,
+        expected_config_hash=None,
+    )
+
+    assert preview["profile_confirmation_required"] is True
+    assert preview["profile_confirmation_zones"] == ["zone-1"]
+    assert preview["researched_profile_zones"] == []
 
     assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -404,6 +484,7 @@ async def test_import_hash_covers_source_and_current_target_zone(hass: HomeAssis
             zone_remapping={"zone-1": subentry.subentry_id},
             dry_run=False,
             confirm_overwrite=True,
+            confirm_researched_profiles=True,
             expected_config_hash=preview["config_hash"],
         )
 

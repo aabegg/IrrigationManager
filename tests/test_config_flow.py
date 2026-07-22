@@ -124,6 +124,50 @@ async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:
     assert subentry.data["wind_manual_policy"] == "allow"
 
 
+async def test_researched_profiles_show_provenance_and_derived_deficit_before_save(
+    hass: HomeAssistant,
+) -> None:
+    """Require confirmation of source uncertainty and the impacted resolved deficit."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={"name": "Garden"},
+        unique_id="installation-profile-preview",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "default_duration": 600,
+            "min_flow": 5,
+            "max_flow": 20,
+            "plant_profile": "builtin:plant:cool-season-turf:v1",
+            "soil_profile": "builtin:soil:sandy-loam:v1",
+            "irrigation_profile": "builtin:irrigation:drip:v1",
+        },
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "profile_confirmation"
+    preview = result["description_placeholders"]["preview"]
+    assert '"resolved_total_available_water_mm": 36.0' in preview
+    assert '"resolved_readily_available_water_mm": 14.4' in preview
+    assert "fao56-ch8-tables19-22" in preview
+    assert '"confidence": "medium"' in preview
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"confirm_profile_selection": True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert next(iter(entry.subentries.values())).data["plant_profile"] == (
+        "builtin:plant:cool-season-turf:v1"
+    )
+
+
 async def test_portable_import_creates_new_entry_with_zone_subentries(
     hass: HomeAssistant,
     mock_setup_entry: None,
@@ -145,6 +189,9 @@ async def test_portable_import_creates_new_entry_with_zone_subentries(
                     "default_duration": 600,
                     "min_flow": 5,
                     "max_flow": 20,
+                    "plant_profile": "builtin:plant:cool-season-turf:v1",
+                    "soil_profile": "builtin:soil:sandy-loam:v1",
+                    "agronomic_values_confirmed": True,
                 },
             },
             {
@@ -187,6 +234,11 @@ async def test_portable_import_creates_new_entry_with_zone_subentries(
             },
         )
         assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "import_profile_confirmation"
+        assert "cool-season-turf" in result["description_placeholders"]["preview"]
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"confirm_researched_profiles": True}
+        )
         assert result["step_id"] == "import_confirm"
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"confirm_create": True}
@@ -205,6 +257,7 @@ async def test_portable_import_creates_new_entry_with_zone_subentries(
         "switch.new_lawn",
         "switch.new_beds",
     ]
+    assert next(iter(entry.subentries.values())).data["agronomic_values_confirmed"] is True
 
 
 async def test_portable_new_entry_import_rejects_missing_target_entities(

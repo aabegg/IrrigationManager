@@ -9,7 +9,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 26
+STORAGE_MINOR_VERSION = 27
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -49,6 +49,7 @@ class _StateStore(Store[dict[str, object]]):
             23,
             24,
             25,
+            26,
         }:
             migrated = dict(old_data)
             if old_minor_version == 1:
@@ -324,6 +325,19 @@ class _StateStore(Store[dict[str, object]]):
                         {**record, "cost": None} if isinstance(record, dict) else record
                         for record in history
                     ]
+            if old_minor_version < 27:
+                for key in ("manual_requests", "irrigation_executions"):
+                    records = migrated.get(key, [])
+                    if isinstance(records, list):
+                        migrated[key] = [
+                            _migrate_available_water_snapshot(record)
+                            if isinstance(record, dict)
+                            else record
+                            for record in records
+                        ]
+                raw_active = migrated.get("active_execution")
+                if isinstance(raw_active, dict):
+                    migrated["active_execution"] = _migrate_available_water_snapshot(raw_active)
             return migrated
         raise NotImplementedError
 
@@ -334,10 +348,22 @@ def _backfill_balance_snapshot(target: dict[str, object], source: dict[str, obje
         "balance_area_m2",
         "balance_application_efficiency",
         "balance_maximum_deficit_mm",
+        "balance_total_available_water_mm",
+        "balance_readily_available_water_mm",
         "balance_minimum_effective_liters",
     ):
         if target.get(field) is None and source.get(field) is not None:
             target[field] = source[field]
+
+
+def _migrate_available_water_snapshot(record: dict[str, object]) -> dict[str, object]:
+    """Preserve legacy one-limit behavior as equal TAW and RAW snapshots."""
+    legacy_limit = record.get("balance_maximum_deficit_mm")
+    return {
+        **record,
+        "balance_total_available_water_mm": legacy_limit,
+        "balance_readily_available_water_mm": legacy_limit,
+    }
 
 
 def _conservative_deadline(data: dict[str, object], *, lifetime_seconds: float) -> str:

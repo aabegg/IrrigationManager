@@ -418,6 +418,11 @@ import_config:
       default: false
       selector:
         boolean:
+    confirm_researched_profiles:
+      required: false
+      default: false
+      selector:
+        boolean:
     config_hash:
       required: false
       selector:
