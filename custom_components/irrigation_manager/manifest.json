@@ -1,14 +1,14 @@
 {
   "domain": "irrigation_manager",
   "name": "Irrigation Manager",
-  "version": "0.1.0",
-  "documentation": "https://github.com/aabegg/IrrigationManager",
-  "issue_tracker": "https://github.com/aabegg/IrrigationManager/issues",
+  "after_dependencies": ["recorder", "weather"],
   "codeowners": ["@aabegg"],
   "config_flow": true,
   "dependencies": ["calendar", "frontend", "http"],
-  "after_dependencies": ["recorder", "weather"],
+  "documentation": "https://github.com/aabegg/IrrigationManager",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "requirements": []
+  "issue_tracker": "https://github.com/aabegg/IrrigationManager/issues",
+  "requirements": [],
+  "version": "0.1.0"
 }

@@ -1,5 +1,4 @@
 {
-  "title": "Irrigation Manager",
   "services": {
     "start_manual": {
       "name": "Manuelle Bewässerung starten",
@@ -644,6 +643,7 @@
   "config_subentries": {
     "zone": {
       "entry_type": "Bewässerungszone",
+      "initiate_flow": {"user": "Bewässerungszone hinzufügen"},
       "title": "Bewässerungszone",
       "step": {
         "expert": {
