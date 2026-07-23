@@ -9,7 +9,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 27
+STORAGE_MINOR_VERSION = 28
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -50,6 +50,7 @@ class _StateStore(Store[dict[str, object]]):
             24,
             25,
             26,
+            27,
         }:
             migrated = dict(old_data)
             if old_minor_version == 1:
@@ -61,6 +62,9 @@ class _StateStore(Store[dict[str, object]]):
                 migrated["zone_safety_locks"] = {}
             if old_minor_version < 5:
                 migrated["installation_safety_lock"] = None
+            if old_minor_version < 28:
+                migrated["zone_safety_lock_at"] = {}
+                migrated["installation_safety_lock_at"] = None
             if old_minor_version < 6:
                 migrated["unassigned_measurement_quality"] = "unknown"
                 migrated["unassigned_measurement_origin"] = "unknown"

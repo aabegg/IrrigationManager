@@ -1,6 +1,7 @@
 export interface HassEntity {
   entity_id: string;
   state: string;
+  last_changed?: string;
   attributes: Record<string, unknown> & {
     friendly_name?: string;
     unit_of_measurement?: string;
@@ -49,6 +50,7 @@ export interface ZoneCardConfig {
   zone_entity?: string;
   automation_needed_entity?: string;
   safety_lock_entity?: string;
+  installation_safety_lock_entity?: string;
   deficit_entity?: string;
   target_entity?: string;
   planning_reason_entity?: string;

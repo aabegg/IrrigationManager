@@ -973,7 +973,7 @@ async def test_zone_reconfigure_guides_flow_calibration(hass: HomeAssistant) -> 
         "proposed_min_flow_l_min": 8.0,
         "proposed_max_flow_l_min": 12.0,
         "delivered_liters": 3.3,
-        "duration_seconds": 20.0,
+        "duration_seconds": 60.0,
         "opening_latency_seconds": 1.0,
         "post_run_liters": 0.2,
     }
@@ -1003,25 +1003,30 @@ async def test_zone_reconfigure_guides_flow_calibration(hass: HomeAssistant) -> 
         result["flow_id"], {"next_step_id": "calibration"}
     )
     assert result["step_id"] == "calibration"
+    duration_selector = next(
+        value for key, value in result["data_schema"].schema.items() if str(key) == "duration"
+    )
+    assert duration_selector.config["max"] >= 60
+    assert duration_selector.config["mode"] == "box"
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {"duration": 20, "confirm_supervision": False}
+        result["flow_id"], {"duration": 60, "confirm_supervision": False}
     )
     assert result["step_id"] == "calibration"
     assert result["errors"] == {"base": "calibration_supervision_required"}
     manager.async_start_maintenance_test.assert_not_awaited()
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {"duration": 20, "confirm_supervision": True}
+        result["flow_id"], {"duration": 60, "confirm_supervision": True}
     )
     assert result["step_id"] == "calibration_running"
     manager.async_start_maintenance_test.assert_awaited_once_with(
         zone_subentry_id=subentry.subentry_id,
-        duration_seconds=20.0,
+        duration_seconds=60.0,
         kind="calibration",
     )
 
     result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
     assert result["step_id"] == "calibration_running"
-    assert result["errors"] == {"base": "calibration_still_running"}
+    assert "renewed" in result["description_placeholders"]["status"]
     manager.async_confirm_maintenance_test.assert_awaited_once_with(test_id="test-1")
     result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
     assert result["step_id"] == "calibration_review"

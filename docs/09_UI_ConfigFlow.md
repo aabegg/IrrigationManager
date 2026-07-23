@@ -165,6 +165,11 @@ native Konfigurationsschnittstelle.
 6. Wasser als reale Bewässerung verbuchen
 7. Werte prüfen und explizit übernehmen oder verwerfen
 
+Für einen stabilen stationären Durchfluss sind 30 bis 60 Sekunden typischerweise sinnvoll.
+Längere Messungen sind bis knapp unter die konfigurierte harte Testdauer möglich. Solange die
+Messung läuft, muss die Aufsicht im Dialog spätestens alle 20 Sekunden erneuert werden; bleibt
+die Bestätigung aus, schließt die Dead-Man-Sicherung alle Ventile.
+
 ## Wartungsmodus
 
 - zeitlich begrenzt und deutlich sichtbar
@@ -193,6 +198,8 @@ native Konfigurationsschnittstelle.
 ### Zonenkarte
 
 - Automatikfreigabe und zeitliche Aussetzung
+- wirksame Zonen- oder Anlagen-Sicherheitssperre mit Ursache und persistentem Ereigniszeitpunkt
+- sicherheitsgeprüftes Zurücksetzen einer Sperre nach ausdrücklicher Vor-Ort-Bestätigung
 - Wasserbedarf und vollständige Berechnungserklärung
 - nächster Auftrag und zulässige Fenster
 - manuelle Menge oder Dauer

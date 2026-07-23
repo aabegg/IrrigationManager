@@ -415,6 +415,7 @@ class InstallationSnapshot:
     zone_last_delivered_liters: dict[str, float] = field(default_factory=dict)
     zone_last_duration_seconds: dict[str, float] = field(default_factory=dict)
     zone_safety_locks: dict[str, str] = field(default_factory=dict)
+    zone_safety_lock_at: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
     unassigned_available_liters: float = 0.0
     unassigned_measurement_quality: str = "unknown"
@@ -429,6 +430,7 @@ class InstallationSnapshot:
     active_zone_id: str | None = None
     emergency_stop: bool = False
     installation_safety_lock: str | None = None
+    installation_safety_lock_at: str | None = None
     winter_lock: bool = False
     maintenance_active: bool = False
     maintenance_test_id: str | None = None
@@ -757,6 +759,7 @@ class StoredInstallationState:
     zone_last_delivered_liters: dict[str, float] = field(default_factory=dict)
     zone_last_duration_seconds: dict[str, float] = field(default_factory=dict)
     zone_safety_locks: dict[str, str] = field(default_factory=dict)
+    zone_safety_lock_at: dict[str, str] = field(default_factory=dict)
     unassigned_total_liters: float = 0.0
     unassigned_available_liters: float = 0.0
     unassigned_measurement_quality: str = "unknown"
@@ -764,6 +767,7 @@ class StoredInstallationState:
     idle_meter_raw_baseline_liters: float | None = None
     emergency_stop: bool = False
     installation_safety_lock: str | None = None
+    installation_safety_lock_at: str | None = None
     winter_lock: bool = False
     maintenance_test: MaintenanceTestState | None = None
     calibration_proposal: CalibrationProposal | None = None
@@ -837,12 +841,21 @@ class StoredInstallationState:
             isinstance(key, str) and isinstance(value, str) for key, value in raw_zone_locks.items()
         ):
             raise ValueError("Stored zone safety locks are malformed")
+        raw_zone_lock_at = data.get("zone_safety_lock_at", {})
+        if not isinstance(raw_zone_lock_at, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_zone_lock_at.items()
+        ):
+            raise ValueError("Stored zone safety lock timestamps are malformed")
         emergency_stop = data.get("emergency_stop", False)
         if not isinstance(emergency_stop, bool):
             raise ValueError("Stored emergency stop is not boolean")
         installation_lock = data.get("installation_safety_lock")
         if installation_lock is not None and not isinstance(installation_lock, str):
             raise ValueError("Stored installation safety lock is malformed")
+        installation_lock_at = data.get("installation_safety_lock_at")
+        if installation_lock_at is not None and not isinstance(installation_lock_at, str):
+            raise ValueError("Stored installation safety lock timestamp is malformed")
         winter_lock = data.get("winter_lock", False)
         if not isinstance(winter_lock, bool):
             raise ValueError("Stored winter lock is not boolean")
@@ -981,6 +994,7 @@ class StoredInstallationState:
             zone_last_delivered_liters=last_delivered,
             zone_last_duration_seconds=last_duration,
             zone_safety_locks=dict(raw_zone_locks),
+            zone_safety_lock_at=dict(raw_zone_lock_at),
             unassigned_total_liters=cls._float(data.get("unassigned_total_liters", 0.0)),
             unassigned_available_liters=cls._float(
                 data.get("unassigned_available_liters", data.get("unassigned_total_liters", 0.0))
@@ -990,6 +1004,7 @@ class StoredInstallationState:
             idle_meter_raw_baseline_liters=idle_baseline,
             emergency_stop=emergency_stop,
             installation_safety_lock=installation_lock,
+            installation_safety_lock_at=installation_lock_at,
             winter_lock=winter_lock,
             maintenance_test=(
                 MaintenanceTestState.from_dict(raw_maintenance)
@@ -1069,6 +1084,7 @@ class StoredInstallationState:
             "zone_last_delivered_liters": self.zone_last_delivered_liters,
             "zone_last_duration_seconds": self.zone_last_duration_seconds,
             "zone_safety_locks": self.zone_safety_locks,
+            "zone_safety_lock_at": self.zone_safety_lock_at,
             "unassigned_total_liters": self.unassigned_total_liters,
             "unassigned_available_liters": self.unassigned_available_liters,
             "unassigned_measurement_quality": self.unassigned_measurement_quality,
@@ -1076,6 +1092,7 @@ class StoredInstallationState:
             "idle_meter_raw_baseline_liters": self.idle_meter_raw_baseline_liters,
             "emergency_stop": self.emergency_stop,
             "installation_safety_lock": self.installation_safety_lock,
+            "installation_safety_lock_at": self.installation_safety_lock_at,
             "winter_lock": self.winter_lock,
             "maintenance_test": (
                 self.maintenance_test.as_dict() if self.maintenance_test is not None else None

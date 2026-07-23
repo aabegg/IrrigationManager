@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import "./index";
 import {
@@ -15,10 +15,11 @@ function state(
   entityId: string,
   friendlyName: string,
   attributes: Record<string, unknown> = {},
+  value = "idle",
 ): HassEntity {
   return {
     entity_id: entityId,
-    state: "idle",
+    state: value,
     attributes: { friendly_name: friendlyName, ...attributes },
   };
 }
@@ -64,6 +65,68 @@ describe("simple card entity resolution", () => {
     expect(resolveOverviewConfig(renamedHome, config).status_entity).toBe(
       "sensor.renamed_garden_status",
     );
+  });
+
+  it("shows and resets an installation lock on every affected zone card", async () => {
+    const callService = vi.fn(async () => undefined);
+    const home = hass(
+      state("sensor.lawn_water", "Rasen", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        card_name: "Rasen",
+        card_entities: {
+          zone: "sensor.lawn_water",
+          safety_lock: "binary_sensor.lawn_lock",
+          status: "sensor.lawn_status",
+        },
+        installation_card_entities: {
+          lock: "binary_sensor.garden_lock",
+        },
+      }, "0"),
+      state("binary_sensor.lawn_lock", "Zonensperre", {}, "off"),
+      state("sensor.lawn_status", "Zonenstatus", {}, "idle"),
+      state("switch.relais_11", "Bewässerung Kreis 2", {}, "off"),
+      state(
+        "binary_sensor.garden_lock",
+        "Anlagensperre",
+        {
+          reason: "switch.relais_11 opened unexpectedly",
+          occurred_at: "2026-07-23T05:58:00+00:00",
+        },
+        "on",
+      ),
+    );
+    home.callService = callService;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    const Card = customElements.get("irrigation-manager-zone-card")!;
+    const card = new Card() as HTMLElement & {
+      hass: HomeAssistant;
+      setConfig(config: ZoneCardConfig): void;
+      updateComplete: Promise<boolean>;
+      shadowRoot: ShadowRoot;
+    };
+    card.hass = home;
+    card.setConfig({
+      type: "custom:irrigation-manager-zone-card",
+      configuration_mode: "simple",
+      zone: "garden:lawn",
+    });
+    document.body.append(card);
+    await card.updateComplete;
+
+    expect(card.shadowRoot.textContent).toContain(
+      "Bewässerung Kreis 2 (switch.relais_11) wurde unerwartet geöffnet",
+    );
+    expect(card.shadowRoot.textContent).toContain("Sicherheitssperre");
+    expect(card.shadowRoot.textContent).not.toContain("Bereit");
+    const reset = card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=reset-safety]")!;
+    expect(reset).toBeTruthy();
+    reset.click();
+    await Promise.resolve();
+    expect(callService).toHaveBeenCalledWith("irrigation_manager", "reset_installation_safety", {
+      config_entry_id: "garden",
+    });
   });
 
   it("resolves only the selected zone and its own installation", () => {

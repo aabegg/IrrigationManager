@@ -1,15 +1,15 @@
-const I = globalThis, st = I.ShadowRoot && (I.ShadyCSS === void 0 || I.ShadyCSS.nativeShadow) && "adoptedStyleSheets" in Document.prototype && "replace" in CSSStyleSheet.prototype, nt = /* @__PURE__ */ Symbol(), dt = /* @__PURE__ */ new WeakMap();
-let zt = class {
+const L = globalThis, at = L.ShadowRoot && (L.ShadyCSS === void 0 || L.ShadyCSS.nativeShadow) && "adoptedStyleSheets" in Document.prototype && "replace" in CSSStyleSheet.prototype, ot = /* @__PURE__ */ Symbol(), mt = /* @__PURE__ */ new WeakMap();
+let Nt = class {
   constructor(t, e, i) {
-    if (this._$cssResult$ = !0, i !== nt) throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");
+    if (this._$cssResult$ = !0, i !== ot) throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");
     this.cssText = t, this.t = e;
   }
   get styleSheet() {
     let t = this.o;
     const e = this.t;
-    if (st && t === void 0) {
+    if (at && t === void 0) {
       const i = e !== void 0 && e.length === 1;
-      i && (t = dt.get(e)), t === void 0 && ((this.o = t = new CSSStyleSheet()).replaceSync(this.cssText), i && dt.set(e, t));
+      i && (t = mt.get(e)), t === void 0 && ((this.o = t = new CSSStyleSheet()).replaceSync(this.cssText), i && mt.set(e, t));
     }
     return t;
   }
@@ -17,28 +17,28 @@ let zt = class {
     return this.cssText;
   }
 };
-const Vt = (s) => new zt(typeof s == "string" ? s : s + "", void 0, nt), Mt = (s, ...t) => {
+const Gt = (s) => new Nt(typeof s == "string" ? s : s + "", void 0, ot), Tt = (s, ...t) => {
   const e = s.length === 1 ? s[0] : t.reduce((i, n, o) => i + ((r) => {
     if (r._$cssResult$ === !0) return r.cssText;
     if (typeof r == "number") return r;
     throw Error("Value passed to 'css' function must be a 'css' function result: " + r + ". Use 'unsafeCSS' to pass non-literal values, but take care to ensure page security.");
   })(n) + s[o + 1], s[0]);
-  return new zt(e, s, nt);
-}, Wt = (s, t) => {
-  if (st) s.adoptedStyleSheets = t.map((e) => e instanceof CSSStyleSheet ? e : e.styleSheet);
+  return new Nt(e, s, ot);
+}, Jt = (s, t) => {
+  if (at) s.adoptedStyleSheets = t.map((e) => e instanceof CSSStyleSheet ? e : e.styleSheet);
   else for (const e of t) {
-    const i = document.createElement("style"), n = I.litNonce;
+    const i = document.createElement("style"), n = L.litNonce;
     n !== void 0 && i.setAttribute("nonce", n), i.textContent = e.cssText, s.appendChild(i);
   }
-}, ut = st ? (s) => s : (s) => s instanceof CSSStyleSheet ? ((t) => {
+}, gt = at ? (s) => s : (s) => s instanceof CSSStyleSheet ? ((t) => {
   let e = "";
   for (const i of t.cssRules) e += i.cssText;
-  return Vt(e);
+  return Gt(e);
 })(s) : s;
-const { is: jt, defineProperty: Ft, getOwnPropertyDescriptor: Zt, getOwnPropertyNames: Kt, getOwnPropertySymbols: Gt, getPrototypeOf: Jt } = Object, F = globalThis, pt = F.trustedTypes, Qt = pt ? pt.emptyScript : "", Yt = F.reactiveElementPolyfillSupport, N = (s, t) => s, J = { toAttribute(s, t) {
+const { is: Qt, defineProperty: Yt, getOwnPropertyDescriptor: Xt, getOwnPropertyNames: te, getOwnPropertySymbols: ee, getPrototypeOf: ie } = Object, F = globalThis, ft = F.trustedTypes, se = ft ? ft.emptyScript : "", ne = F.reactiveElementPolyfillSupport, T = (s, t) => s, Y = { toAttribute(s, t) {
   switch (t) {
     case Boolean:
-      s = s ? Qt : null;
+      s = s ? se : null;
       break;
     case Object:
     case Array:
@@ -63,7 +63,7 @@ const { is: jt, defineProperty: Ft, getOwnPropertyDescriptor: Zt, getOwnProperty
       }
   }
   return e;
-} }, Ct = (s, t) => !jt(s, t), _t = { attribute: !0, type: String, converter: J, reflect: !1, useDefault: !1, hasChanged: Ct };
+} }, Pt = (s, t) => !Qt(s, t), yt = { attribute: !0, type: String, converter: Y, reflect: !1, useDefault: !1, hasChanged: Pt };
 Symbol.metadata ??= /* @__PURE__ */ Symbol("metadata"), F.litPropertyMetadata ??= /* @__PURE__ */ new WeakMap();
 let z = class extends HTMLElement {
   static addInitializer(t) {
@@ -72,14 +72,14 @@ let z = class extends HTMLElement {
   static get observedAttributes() {
     return this.finalize(), this._$Eh && [...this._$Eh.keys()];
   }
-  static createProperty(t, e = _t) {
+  static createProperty(t, e = yt) {
     if (e.state && (e.attribute = !1), this._$Ei(), this.prototype.hasOwnProperty(t) && ((e = Object.create(e)).wrapped = !0), this.elementProperties.set(t, e), !e.noAccessor) {
       const i = /* @__PURE__ */ Symbol(), n = this.getPropertyDescriptor(t, i, e);
-      n !== void 0 && Ft(this.prototype, t, n);
+      n !== void 0 && Yt(this.prototype, t, n);
     }
   }
   static getPropertyDescriptor(t, e, i) {
-    const { get: n, set: o } = Zt(this.prototype, t) ?? { get() {
+    const { get: n, set: o } = Xt(this.prototype, t) ?? { get() {
       return this[e];
     }, set(r) {
       this[e] = r;
@@ -90,17 +90,17 @@ let z = class extends HTMLElement {
     }, configurable: !0, enumerable: !0 };
   }
   static getPropertyOptions(t) {
-    return this.elementProperties.get(t) ?? _t;
+    return this.elementProperties.get(t) ?? yt;
   }
   static _$Ei() {
-    if (this.hasOwnProperty(N("elementProperties"))) return;
-    const t = Jt(this);
+    if (this.hasOwnProperty(T("elementProperties"))) return;
+    const t = ie(this);
     t.finalize(), t.l !== void 0 && (this.l = [...t.l]), this.elementProperties = new Map(t.elementProperties);
   }
   static finalize() {
-    if (this.hasOwnProperty(N("finalized"))) return;
-    if (this.finalized = !0, this._$Ei(), this.hasOwnProperty(N("properties"))) {
-      const e = this.properties, i = [...Kt(e), ...Gt(e)];
+    if (this.hasOwnProperty(T("finalized"))) return;
+    if (this.finalized = !0, this._$Ei(), this.hasOwnProperty(T("properties"))) {
+      const e = this.properties, i = [...te(e), ...ee(e)];
       for (const n of i) this.createProperty(n, e[n]);
     }
     const t = this[Symbol.metadata];
@@ -119,8 +119,8 @@ let z = class extends HTMLElement {
     const e = [];
     if (Array.isArray(t)) {
       const i = new Set(t.flat(1 / 0).reverse());
-      for (const n of i) e.unshift(ut(n));
-    } else t !== void 0 && e.push(ut(t));
+      for (const n of i) e.unshift(gt(n));
+    } else t !== void 0 && e.push(gt(t));
     return e;
   }
   static _$Eu(t, e) {
@@ -146,7 +146,7 @@ let z = class extends HTMLElement {
   }
   createRenderRoot() {
     const t = this.shadowRoot ?? this.attachShadow(this.constructor.shadowRootOptions);
-    return Wt(t, this.constructor.elementStyles), t;
+    return Jt(t, this.constructor.elementStyles), t;
   }
   connectedCallback() {
     this.renderRoot ??= this.createRenderRoot(), this.enableUpdating(!0), this._$EO?.forEach((t) => t.hostConnected?.());
@@ -162,14 +162,14 @@ let z = class extends HTMLElement {
   _$ET(t, e) {
     const i = this.constructor.elementProperties.get(t), n = this.constructor._$Eu(t, i);
     if (n !== void 0 && i.reflect === !0) {
-      const o = (i.converter?.toAttribute !== void 0 ? i.converter : J).toAttribute(e, i.type);
+      const o = (i.converter?.toAttribute !== void 0 ? i.converter : Y).toAttribute(e, i.type);
       this._$Em = t, o == null ? this.removeAttribute(n) : this.setAttribute(n, o), this._$Em = null;
     }
   }
   _$AK(t, e) {
     const i = this.constructor, n = i._$Eh.get(t);
     if (n !== void 0 && this._$Em !== n) {
-      const o = i.getPropertyOptions(n), r = typeof o.converter == "function" ? { fromAttribute: o.converter } : o.converter?.fromAttribute !== void 0 ? o.converter : J;
+      const o = i.getPropertyOptions(n), r = typeof o.converter == "function" ? { fromAttribute: o.converter } : o.converter?.fromAttribute !== void 0 ? o.converter : Y;
       this._$Em = n;
       const u = r.fromAttribute(e, o.type);
       this[n] = u ?? this._$Ej?.get(n) ?? u, this._$Em = null;
@@ -178,7 +178,7 @@ let z = class extends HTMLElement {
   requestUpdate(t, e, i, n = !1, o) {
     if (t !== void 0) {
       const r = this.constructor;
-      if (n === !1 && (o = this[t]), i ??= r.getPropertyOptions(t), !((i.hasChanged ?? Ct)(o, e) || i.useDefault && i.reflect && o === this._$Ej?.get(t) && !this.hasAttribute(r._$Eu(t, i)))) return;
+      if (n === !1 && (o = this[t]), i ??= r.getPropertyOptions(t), !((i.hasChanged ?? Pt)(o, e) || i.useDefault && i.reflect && o === this._$Ej?.get(t) && !this.hasAttribute(r._$Eu(t, i)))) return;
       this.C(t, e, i);
     }
     this.isUpdatePending === !1 && (this._$ES = this._$EP());
@@ -246,52 +246,52 @@ let z = class extends HTMLElement {
   firstUpdated(t) {
   }
 };
-z.elementStyles = [], z.shadowRootOptions = { mode: "open" }, z[N("elementProperties")] = /* @__PURE__ */ new Map(), z[N("finalized")] = /* @__PURE__ */ new Map(), Yt?.({ ReactiveElement: z }), (F.reactiveElementVersions ??= []).push("2.1.2");
-const at = globalThis, mt = (s) => s, L = at.trustedTypes, gt = L ? L.createPolicy("lit-html", { createHTML: (s) => s }) : void 0, qt = "$lit$", w = `lit$${Math.random().toFixed(9).slice(2)}$`, Nt = "?" + w, Xt = `<${Nt}>`, E = document, P = () => E.createComment(""), T = (s) => s === null || typeof s != "object" && typeof s != "function", ot = Array.isArray, te = (s) => ot(s) || typeof s?.[Symbol.iterator] == "function", K = `[\x20\t\n\f\r]`, q = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, ft = /-->/g, yt = />/g, x = RegExp(`>|${K}(?:([^\\s"'>=/]+)(${K}*=${K}*(?:[^\x20\t\n\f\r"'\`<>=]|("|')|))|$)`, "g"), $t = /'/g, vt = /"/g, Pt = /^(?:script|style|textarea|title)$/i, ee = (s) => (t, ...e) => ({ _$litType$: s, strings: t, values: e }), l = ee(1), M = /* @__PURE__ */ Symbol.for("lit-noChange"), c = /* @__PURE__ */ Symbol.for("lit-nothing"), bt = /* @__PURE__ */ new WeakMap(), k = E.createTreeWalker(E, 129);
-function Tt(s, t) {
-  if (!ot(s) || !s.hasOwnProperty("raw")) throw Error("invalid template strings array");
-  return gt !== void 0 ? gt.createHTML(t) : t;
+z.elementStyles = [], z.shadowRootOptions = { mode: "open" }, z[T("elementProperties")] = /* @__PURE__ */ new Map(), z[T("finalized")] = /* @__PURE__ */ new Map(), ne?.({ ReactiveElement: z }), (F.reactiveElementVersions ??= []).push("2.1.2");
+const rt = globalThis, $t = (s) => s, H = rt.trustedTypes, vt = H ? H.createPolicy("lit-html", { createHTML: (s) => s }) : void 0, Ot = "$lit$", w = `lit$${Math.random().toFixed(9).slice(2)}$`, Rt = "?" + w, ae = `<${Rt}>`, E = document, P = () => E.createComment(""), O = (s) => s === null || typeof s != "object" && typeof s != "function", ct = Array.isArray, oe = (s) => ct(s) || typeof s?.[Symbol.iterator] == "function", J = `[\x20\t\n\f\r]`, N = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, bt = /-->/g, wt = />/g, A = RegExp(`>|${J}(?:([^\\s"'>=/]+)(${J}*=${J}*(?:[^\x20\t\n\f\r"'\`<>=]|("|')|))|$)`, "g"), xt = /'/g, At = /"/g, Dt = /^(?:script|style|textarea|title)$/i, re = (s) => (t, ...e) => ({ _$litType$: s, strings: t, values: e }), l = re(1), M = /* @__PURE__ */ Symbol.for("lit-noChange"), c = /* @__PURE__ */ Symbol.for("lit-nothing"), kt = /* @__PURE__ */ new WeakMap(), k = E.createTreeWalker(E, 129);
+function Ut(s, t) {
+  if (!ct(s) || !s.hasOwnProperty("raw")) throw Error("invalid template strings array");
+  return vt !== void 0 ? vt.createHTML(t) : t;
 }
-const ie = (s, t) => {
+const ce = (s, t) => {
   const e = s.length - 1, i = [];
-  let n, o = t === 2 ? "<svg>" : t === 3 ? "<math>" : "", r = q;
+  let n, o = t === 2 ? "<svg>" : t === 3 ? "<math>" : "", r = N;
   for (let u = 0; u < e; u++) {
-    const h = s[u];
-    let _, g, p = -1, m = 0;
-    for (; m < h.length && (r.lastIndex = m, g = r.exec(h), g !== null); ) m = r.lastIndex, r === q ? g[1] === "!--" ? r = ft : g[1] !== void 0 ? r = yt : g[2] !== void 0 ? (Pt.test(g[2]) && (n = RegExp("</" + g[2], "g")), r = x) : g[3] !== void 0 && (r = x) : r === x ? g[0] === ">" ? (r = n ?? q, p = -1) : g[1] === void 0 ? p = -2 : (p = r.lastIndex - g[2].length, _ = g[1], r = g[3] === void 0 ? x : g[3] === '"' ? vt : $t) : r === vt || r === $t ? r = x : r === ft || r === yt ? r = q : (r = x, n = void 0);
-    const f = r === x && s[u + 1].startsWith("/>") ? " " : "";
-    o += r === q ? h + Xt : p >= 0 ? (i.push(_), h.slice(0, p) + qt + h.slice(p) + w + f) : h + w + (p === -2 ? u : f);
+    const d = s[u];
+    let p, m, _ = -1, f = 0;
+    for (; f < d.length && (r.lastIndex = f, m = r.exec(d), m !== null); ) f = r.lastIndex, r === N ? m[1] === "!--" ? r = bt : m[1] !== void 0 ? r = wt : m[2] !== void 0 ? (Dt.test(m[2]) && (n = RegExp("</" + m[2], "g")), r = A) : m[3] !== void 0 && (r = A) : r === A ? m[0] === ">" ? (r = n ?? N, _ = -1) : m[1] === void 0 ? _ = -2 : (_ = r.lastIndex - m[2].length, p = m[1], r = m[3] === void 0 ? A : m[3] === '"' ? At : xt) : r === At || r === xt ? r = A : r === bt || r === wt ? r = N : (r = A, n = void 0);
+    const $ = r === A && s[u + 1].startsWith("/>") ? " " : "";
+    o += r === N ? d + ae : _ >= 0 ? (i.push(p), d.slice(0, _) + Ot + d.slice(_) + w + $) : d + w + (_ === -2 ? u : $);
   }
-  return [Tt(s, o + (s[e] || "<?>") + (t === 2 ? "</svg>" : t === 3 ? "</math>" : "")), i];
+  return [Ut(s, o + (s[e] || "<?>") + (t === 2 ? "</svg>" : t === 3 ? "</math>" : "")), i];
 };
-class O {
+class R {
   constructor({ strings: t, _$litType$: e }, i) {
     let n;
     this.parts = [];
     let o = 0, r = 0;
-    const u = t.length - 1, h = this.parts, [_, g] = ie(t, e);
-    if (this.el = O.createElement(_, i), k.currentNode = this.el.content, e === 2 || e === 3) {
-      const p = this.el.content.firstChild;
-      p.replaceWith(...p.childNodes);
+    const u = t.length - 1, d = this.parts, [p, m] = ce(t, e);
+    if (this.el = R.createElement(p, i), k.currentNode = this.el.content, e === 2 || e === 3) {
+      const _ = this.el.content.firstChild;
+      _.replaceWith(..._.childNodes);
     }
-    for (; (n = k.nextNode()) !== null && h.length < u; ) {
+    for (; (n = k.nextNode()) !== null && d.length < u; ) {
       if (n.nodeType === 1) {
-        if (n.hasAttributes()) for (const p of n.getAttributeNames()) if (p.endsWith(qt)) {
-          const m = g[r++], f = n.getAttribute(p).split(w), b = /([.?@])?(.*)/.exec(m);
-          h.push({ type: 1, index: o, name: b[2], strings: f, ctor: b[1] === "." ? ne : b[1] === "?" ? ae : b[1] === "@" ? oe : Z }), n.removeAttribute(p);
-        } else p.startsWith(w) && (h.push({ type: 6, index: o }), n.removeAttribute(p));
-        if (Pt.test(n.tagName)) {
-          const p = n.textContent.split(w), m = p.length - 1;
-          if (m > 0) {
-            n.textContent = L ? L.emptyScript : "";
-            for (let f = 0; f < m; f++) n.append(p[f], P()), k.nextNode(), h.push({ type: 2, index: ++o });
-            n.append(p[m], P());
+        if (n.hasAttributes()) for (const _ of n.getAttributeNames()) if (_.endsWith(Ot)) {
+          const f = m[r++], $ = n.getAttribute(_).split(w), g = /([.?@])?(.*)/.exec(f);
+          d.push({ type: 1, index: o, name: g[2], strings: $, ctor: g[1] === "." ? he : g[1] === "?" ? de : g[1] === "@" ? ue : K }), n.removeAttribute(_);
+        } else _.startsWith(w) && (d.push({ type: 6, index: o }), n.removeAttribute(_));
+        if (Dt.test(n.tagName)) {
+          const _ = n.textContent.split(w), f = _.length - 1;
+          if (f > 0) {
+            n.textContent = H ? H.emptyScript : "";
+            for (let $ = 0; $ < f; $++) n.append(_[$], P()), k.nextNode(), d.push({ type: 2, index: ++o });
+            n.append(_[f], P());
           }
         }
-      } else if (n.nodeType === 8) if (n.data === Nt) h.push({ type: 2, index: o });
+      } else if (n.nodeType === 8) if (n.data === Rt) d.push({ type: 2, index: o });
       else {
-        let p = -1;
-        for (; (p = n.data.indexOf(w, p + 1)) !== -1; ) h.push({ type: 7, index: o }), p += w.length - 1;
+        let _ = -1;
+        for (; (_ = n.data.indexOf(w, _ + 1)) !== -1; ) d.push({ type: 7, index: o }), _ += w.length - 1;
       }
       o++;
     }
@@ -304,10 +304,10 @@ class O {
 function C(s, t, e = s, i) {
   if (t === M) return t;
   let n = i !== void 0 ? e._$Co?.[i] : e._$Cl;
-  const o = T(t) ? void 0 : t._$litDirective$;
+  const o = O(t) ? void 0 : t._$litDirective$;
   return n?.constructor !== o && (n?._$AO?.(!1), o === void 0 ? n = void 0 : (n = new o(s), n._$AT(s, e, i)), i !== void 0 ? (e._$Co ??= [])[i] = n : e._$Cl = n), n !== void 0 && (t = C(s, n._$AS(s, t.values), n, i)), t;
 }
-class se {
+class le {
   constructor(t, e) {
     this._$AV = [], this._$AN = void 0, this._$AD = t, this._$AM = e;
   }
@@ -320,13 +320,13 @@ class se {
   u(t) {
     const { el: { content: e }, parts: i } = this._$AD, n = (t?.creationScope ?? E).importNode(e, !0);
     k.currentNode = n;
-    let o = k.nextNode(), r = 0, u = 0, h = i[0];
-    for (; h !== void 0; ) {
-      if (r === h.index) {
-        let _;
-        h.type === 2 ? _ = new U(o, o.nextSibling, this, t) : h.type === 1 ? _ = new h.ctor(o, h.name, h.strings, this, t) : h.type === 6 && (_ = new re(o, this, t)), this._$AV.push(_), h = i[++u];
+    let o = k.nextNode(), r = 0, u = 0, d = i[0];
+    for (; d !== void 0; ) {
+      if (r === d.index) {
+        let p;
+        d.type === 2 ? p = new U(o, o.nextSibling, this, t) : d.type === 1 ? p = new d.ctor(o, d.name, d.strings, this, t) : d.type === 6 && (p = new _e(o, this, t)), this._$AV.push(p), d = i[++u];
       }
-      r !== h?.index && (o = k.nextNode(), r++);
+      r !== d?.index && (o = k.nextNode(), r++);
     }
     return k.currentNode = E, n;
   }
@@ -354,7 +354,7 @@ class U {
     return this._$AB;
   }
   _$AI(t, e = this) {
-    t = C(this, t, e), T(t) ? t === c || t == null || t === "" ? (this._$AH !== c && this._$AR(), this._$AH = c) : t !== this._$AH && t !== M && this._(t) : t._$litType$ !== void 0 ? this.$(t) : t.nodeType !== void 0 ? this.T(t) : te(t) ? this.k(t) : this._(t);
+    t = C(this, t, e), O(t) ? t === c || t == null || t === "" ? (this._$AH !== c && this._$AR(), this._$AH = c) : t !== this._$AH && t !== M && this._(t) : t._$litType$ !== void 0 ? this.$(t) : t.nodeType !== void 0 ? this.T(t) : oe(t) ? this.k(t) : this._(t);
   }
   O(t) {
     return this._$AA.parentNode.insertBefore(t, this._$AB);
@@ -363,22 +363,22 @@ class U {
     this._$AH !== t && (this._$AR(), this._$AH = this.O(t));
   }
   _(t) {
-    this._$AH !== c && T(this._$AH) ? this._$AA.nextSibling.data = t : this.T(E.createTextNode(t)), this._$AH = t;
+    this._$AH !== c && O(this._$AH) ? this._$AA.nextSibling.data = t : this.T(E.createTextNode(t)), this._$AH = t;
   }
   $(t) {
-    const { values: e, _$litType$: i } = t, n = typeof i == "number" ? this._$AC(t) : (i.el === void 0 && (i.el = O.createElement(Tt(i.h, i.h[0]), this.options)), i);
+    const { values: e, _$litType$: i } = t, n = typeof i == "number" ? this._$AC(t) : (i.el === void 0 && (i.el = R.createElement(Ut(i.h, i.h[0]), this.options)), i);
     if (this._$AH?._$AD === n) this._$AH.p(e);
     else {
-      const o = new se(n, this), r = o.u(this.options);
+      const o = new le(n, this), r = o.u(this.options);
       o.p(e), this.T(r), this._$AH = o;
     }
   }
   _$AC(t) {
-    let e = bt.get(t.strings);
-    return e === void 0 && bt.set(t.strings, e = new O(t)), e;
+    let e = kt.get(t.strings);
+    return e === void 0 && kt.set(t.strings, e = new R(t)), e;
   }
   k(t) {
-    ot(this._$AH) || (this._$AH = [], this._$AR());
+    ct(this._$AH) || (this._$AH = [], this._$AR());
     const e = this._$AH;
     let i, n = 0;
     for (const o of t) n === e.length ? e.push(i = new U(this.O(P()), this.O(P()), this, this.options)) : i = e[n], i._$AI(o), n++;
@@ -386,15 +386,15 @@ class U {
   }
   _$AR(t = this._$AA.nextSibling, e) {
     for (this._$AP?.(!1, !0, e); t !== this._$AB; ) {
-      const i = mt(t).nextSibling;
-      mt(t).remove(), t = i;
+      const i = $t(t).nextSibling;
+      $t(t).remove(), t = i;
     }
   }
   setConnected(t) {
     this._$AM === void 0 && (this._$Cv = t, this._$AP?.(t));
   }
 }
-class Z {
+class K {
   get tagName() {
     return this.element.tagName;
   }
@@ -407,11 +407,11 @@ class Z {
   _$AI(t, e = this, i, n) {
     const o = this.strings;
     let r = !1;
-    if (o === void 0) t = C(this, t, e, 0), r = !T(t) || t !== this._$AH && t !== M, r && (this._$AH = t);
+    if (o === void 0) t = C(this, t, e, 0), r = !O(t) || t !== this._$AH && t !== M, r && (this._$AH = t);
     else {
       const u = t;
-      let h, _;
-      for (t = o[0], h = 0; h < o.length - 1; h++) _ = C(this, u[i + h], e, h), _ === M && (_ = this._$AH[h]), r ||= !T(_) || _ !== this._$AH[h], _ === c ? t = c : t !== c && (t += (_ ?? "") + o[h + 1]), this._$AH[h] = _;
+      let d, p;
+      for (t = o[0], d = 0; d < o.length - 1; d++) p = C(this, u[i + d], e, d), p === M && (p = this._$AH[d]), r ||= !O(p) || p !== this._$AH[d], p === c ? t = c : t !== c && (t += (p ?? "") + o[d + 1]), this._$AH[d] = p;
     }
     r && !n && this.j(t);
   }
@@ -419,7 +419,7 @@ class Z {
     t === c ? this.element.removeAttribute(this.name) : this.element.setAttribute(this.name, t ?? "");
   }
 }
-class ne extends Z {
+class he extends K {
   constructor() {
     super(...arguments), this.type = 3;
   }
@@ -427,7 +427,7 @@ class ne extends Z {
     this.element[this.name] = t === c ? void 0 : t;
   }
 }
-class ae extends Z {
+class de extends K {
   constructor() {
     super(...arguments), this.type = 4;
   }
@@ -435,7 +435,7 @@ class ae extends Z {
     this.element.toggleAttribute(this.name, !!t && t !== c);
   }
 }
-class oe extends Z {
+class ue extends K {
   constructor(t, e, i, n, o) {
     super(t, e, i, n, o), this.type = 5;
   }
@@ -448,7 +448,7 @@ class oe extends Z {
     typeof this._$AH == "function" ? this._$AH.call(this.options?.host ?? this.element, t) : this._$AH.handleEvent(t);
   }
 }
-class re {
+class _e {
   constructor(t, e, i) {
     this.element = t, this.type = 6, this._$AN = void 0, this._$AM = e, this.options = i;
   }
@@ -459,9 +459,9 @@ class re {
     C(this, t);
   }
 }
-const ce = at.litHtmlPolyfillSupport;
-ce?.(O, U), (at.litHtmlVersions ??= []).push("3.3.3");
-const le = (s, t, e) => {
+const pe = rt.litHtmlPolyfillSupport;
+pe?.(R, U), (rt.litHtmlVersions ??= []).push("3.3.3");
+const me = (s, t, e) => {
   const i = e?.renderBefore ?? t;
   let n = i._$litPart$;
   if (n === void 0) {
@@ -470,7 +470,7 @@ const le = (s, t, e) => {
   }
   return n._$AI(s), n;
 };
-const rt = globalThis;
+const lt = globalThis;
 class S extends z {
   constructor() {
     super(...arguments), this.renderOptions = { host: this }, this._$Do = void 0;
@@ -481,7 +481,7 @@ class S extends z {
   }
   update(t) {
     const e = this.render();
-    this.hasUpdated || (this.renderOptions.isConnected = this.isConnected), super.update(t), this._$Do = le(e, this.renderRoot, this.renderOptions);
+    this.hasUpdated || (this.renderOptions.isConnected = this.isConnected), super.update(t), this._$Do = me(e, this.renderRoot, this.renderOptions);
   }
   connectedCallback() {
     super.connectedCallback(), this._$Do?.setConnected(!0);
@@ -493,11 +493,11 @@ class S extends z {
     return M;
   }
 }
-S._$litElement$ = !0, S.finalized = !0, rt.litElementHydrateSupport?.({ LitElement: S });
-const he = rt.litElementPolyfillSupport;
-he?.({ LitElement: S });
-(rt.litElementVersions ??= []).push("4.2.2");
-const Ot = "irrigation_manager", de = "create_manual", ue = /* @__PURE__ */ new Set(["unknown", "unavailable"]), pe = {
+S._$litElement$ = !0, S.finalized = !0, lt.litElementHydrateSupport?.({ LitElement: S });
+const ge = lt.litElementPolyfillSupport;
+ge?.({ LitElement: S });
+(lt.litElementVersions ??= []).push("4.2.2");
+const It = "irrigation_manager", fe = "create_manual", ye = /* @__PURE__ */ new Set(["unknown", "unavailable"]), $e = {
   status: "status_entity",
   emergency: "emergency_entity",
   lock: "lock_entity",
@@ -512,7 +512,7 @@ const Ot = "irrigation_manager", de = "create_manual", ue = /* @__PURE__ */ new 
   maintenance: "maintenance_entity",
   automation_release: "automation_release_entity",
   maintenance_due: "maintenance_due_entity"
-}, _e = {
+}, ve = {
   zone: "zone_entity",
   automation_needed: "automation_needed_entity",
   safety_lock: "safety_lock_entity",
@@ -531,11 +531,12 @@ const Ot = "irrigation_manager", de = "create_manual", ue = /* @__PURE__ */ new 
   actual_flow: "actual_flow_entity",
   flow_deviation: "flow_deviation_entity",
   calculation: "calculation_entity"
-}, me = {
+}, be = {
   active_zone: "active_zone_entity",
-  dose: "request_entity"
+  dose: "request_entity",
+  lock: "installation_safety_lock_entity"
 };
-function R(s, t) {
+function D(s, t) {
   const e = s?.attributes[t];
   return !e || typeof e != "object" || Array.isArray(e) ? {} : Object.fromEntries(
     Object.entries(e).filter(
@@ -543,7 +544,7 @@ function R(s, t) {
     )
   );
 }
-function Q(s, t, e) {
+function X(s, t, e) {
   const i = { ...s };
   for (const [n, o] of Object.entries(e)) {
     const u = s[o] || t[n];
@@ -551,67 +552,67 @@ function Q(s, t, e) {
   }
   return i;
 }
-function wt(s, t) {
+function St(s, t) {
   if (!t.configuration_mode && !t.installation && t.status_entity) return t;
-  const e = t.installation ? Rt(s, "installation", t.installation) : d(s, t.status_entity);
-  return Q(t, R(e, "card_entities"), pe);
+  const e = t.installation ? Lt(s, "installation", t.installation) : h(s, t.status_entity);
+  return X(t, D(e, "card_entities"), $e);
 }
-function D(s, t) {
+function I(s, t) {
   if (!t.configuration_mode && !t.zone && t.zone_entity) return t;
-  const e = t.zone ? Rt(s, "zone", t.zone) : d(s, t.zone_entity);
-  let i = Q(t, R(e, "card_entities"), _e);
-  return i = Q(
+  const e = t.zone ? Lt(s, "zone", t.zone) : h(s, t.zone_entity);
+  let i = X(t, D(e, "card_entities"), ve);
+  return i = X(
     i,
-    R(e, "installation_card_entities"),
-    me
+    D(e, "installation_card_entities"),
+    be
   ), !i.zone_entity && e && (i.zone_entity = e.entity_id), i;
 }
-function Rt(s, t, e) {
-  return Object.values(s.states).find((i) => Y(i, t) === e);
+function Lt(s, t, e) {
+  return Object.values(s.states).find((i) => tt(i, t) === e);
 }
-function Y(s, t) {
+function tt(s, t) {
   const e = s.attributes.config_entry_id;
   if (typeof e != "string") return;
   if (t === "installation")
-    return R(s, "card_entities").status === s.entity_id ? e : void 0;
+    return D(s, "card_entities").status === s.entity_id ? e : void 0;
   const i = s.attributes.zone_subentry_id;
-  return typeof i == "string" && Object.keys(R(s, "card_entities")).length > 0 ? `${e}:${i}` : void 0;
+  return typeof i == "string" && Object.keys(D(s, "card_entities")).length > 0 ? `${e}:${i}` : void 0;
 }
-function ct(s, t) {
+function ht(s, t) {
   return s.configuration_mode ? s.configuration_mode : t.some((e) => !!s[e]) ? "expert" : "simple";
 }
-function ge(s, t) {
-  return Object.values(s.states).filter((e) => Y(e, t) !== void 0).map((e) => ({
-    value: Y(e, t),
+function we(s, t) {
+  return Object.values(s.states).filter((e) => tt(e, t) !== void 0).map((e) => ({
+    value: tt(e, t),
     label: typeof e.attributes.card_name == "string" && e.attributes.card_name || e.attributes.friendly_name || e.entity_id
   })).sort((e, i) => e.label.localeCompare(i.label, s.language));
 }
-function d(s, t) {
+function h(s, t) {
   return t ? s.states[t] : void 0;
 }
-function H(s) {
-  return !!(s && !ue.has(s.state));
+function B(s) {
+  return !!(s && !ye.has(s.state));
 }
 function y(s, t) {
   const e = s?.attributes[t];
   return typeof e == "string" && e ? e : void 0;
 }
-function At(s, t) {
+function Et(s, t) {
   const e = s?.attributes[t];
   return typeof e == "number" && Number.isFinite(e) ? e : void 0;
 }
-function G(s, t) {
+function Q(s, t) {
   if (!t || y(s, "zone_subentry_id") !== t)
     return;
   const e = y(s, "request_id"), i = y(s, "execution_id");
   return e || i ? { requestId: e, executionId: i } : void 0;
 }
-function Ut(s) {
-  const t = At(s, "target_value"), e = At(s, "remaining_value");
+function Ht(s) {
+  const t = Et(s, "target_value"), e = Et(s, "remaining_value");
   if (!(t === void 0 || e === void 0 || t <= 0))
     return Math.max(0, Math.min(100, (t - e) / t * 100));
 }
-function Dt(s) {
+function Bt(s) {
   return {
     idle: "mdi:water-check-outline",
     watering: "mdi:sprinkler-variant",
@@ -625,7 +626,7 @@ function Dt(s) {
     off: "mdi:minus-circle-outline"
   }[s] ?? "mdi:information-outline";
 }
-function fe(s, t) {
+function xe(s, t) {
   s.dispatchEvent(
     new CustomEvent("config-changed", {
       detail: { config: t },
@@ -634,7 +635,7 @@ function fe(s, t) {
     })
   );
 }
-const It = {
+const Vt = {
   en: {
     overview: "Irrigation overview",
     zone: "Irrigation zone",
@@ -646,6 +647,15 @@ const It = {
     soaking: "Soaking",
     error: "Error",
     safety_lock: "Safety lock",
+    installation_safety_lock: "Installation safety lock",
+    zone_safety_lock: "Zone safety lock",
+    lock_reason: "Reason",
+    lock_occurred_at: "Occurred",
+    reset_safety: "Reset safety lock",
+    confirm_reset_safety: "Did you inspect the installation, confirm all valves are closed, and want to reset this safety lock?",
+    unexpectedly_opened: "was opened unexpectedly",
+    unexpectedly_opened_during_startup: "was unexpectedly open during startup",
+    unexpectedly_closed: "closed unexpectedly during irrigation",
     emergency_stop: "Emergency stop",
     active_zone: "Active zone",
     active: "Active irrigation",
@@ -746,6 +756,15 @@ const It = {
     soaking: "Sickerpause",
     error: "Fehler",
     safety_lock: "Sicherheitssperre",
+    installation_safety_lock: "Sicherheitssperre der Anlage",
+    zone_safety_lock: "Sicherheitssperre der Zone",
+    lock_reason: "Ursache",
+    lock_occurred_at: "Eingetreten",
+    reset_safety: "Sperre zurücksetzen",
+    confirm_reset_safety: "Hast du die Anlage kontrolliert, alle Ventile als geschlossen bestätigt und möchtest diese Sicherheitssperre zurücksetzen?",
+    unexpectedly_opened: "wurde unerwartet geöffnet",
+    unexpectedly_opened_during_startup: "war beim Start unerwartet geöffnet",
+    unexpectedly_closed: "wurde während der Bewässerung unerwartet geschlossen",
     emergency_stop: "Not-Aus aktiv",
     active_zone: "Aktive Zone",
     active: "Aktive Bewässerung",
@@ -838,20 +857,20 @@ const It = {
 };
 function a(s, t) {
   const e = s.language?.toLowerCase().startsWith("de") ? "de" : "en";
-  return It[e][t];
+  return Vt[e][t];
 }
-function Lt(s, t) {
-  return t in It.en ? a(s, t) : t.replaceAll("_", " ");
+function Wt(s, t) {
+  return t in Vt.en ? a(s, t) : t.replaceAll("_", " ");
 }
-function A(s, t) {
+function x(s, t) {
   if (!t) return a(s, "missing");
   if (t.state === "unavailable") return a(s, "unavailable");
   if (t.state === "unknown" || t.state === "") return a(s, "unknown");
   if (s.formatEntityState) return s.formatEntityState(t);
   const e = t.attributes.unit_of_measurement;
-  return `${Lt(s, t.state)}${e ? ` ${e}` : ""}`;
+  return `${Wt(s, t.state)}${e ? ` ${e}` : ""}`;
 }
-const Ht = Mt`
+const jt = Tt`
   :host { display: block; }
   ha-card { overflow: hidden; color: var(--primary-text-color); }
   .card { padding: 16px; display: grid; gap: 16px; }
@@ -885,7 +904,7 @@ const Ht = Mt`
     .form-grid { grid-template-columns: 1fr; }
     .actions button { flex: 1 1 calc(50% - 8px); }
   }
-`, ye = Mt`
+`, Ae = Tt`
   :host { display: block; }
   .editor { display: grid; gap: 18px; padding: 8px 0; }
   section { display: grid; gap: 10px; }
@@ -896,7 +915,7 @@ const Ht = Mt`
   .check { display: flex; align-items: center; gap: 8px; min-height: 34px; }
   input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--primary-color); }
   select { min-height: 40px; padding: 8px; color: var(--primary-text-color); background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 8px; }
-`, X = [
+`, et = [
   ["status_entity", "Installation status"],
   ["emergency_entity", "Emergency stop"],
   ["lock_entity", "Installation safety lock"],
@@ -911,10 +930,11 @@ const Ht = Mt`
   ["maintenance_entity", "Maintenance mode"],
   ["automation_release_entity", "Automatic release"],
   ["maintenance_due_entity", "Maintenance due"]
-], tt = [
+], it = [
   ["zone_entity", "Zone total / action identity"],
   ["automation_needed_entity", "Automatic demand"],
   ["safety_lock_entity", "Zone safety lock"],
+  ["installation_safety_lock_entity", "Installation safety lock"],
   ["deficit_entity", "Water deficit"],
   ["target_entity", "Automatic target"],
   ["planning_reason_entity", "Planning explanation"],
@@ -932,7 +952,7 @@ const Ht = Mt`
   ["actual_flow_entity", "Actual flow"],
   ["flow_deviation_entity", "Flow deviation"],
   ["calculation_entity", "Calculation"]
-], xt = X.map(([s]) => s), kt = tt.map(([s]) => s), $e = {
+], zt = et.map(([s]) => s), Mt = it.map(([s]) => s), ke = {
   "Installation status": "Anlagenzustand",
   "Emergency stop": "Not-Aus",
   "Installation safety lock": "Sicherheitssperre der Anlage",
@@ -954,16 +974,16 @@ const Ht = Mt`
   "Last delivered amount": "Zuletzt gelieferte Menge",
   "Last duration": "Letzte Dauer",
   "Measurement quality": "Messqualität"
-}, ve = ["active", "pending", "next", "today", "month", "quality", "maintenance"], be = ["stop", "emergency", "suspend", "resume"], we = ["status", "balance", "next", "total", "recent", "quality", "calculation", "flow", "history"], Ae = ["create", "start", "pause", "resume", "stop", "stop_skip", "suspend", "resume_auto", "archive", "restore"], V = class V extends S {
+}, Se = ["active", "pending", "next", "today", "month", "quality", "maintenance"], Ee = ["stop", "emergency", "suspend", "resume"], ze = ["status", "balance", "next", "total", "recent", "quality", "calculation", "flow", "history"], Me = ["create", "start", "pause", "resume", "stop", "stop_skip", "suspend", "resume_auto", "archive", "restore"], W = class W extends S {
   setConfig(t) {
     this._config = { ...t };
   }
   updateValue(t, e) {
     const i = { ...this._config, [t]: e || void 0 };
-    e || delete i[t], this._config = i, fe(this, i);
+    e || delete i[t], this._config = i, xe(this, i);
   }
   entitySelector(t, e, i) {
-    const n = this.hass.language.toLowerCase().startsWith("de") ? $e[e] ?? e : e;
+    const n = this.hass.language.toLowerCase().startsWith("de") ? ke[e] ?? e : e;
     return l`
       <label class="selector">
         <span>${n}${i ? " *" : ""}</span>
@@ -991,7 +1011,7 @@ const Ht = Mt`
     `;
   }
   configurationMode(t) {
-    const e = ct(this._config, t);
+    const e = ht(this._config, t);
     return l`
       <label class="selector">
         <span>${a(this.hass, "configuration_mode")}</span>
@@ -1008,7 +1028,7 @@ const Ht = Mt`
     `;
   }
   anchorSelector(t, e, i) {
-    const n = ge(this.hass, e);
+    const n = we(this.hass, e);
     return l`
       <label class="selector">
         <span>${a(this.hass, e)}</span>
@@ -1051,72 +1071,72 @@ const Ht = Mt`
     `;
   }
 };
-V.styles = ye, V.properties = {
+W.styles = Ae, W.properties = {
   hass: { attribute: !1 },
   _config: { state: !0 }
 };
-let B = V;
-class xe extends B {
+let V = W;
+class Ce extends V {
   render() {
     if (!this.hass || !this._config) return c;
-    const t = ct(this._config, xt);
+    const t = ht(this._config, zt);
     return l`
       <div class="editor">
-        <section>${this.configurationMode(xt)}</section>
+        <section>${this.configurationMode(zt)}</section>
         ${t === "simple" ? l`<section>${this.anchorSelector("installation", "installation")}</section>` : l`
               <section>
                 <h3>${a(this.hass, "required_entity")}</h3>
-                ${this.entitySelector("status_entity", X[0][1], !0)}
+                ${this.entitySelector("status_entity", et[0][1], !0)}
               </section>
               <section>
                 <h3>${a(this.hass, "optional_entities")}</h3>
-                ${X.slice(1).map(([e, i]) => this.entitySelector(e, i, !1))}
+                ${et.slice(1).map(([e, i]) => this.entitySelector(e, i, !1))}
               </section>
             `}
         <section>${this.displayMode()}</section>
         <section>
           <h3>${a(this.hass, "metrics")}</h3>
-          ${this.choices("visible_metrics", ve)}
+          ${this.choices("visible_metrics", Se)}
         </section>
         <section>
           <h3>${a(this.hass, "actions")}</h3>
-          ${this.choices("visible_actions", be)}
+          ${this.choices("visible_actions", Ee)}
         </section>
       </div>
     `;
   }
 }
-class ke extends B {
+class qe extends V {
   render() {
     if (!this.hass || !this._config) return c;
-    const t = ct(this._config, kt);
+    const t = ht(this._config, Mt);
     return l`
       <div class="editor">
-        <section>${this.configurationMode(kt)}</section>
+        <section>${this.configurationMode(Mt)}</section>
         ${t === "simple" ? l`<section>${this.anchorSelector("zone", "zone")}</section>` : l`
               <section>
                 <h3>${a(this.hass, "required_entity")}</h3>
-                ${this.entitySelector("zone_entity", tt[0][1], !0)}
+                ${this.entitySelector("zone_entity", it[0][1], !0)}
               </section>
               <section>
                 <h3>${a(this.hass, "optional_entities")}</h3>
-                ${tt.slice(1).map(([e, i]) => this.entitySelector(e, i, !1))}
+                ${it.slice(1).map(([e, i]) => this.entitySelector(e, i, !1))}
               </section>
             `}
         <section>${this.displayMode()}</section>
         <section>
           <h3>${a(this.hass, "metrics")}</h3>
-          ${this.choices("visible_metrics", we)}
+          ${this.choices("visible_metrics", ze)}
         </section>
         <section>
           <h3>${a(this.hass, "actions")}</h3>
-          ${this.choices("visible_actions", Ae)}
+          ${this.choices("visible_actions", Me)}
         </section>
       </div>
     `;
   }
 }
-const St = ["active", "pending", "next", "today", "month", "quality", "maintenance"], Se = ["stop", "emergency", "suspend", "resume"], W = class W extends S {
+const Ct = ["active", "pending", "next", "today", "month", "quality", "maintenance"], Ne = ["stop", "emergency", "suspend", "resume"], j = class j extends S {
   constructor() {
     super(...arguments), this._busy = !1;
   }
@@ -1137,18 +1157,18 @@ const St = ["active", "pending", "next", "today", "month", "quality", "maintenan
     return this._config?.display_mode === "compact" ? 3 : 5;
   }
   metric(t, e, i) {
-    return (this._config.visible_metrics ?? St).includes(t) ? l`<div class="metric"><span>${e}</span><strong>${A(this.hass, i)}</strong></div>` : c;
+    return (this._config.visible_metrics ?? Ct).includes(t) ? l`<div class="metric"><span>${e}</span><strong>${x(this.hass, i)}</strong></div>` : c;
   }
   async call(t, e, i = {}) {
     if (!window.confirm(e)) return;
-    const n = wt(this.hass, this._config), o = d(this.hass, n.status_entity), r = y(o, "config_entry_id");
+    const n = St(this.hass, this._config), o = h(this.hass, n.status_entity), r = y(o, "config_entry_id");
     if (!r) {
       this._error = a(this.hass, "configuration_error");
       return;
     }
     this._busy = !0, this._error = void 0;
     try {
-      await this.hass.callService(Ot, t, { config_entry_id: r, ...i });
+      await this.hass.callService(It, t, { config_entry_id: r, ...i });
     } catch (u) {
       this._error = `${a(this.hass, "action_failed")}: ${u instanceof Error ? u.message : String(u)}`;
     } finally {
@@ -1157,66 +1177,66 @@ const St = ["active", "pending", "next", "today", "month", "quality", "maintenan
   }
   render() {
     if (!this.hass || !this._config) return c;
-    const t = wt(this.hass, this._config);
-    if (!t.status_entity || !d(this.hass, t.status_entity))
+    const t = St(this.hass, this._config);
+    if (!t.status_entity || !h(this.hass, t.status_entity))
       return l`<ha-card><div class="card"><div class="warning"><ha-icon icon="mdi:water-alert"></ha-icon><span>${a(this.hass, "missing")}</span></div></div></ha-card>`;
-    const e = d(this.hass, t.status_entity), i = d(this.hass, t.emergency_entity), n = d(this.hass, t.lock_entity), o = d(this.hass, t.winter_entity), r = d(this.hass, t.maintenance_entity), u = d(this.hass, t.automation_release_entity), h = d(this.hass, t.active_zone_entity), _ = y(e, "config_entry_id"), g = Ut(h), p = this._config.visible_actions ?? Se, m = e?.state ?? "unavailable", f = i?.state === "on" || n?.state === "on";
+    const e = h(this.hass, t.status_entity), i = h(this.hass, t.emergency_entity), n = h(this.hass, t.lock_entity), o = h(this.hass, t.winter_entity), r = h(this.hass, t.maintenance_entity), u = h(this.hass, t.automation_release_entity), d = h(this.hass, t.active_zone_entity), p = y(e, "config_entry_id"), m = Ht(d), _ = this._config.visible_actions ?? Ne, f = e?.state ?? "unavailable", $ = i?.state === "on" || n?.state === "on";
     return l`
       <ha-card>
         <div class="card ${this._config.display_mode === "compact" ? "compact" : ""}">
           <header>
             <div class="hero">
-              <ha-icon .icon=${Dt(m)}></ha-icon>
+              <ha-icon .icon=${Bt(f)}></ha-icon>
               <div>
                 <h2>${this._config.name ?? a(this.hass, "overview")}</h2>
-                <strong>${H(e) ? Lt(this.hass, e.state) : A(this.hass, e)}</strong>
+                <strong>${B(e) ? Wt(this.hass, e.state) : x(this.hass, e)}</strong>
               </div>
             </div>
           </header>
 
-          ${f ? l`<div class="warning danger"><ha-icon icon="mdi:lock-alert-outline"></ha-icon><span>${i?.state === "on" ? a(this.hass, "emergency_stop") : a(this.hass, "safety_lock")}${y(n, "reason") ? `: ${y(n, "reason")}` : ""}</span></div>` : c}
+          ${$ ? l`<div class="warning danger"><ha-icon icon="mdi:lock-alert-outline"></ha-icon><span>${i?.state === "on" ? a(this.hass, "emergency_stop") : a(this.hass, "safety_lock")}${y(n, "reason") ? `: ${y(n, "reason")}` : ""}</span></div>` : c}
           ${o?.state === "on" ? l`<div class="warning"><ha-icon icon="mdi:snowflake-alert"></ha-icon><span>${a(this.hass, "winter_lock")}</span></div>` : c}
           ${r?.state === "on" ? l`<div class="warning"><ha-icon icon="mdi:wrench-clock"></ha-icon><span>${a(this.hass, "maintenance_active")}</span></div>` : c}
           ${u?.state === "off" && y(u, "suspended_until") ? l`<div class="warning"><ha-icon icon="mdi:calendar-clock"></ha-icon><span>${a(this.hass, "automatic_suspended")}: ${y(u, "suspended_until")}</span></div>` : c}
 
-          ${(this._config.visible_metrics ?? St).includes("active") && h ? l`
+          ${(this._config.visible_metrics ?? Ct).includes("active") && d ? l`
                 <section>
                   <h3>${a(this.hass, "active_zone")}</h3>
-                  <strong>${A(this.hass, h)}</strong>
-                  ${t.dose_entity ? l`<div class="secondary">${a(this.hass, "dose")}: ${A(this.hass, d(this.hass, t.dose_entity))}</div>` : c}
-                  ${g === void 0 ? c : l`<div class="secondary">${a(this.hass, "progress")}: ${Math.round(g)}%</div><progress max="100" .value=${g} aria-label=${a(this.hass, "progress")}></progress>`}
+                  <strong>${x(this.hass, d)}</strong>
+                  ${t.dose_entity ? l`<div class="secondary">${a(this.hass, "dose")}: ${x(this.hass, h(this.hass, t.dose_entity))}</div>` : c}
+                  ${m === void 0 ? c : l`<div class="secondary">${a(this.hass, "progress")}: ${Math.round(m)}%</div><progress max="100" .value=${m} aria-label=${a(this.hass, "progress")}></progress>`}
                 </section>
               ` : c}
 
           <div class="metrics details">
-            ${this.metric("pending", a(this.hass, "pending"), d(this.hass, t.pending_entity))}
-            ${this.metric("next", a(this.hass, "next"), d(this.hass, t.next_entity))}
-            ${this.metric("today", a(this.hass, "today"), d(this.hass, t.today_consumption_entity))}
-            ${this.metric("month", a(this.hass, "month"), d(this.hass, t.month_consumption_entity))}
-            ${this.metric("quality", a(this.hass, "model_quality"), d(this.hass, t.model_quality_entity))}
-            ${this.metric("maintenance", a(this.hass, "maintenance_due"), d(this.hass, t.maintenance_due_entity))}
+            ${this.metric("pending", a(this.hass, "pending"), h(this.hass, t.pending_entity))}
+            ${this.metric("next", a(this.hass, "next"), h(this.hass, t.next_entity))}
+            ${this.metric("today", a(this.hass, "today"), h(this.hass, t.today_consumption_entity))}
+            ${this.metric("month", a(this.hass, "month"), h(this.hass, t.month_consumption_entity))}
+            ${this.metric("quality", a(this.hass, "model_quality"), h(this.hass, t.model_quality_entity))}
+            ${this.metric("maintenance", a(this.hass, "maintenance_due"), h(this.hass, t.maintenance_due_entity))}
           </div>
 
           ${this._error ? l`<div class="error" role="alert">${this._error}</div>` : c}
           <div class="actions">
-            ${p.includes("stop") ? l`<button class="danger" ?disabled=${this._busy || !H(e) || !_} @click=${() => this.call("stop", a(this.hass, "confirm_stop"))}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${a(this.hass, "stop")}</button>` : c}
-            ${p.includes("emergency") ? l`<button class="danger" ?disabled=${this._busy || !_} @click=${() => this.call("emergency_stop", a(this.hass, "confirm_emergency"))}><ha-icon icon="mdi:alert-octagon-outline"></ha-icon>${a(this.hass, "emergency")}</button>` : c}
-            ${p.includes("suspend") ? l`<button ?disabled=${this._busy || !_} @click=${() => this.call("suspend_automatic", a(this.hass, "confirm_suspend"), { until: new Date(Date.now() + 864e5).toISOString() })}><ha-icon icon="mdi:calendar-clock"></ha-icon>${a(this.hass, "suspend_24h")}</button>` : c}
-            ${p.includes("resume") ? l`<button ?disabled=${this._busy || !_} @click=${() => this.call("resume_automatic", a(this.hass, "confirm_resume"))}><ha-icon icon="mdi:calendar-check"></ha-icon>${a(this.hass, "resume_automatic")}</button>` : c}
+            ${_.includes("stop") ? l`<button class="danger" ?disabled=${this._busy || !B(e) || !p} @click=${() => this.call("stop", a(this.hass, "confirm_stop"))}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${a(this.hass, "stop")}</button>` : c}
+            ${_.includes("emergency") ? l`<button class="danger" ?disabled=${this._busy || !p} @click=${() => this.call("emergency_stop", a(this.hass, "confirm_emergency"))}><ha-icon icon="mdi:alert-octagon-outline"></ha-icon>${a(this.hass, "emergency")}</button>` : c}
+            ${_.includes("suspend") ? l`<button ?disabled=${this._busy || !p} @click=${() => this.call("suspend_automatic", a(this.hass, "confirm_suspend"), { until: new Date(Date.now() + 864e5).toISOString() })}><ha-icon icon="mdi:calendar-clock"></ha-icon>${a(this.hass, "suspend_24h")}</button>` : c}
+            ${_.includes("resume") ? l`<button ?disabled=${this._busy || !p} @click=${() => this.call("resume_automatic", a(this.hass, "confirm_resume"))}><ha-icon icon="mdi:calendar-check"></ha-icon>${a(this.hass, "resume_automatic")}</button>` : c}
           </div>
         </div>
       </ha-card>
     `;
   }
 };
-W.styles = Ht, W.properties = {
+j.styles = jt, j.properties = {
   hass: { attribute: !1 },
   _config: { state: !0 },
   _busy: { state: !0 },
   _error: { state: !0 }
 };
-let et = W;
-const Et = ["status", "balance", "next", "total", "recent", "quality", "calculation", "flow", "history"], Ee = ["create", "start", "pause", "resume", "stop", "stop_skip", "suspend", "resume_auto", "archive", "restore"], j = class j extends S {
+let st = j;
+const qt = ["status", "balance", "next", "total", "recent", "quality", "calculation", "flow", "history"], Te = ["create", "start", "pause", "resume", "stop", "stop_skip", "suspend", "resume_auto", "archive", "restore"], Z = class Z extends S {
   constructor() {
     super(...arguments), this._targetMode = "duration", this._targetValue = 600, this._hardLimit = 3600, this._busy = !1;
   }
@@ -1237,17 +1257,17 @@ const Et = ["status", "balance", "next", "total", "recent", "quality", "calculat
     return this._config?.display_mode === "compact" ? 4 : 7;
   }
   metric(t, e, i) {
-    return (this._config.visible_metrics ?? Et).includes(t) ? l`<div class="metric"><span>${e}</span><strong>${A(this.hass, i)}</strong></div>` : c;
+    return (this._config.visible_metrics ?? qt).includes(t) ? l`<div class="metric"><span>${e}</span><strong>${x(this.hass, i)}</strong></div>` : c;
   }
   context() {
-    const t = D(this.hass, this._config), e = d(this.hass, t.zone_entity), i = y(e, "config_entry_id"), n = y(e, "zone_subentry_id");
+    const t = I(this.hass, this._config), e = h(this.hass, t.zone_entity), i = y(e, "config_entry_id"), n = y(e, "zone_subentry_id");
     return i && n ? { config_entry_id: i, zone_subentry_id: n } : void 0;
   }
   async perform(t, e, i) {
     if (!(i && !window.confirm(i))) {
       this._busy = !0, this._error = void 0;
       try {
-        await this.hass.callService(Ot, t, e);
+        await this.hass.callService(It, t, e);
       } catch (n) {
         this._error = `${a(this.hass, "action_failed")}: ${n instanceof Error ? n.message : String(n)}`;
       } finally {
@@ -1270,10 +1290,10 @@ const Et = ["status", "balance", "next", "total", "recent", "quality", "calculat
       return;
     }
     const e = this._targetMode === "duration" ? { duration: this._targetValue } : { amount: this._targetValue, hard_time_limit: this._hardLimit };
-    await this.perform(de, { ...t, ...e });
+    await this.perform(fe, { ...t, ...e });
   }
   async requestAction(t) {
-    const e = this.context(), i = d(this.hass, D(this.hass, this._config).request_entity), n = G(i, e?.zone_subentry_id);
+    const e = this.context(), i = h(this.hass, I(this.hass, this._config).request_entity), n = Q(i, e?.zone_subentry_id);
     if (!e || !n?.requestId) {
       this._error = a(this.hass, "configuration_error");
       return;
@@ -1284,7 +1304,7 @@ const Et = ["status", "balance", "next", "total", "recent", "quality", "calculat
     });
   }
   async stop(t = !1) {
-    const e = this.context(), i = d(this.hass, D(this.hass, this._config).request_entity), n = G(i, e?.zone_subentry_id);
+    const e = this.context(), i = h(this.hass, I(this.hass, this._config).request_entity), n = Q(i, e?.zone_subentry_id);
     if (!e || !n) {
       this._error = a(this.hass, "configuration_error");
       return;
@@ -1296,58 +1316,89 @@ const Et = ["status", "balance", "next", "total", "recent", "quality", "calculat
       a(this.hass, t ? "confirm_stop_skip" : "confirm_stop")
     );
   }
+  lockTimestamp(t) {
+    const e = y(t, "occurred_at") ?? t.last_changed;
+    if (!e) return;
+    const i = new Date(e);
+    return Number.isNaN(i.getTime()) ? e : new Intl.DateTimeFormat(this.hass.language, {
+      dateStyle: "medium",
+      timeStyle: "medium"
+    }).format(i);
+  }
+  lockReason(t) {
+    const e = y(t, "reason");
+    if (!e) return;
+    const i = [
+      [" opened unexpectedly during startup", "unexpectedly_opened_during_startup"],
+      [" opened unexpectedly", "unexpectedly_opened"],
+      [" closed unexpectedly during irrigation", "unexpectedly_closed"]
+    ];
+    for (const [n, o] of i) {
+      if (!e.endsWith(n)) continue;
+      const r = e.slice(0, -n.length), u = h(this.hass, r)?.attributes.friendly_name;
+      return `${typeof u == "string" && u ? `${u} (${r})` : r} ${a(this.hass, o)}`;
+    }
+    return e;
+  }
+  async resetSafety(t, e) {
+    await this.perform(
+      e?.state === "on" ? "reset_zone_safety" : "reset_installation_safety",
+      e?.state === "on" ? t : { config_entry_id: t.config_entry_id },
+      a(this.hass, "confirm_reset_safety")
+    );
+  }
   render() {
     if (!this.hass || !this._config) return c;
-    const t = D(this.hass, this._config);
-    if (!t.zone_entity || !d(this.hass, t.zone_entity))
+    const t = I(this.hass, this._config);
+    if (!t.zone_entity || !h(this.hass, t.zone_entity))
       return l`<ha-card><div class="card"><div class="warning"><ha-icon icon="mdi:water-alert"></ha-icon><span>${a(this.hass, "missing")}</span></div></div></ha-card>`;
-    const e = d(this.hass, t.zone_entity), i = d(this.hass, t.automation_needed_entity), n = d(this.hass, t.safety_lock_entity), o = d(this.hass, t.quality_entity), r = d(this.hass, t.status_entity), u = d(this.hass, t.automation_release_entity), h = d(this.hass, t.archived_entity), _ = d(this.hass, t.flow_deviation_entity), g = d(this.hass, t.active_zone_entity), p = d(this.hass, t.request_entity), m = this.context(), f = G(p, m?.zone_subentry_id), b = Ut(g), lt = this._config.visible_metrics ?? Et, $ = this._config.visible_actions ?? Ee, Bt = this._config.name ?? e?.attributes.friendly_name ?? a(this.hass, "zone"), ht = o?.state ?? y(e, "measurement_quality");
+    const e = h(this.hass, t.zone_entity), i = h(this.hass, t.automation_needed_entity), n = h(this.hass, t.safety_lock_entity), o = h(this.hass, t.installation_safety_lock_entity), r = n?.state === "on" ? n : o?.state === "on" ? o : void 0, u = h(this.hass, t.quality_entity), d = h(this.hass, t.status_entity), p = h(this.hass, t.automation_release_entity), m = h(this.hass, t.archived_entity), _ = h(this.hass, t.flow_deviation_entity), f = h(this.hass, t.active_zone_entity), $ = h(this.hass, t.request_entity), g = this.context(), q = Q($, g?.zone_subentry_id), G = Ht(f), dt = this._config.visible_metrics ?? qt, v = this._config.visible_actions ?? Te, Zt = this._config.name ?? e?.attributes.friendly_name ?? a(this.hass, "zone"), ut = u?.state ?? y(e, "measurement_quality"), Ft = r && d ? { ...d, state: "safety_lock" } : d, _t = r ? this.lockReason(r) : void 0, pt = r ? this.lockTimestamp(r) : void 0, Kt = n?.state === "on" ? "zone_safety_lock" : "installation_safety_lock";
     return l`
       <ha-card>
         <div class="card ${this._config.display_mode === "compact" ? "compact" : ""}">
           <header>
             <div class="hero">
-              <ha-icon .icon=${Dt(n?.state === "on" ? "safety_lock" : i?.state ?? "unknown")}></ha-icon>
+              <ha-icon .icon=${Bt(r?.state === "on" ? "safety_lock" : i?.state ?? "unknown")}></ha-icon>
               <div>
-                <h2>${Bt}</h2>
-                <strong>${n?.state === "on" ? a(this.hass, "locked") : i?.state === "on" ? a(this.hass, "automation_needed") : i?.state === "off" ? a(this.hass, "automation_not_needed") : A(this.hass, i)}</strong>
+                <h2>${Zt}</h2>
+                <strong>${r?.state === "on" ? a(this.hass, "locked") : i?.state === "on" ? a(this.hass, "automation_needed") : i?.state === "off" ? a(this.hass, "automation_not_needed") : x(this.hass, i)}</strong>
               </div>
             </div>
           </header>
 
-          ${n?.state === "on" ? l`<div class="warning danger"><ha-icon icon="mdi:lock-alert-outline"></ha-icon><span>${a(this.hass, "safety_lock")}${y(n, "reason") ? `: ${y(n, "reason")}` : ""}</span></div>` : c}
-          ${ht === "estimated" ? l`<div class="warning"><ha-icon icon="mdi:calculator-variant-outline"></ha-icon><span>${a(this.hass, "warning_estimated")}</span></div>` : ht === "unknown" ? l`<div class="warning"><ha-icon icon="mdi:help-circle-outline"></ha-icon><span>${a(this.hass, "warning_unknown")}</span></div>` : c}
-          ${u?.state === "off" && y(u, "suspended_until") ? l`<div class="warning"><ha-icon icon="mdi:calendar-clock"></ha-icon><span>${a(this.hass, "automatic_suspended")}: ${y(u, "suspended_until")}</span></div>` : c}
-          ${h?.state === "on" ? l`<div class="warning"><ha-icon icon="mdi:archive-outline"></ha-icon><span>${a(this.hass, "archived")}</span></div>` : c}
-          ${_ && H(_) && Math.abs(Number(_.state)) >= 20 ? l`<div class="warning"><ha-icon icon="mdi:waves-arrow-up"></ha-icon><span>${a(this.hass, "flow_warning")}: ${A(this.hass, _)}</span></div>` : c}
+          ${r ? l`<div class="warning danger"><ha-icon icon="mdi:lock-alert-outline"></ha-icon><span><strong>${a(this.hass, Kt)}</strong>${_t ? l`<br />${a(this.hass, "lock_reason")}: ${_t}` : c}${pt ? l`<br />${a(this.hass, "lock_occurred_at")}: ${pt}` : c}</span></div>` : c}
+          ${ut === "estimated" ? l`<div class="warning"><ha-icon icon="mdi:calculator-variant-outline"></ha-icon><span>${a(this.hass, "warning_estimated")}</span></div>` : ut === "unknown" ? l`<div class="warning"><ha-icon icon="mdi:help-circle-outline"></ha-icon><span>${a(this.hass, "warning_unknown")}</span></div>` : c}
+          ${p?.state === "off" && y(p, "suspended_until") ? l`<div class="warning"><ha-icon icon="mdi:calendar-clock"></ha-icon><span>${a(this.hass, "automatic_suspended")}: ${y(p, "suspended_until")}</span></div>` : c}
+          ${m?.state === "on" ? l`<div class="warning"><ha-icon icon="mdi:archive-outline"></ha-icon><span>${a(this.hass, "archived")}</span></div>` : c}
+          ${_ && B(_) && Math.abs(Number(_.state)) >= 20 ? l`<div class="warning"><ha-icon icon="mdi:waves-arrow-up"></ha-icon><span>${a(this.hass, "flow_warning")}: ${x(this.hass, _)}</span></div>` : c}
 
-          ${f && g && H(g) && b !== void 0 ? l`<section><h3>${a(this.hass, "progress")}</h3><strong>${A(this.hass, g)} · ${Math.round(b)}%</strong><progress max="100" .value=${b} aria-label=${a(this.hass, "progress")}></progress></section>` : c}
+          ${q && f && B(f) && G !== void 0 ? l`<section><h3>${a(this.hass, "progress")}</h3><strong>${x(this.hass, f)} · ${Math.round(G)}%</strong><progress max="100" .value=${G} aria-label=${a(this.hass, "progress")}></progress></section>` : c}
 
           <div class="metrics">
-            ${this.metric("status", a(this.hass, "status"), r)}
-            ${this.metric("balance", a(this.hass, "water_balance"), d(this.hass, t.deficit_entity))}
-            ${this.metric("balance", a(this.hass, "target"), d(this.hass, t.target_entity))}
-            ${lt.includes("balance") ? this.metric("balance", a(this.hass, "explanation"), d(this.hass, t.planning_reason_entity)) : c}
-            ${this.metric("next", a(this.hass, "next_window"), d(this.hass, t.next_window_entity))}
+            ${this.metric("status", a(this.hass, "status"), Ft)}
+            ${this.metric("balance", a(this.hass, "water_balance"), h(this.hass, t.deficit_entity))}
+            ${this.metric("balance", a(this.hass, "target"), h(this.hass, t.target_entity))}
+            ${dt.includes("balance") ? this.metric("balance", a(this.hass, "explanation"), h(this.hass, t.planning_reason_entity)) : c}
+            ${this.metric("next", a(this.hass, "next_window"), h(this.hass, t.next_window_entity))}
             ${this.metric("total", a(this.hass, "total"), e)}
-            ${this.metric("recent", a(this.hass, "last_delivered"), d(this.hass, t.last_delivered_entity))}
-            ${this.metric("recent", a(this.hass, "last_duration"), d(this.hass, t.last_duration_entity))}
-            ${this.metric("quality", a(this.hass, "quality"), o)}
-            ${this.metric("calculation", a(this.hass, "coverage"), d(this.hass, t.coverage_entity))}
-            ${t.calculation_entity ? this.metric("calculation", a(this.hass, "explanation"), d(this.hass, t.calculation_entity)) : c}
-            ${this.metric("flow", a(this.hass, "expected_flow"), d(this.hass, t.expected_flow_entity))}
-            ${this.metric("flow", a(this.hass, "actual_flow"), d(this.hass, t.actual_flow_entity))}
+            ${this.metric("recent", a(this.hass, "last_delivered"), h(this.hass, t.last_delivered_entity))}
+            ${this.metric("recent", a(this.hass, "last_duration"), h(this.hass, t.last_duration_entity))}
+            ${this.metric("quality", a(this.hass, "quality"), u)}
+            ${this.metric("calculation", a(this.hass, "coverage"), h(this.hass, t.coverage_entity))}
+            ${t.calculation_entity ? this.metric("calculation", a(this.hass, "explanation"), h(this.hass, t.calculation_entity)) : c}
+            ${this.metric("flow", a(this.hass, "expected_flow"), h(this.hass, t.expected_flow_entity))}
+            ${this.metric("flow", a(this.hass, "actual_flow"), h(this.hass, t.actual_flow_entity))}
             ${this.metric("flow", a(this.hass, "flow_deviation"), _)}
           </div>
-          ${lt.includes("history") && Array.isArray(e?.attributes.recent_history) ? l`<section class="details"><h3>${a(this.hass, "history")}</h3>${e.attributes.recent_history.slice(-3).reverse().map((v) => l`<div class="secondary">${String(v.ended_at ?? v.created_at ?? "")} · ${String(v.result ?? v.status ?? "")}</div>`)}</section>` : c}
+          ${dt.includes("history") && Array.isArray(e?.attributes.recent_history) ? l`<section class="details"><h3>${a(this.hass, "history")}</h3>${e.attributes.recent_history.slice(-3).reverse().map((b) => l`<div class="secondary">${String(b.ended_at ?? b.created_at ?? "")} · ${String(b.result ?? b.status ?? "")}</div>`)}</section>` : c}
 
           <section class="details">
             <h3>${a(this.hass, "manual")}</h3>
             <div class="form-grid">
               <label class="field">
                 <span>${a(this.hass, "target")}</span>
-                <select .value=${this._targetMode} @change=${(v) => {
-      this._targetMode = v.target.value;
+                <select .value=${this._targetMode} @change=${(b) => {
+      this._targetMode = b.target.value;
     }}>
                   <option value="duration">${a(this.hass, "duration_mode")}</option>
                   <option value="amount">${a(this.hass, "amount_mode")}</option>
@@ -1355,36 +1406,37 @@ const Et = ["status", "balance", "next", "total", "recent", "quality", "calculat
               </label>
               <label class="field">
                 <span>${this._targetMode === "duration" ? a(this.hass, "duration") : a(this.hass, "amount")}</span>
-                <input type="number" min="0.001" step=${this._targetMode === "duration" ? "1" : "0.1"} .value=${String(this._targetValue)} @input=${(v) => {
-      this._targetValue = Number(v.target.value);
+                <input type="number" min="0.001" step=${this._targetMode === "duration" ? "1" : "0.1"} .value=${String(this._targetValue)} @input=${(b) => {
+      this._targetValue = Number(b.target.value);
     }} />
                 <span>${this._targetMode === "duration" ? a(this.hass, "seconds") : a(this.hass, "liters")}</span>
               </label>
-              ${this._targetMode === "amount" ? l`<label class="field"><span>${a(this.hass, "hard_limit")}</span><input type="number" min="0.001" max="14400" step="1" .value=${String(this._hardLimit)} @input=${(v) => {
-      this._hardLimit = Number(v.target.value);
+              ${this._targetMode === "amount" ? l`<label class="field"><span>${a(this.hass, "hard_limit")}</span><input type="number" min="0.001" max="14400" step="1" .value=${String(this._hardLimit)} @input=${(b) => {
+      this._hardLimit = Number(b.target.value);
     }} /><span>${a(this.hass, "seconds")}</span></label>` : c}
             </div>
           </section>
 
           ${this._error ? l`<div class="error" role="alert">${this._error}</div>` : c}
           <div class="actions">
-            ${$.includes("create") ? l`<button ?disabled=${this._busy || n?.state === "on" || !m} @click=${this.request}><ha-icon icon="mdi:playlist-plus"></ha-icon>${a(this.hass, "create")}</button>` : c}
-            ${$.includes("start") ? l`<button class="primary" ?disabled=${this._busy || n?.state === "on" || !m} @click=${this.request}><ha-icon icon="mdi:play"></ha-icon>${a(this.hass, "start")}</button>` : c}
-            ${$.includes("pause") ? l`<button ?disabled=${this._busy || !f?.requestId} @click=${() => this.requestAction("pause_request")}><ha-icon icon="mdi:pause"></ha-icon>${a(this.hass, "pause")}</button>` : c}
-            ${$.includes("resume") ? l`<button ?disabled=${this._busy || !f?.requestId} @click=${() => this.requestAction("resume_request")}><ha-icon icon="mdi:play-pause"></ha-icon>${a(this.hass, "resume")}</button>` : c}
-            ${$.includes("stop") ? l`<button class="danger" ?disabled=${this._busy || !f} @click=${() => this.stop()}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${a(this.hass, "stop")}</button>` : c}
-            ${$.includes("stop_skip") ? l`<button class="danger" ?disabled=${this._busy || !f} @click=${() => this.stop(!0)}><ha-icon icon="mdi:skip-next-circle-outline"></ha-icon>${a(this.hass, "stop_skip")}</button>` : c}
-            ${$.includes("suspend") ? l`<button ?disabled=${this._busy || !m || h?.state === "on"} @click=${() => m && this.perform("suspend_automatic", { ...m, until: new Date(Date.now() + 864e5).toISOString() })}><ha-icon icon="mdi:calendar-clock"></ha-icon>${a(this.hass, "suspend_24h")}</button>` : c}
-            ${$.includes("resume_auto") ? l`<button ?disabled=${this._busy || !m} @click=${() => m && this.perform("resume_automatic", m)}><ha-icon icon="mdi:calendar-check"></ha-icon>${a(this.hass, "resume_automatic")}</button>` : c}
-            ${$.includes("archive") ? l`<button ?disabled=${this._busy || !m || h?.state === "on"} @click=${() => m && this.perform("archive_zone", m, a(this.hass, "confirm_archive"))}><ha-icon icon="mdi:archive-arrow-down-outline"></ha-icon>${a(this.hass, "archive")}</button>` : c}
-            ${$.includes("restore") ? l`<button ?disabled=${this._busy || !m || h?.state !== "on"} @click=${() => m && this.perform("restore_zone", m)}><ha-icon icon="mdi:archive-arrow-up-outline"></ha-icon>${a(this.hass, "restore")}</button>` : c}
+            ${v.includes("create") ? l`<button ?disabled=${this._busy || r?.state === "on" || !g} @click=${this.request}><ha-icon icon="mdi:playlist-plus"></ha-icon>${a(this.hass, "create")}</button>` : c}
+            ${v.includes("start") ? l`<button class="primary" ?disabled=${this._busy || r?.state === "on" || !g} @click=${this.request}><ha-icon icon="mdi:play"></ha-icon>${a(this.hass, "start")}</button>` : c}
+            ${v.includes("pause") ? l`<button ?disabled=${this._busy || !q?.requestId} @click=${() => this.requestAction("pause_request")}><ha-icon icon="mdi:pause"></ha-icon>${a(this.hass, "pause")}</button>` : c}
+            ${v.includes("resume") ? l`<button ?disabled=${this._busy || !q?.requestId} @click=${() => this.requestAction("resume_request")}><ha-icon icon="mdi:play-pause"></ha-icon>${a(this.hass, "resume")}</button>` : c}
+            ${v.includes("stop") ? l`<button class="danger" ?disabled=${this._busy || !q} @click=${() => this.stop()}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${a(this.hass, "stop")}</button>` : c}
+            ${v.includes("stop_skip") ? l`<button class="danger" ?disabled=${this._busy || !q} @click=${() => this.stop(!0)}><ha-icon icon="mdi:skip-next-circle-outline"></ha-icon>${a(this.hass, "stop_skip")}</button>` : c}
+            ${v.includes("suspend") ? l`<button ?disabled=${this._busy || !g || m?.state === "on"} @click=${() => g && this.perform("suspend_automatic", { ...g, until: new Date(Date.now() + 864e5).toISOString() })}><ha-icon icon="mdi:calendar-clock"></ha-icon>${a(this.hass, "suspend_24h")}</button>` : c}
+            ${v.includes("resume_auto") ? l`<button ?disabled=${this._busy || !g} @click=${() => g && this.perform("resume_automatic", g)}><ha-icon icon="mdi:calendar-check"></ha-icon>${a(this.hass, "resume_automatic")}</button>` : c}
+            ${r ? l`<button data-testid="reset-safety" class="danger" ?disabled=${this._busy || !g} @click=${() => g && this.resetSafety(g, n)}><ha-icon icon="mdi:lock-open-alert-outline"></ha-icon>${a(this.hass, "reset_safety")}</button>` : c}
+            ${v.includes("archive") ? l`<button ?disabled=${this._busy || !g || m?.state === "on"} @click=${() => g && this.perform("archive_zone", g, a(this.hass, "confirm_archive"))}><ha-icon icon="mdi:archive-arrow-down-outline"></ha-icon>${a(this.hass, "archive")}</button>` : c}
+            ${v.includes("restore") ? l`<button ?disabled=${this._busy || !g || m?.state !== "on"} @click=${() => g && this.perform("restore_zone", g)}><ha-icon icon="mdi:archive-arrow-up-outline"></ha-icon>${a(this.hass, "restore")}</button>` : c}
           </div>
         </div>
       </ha-card>
     `;
   }
 };
-j.styles = Ht, j.properties = {
+Z.styles = jt, Z.properties = {
   hass: { attribute: !1 },
   _config: { state: !0 },
   _targetMode: { state: !0 },
@@ -1393,14 +1445,14 @@ j.styles = Ht, j.properties = {
   _busy: { state: !0 },
   _error: { state: !0 }
 };
-let it = j;
-const ze = [
-  ["irrigation-manager-overview-card", et],
-  ["irrigation-manager-zone-card", it],
-  ["irrigation-manager-overview-card-editor", xe],
-  ["irrigation-manager-zone-card-editor", ke]
+let nt = Z;
+const Pe = [
+  ["irrigation-manager-overview-card", st],
+  ["irrigation-manager-zone-card", nt],
+  ["irrigation-manager-overview-card-editor", Ce],
+  ["irrigation-manager-zone-card-editor", qe]
 ];
-for (const [s, t] of ze)
+for (const [s, t] of Pe)
   customElements.get(s) || customElements.define(s, t);
 window.customCards = window.customCards ?? [];
 for (const s of [

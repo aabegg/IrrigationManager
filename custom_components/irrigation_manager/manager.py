@@ -667,6 +667,7 @@ class IrrigationManager:
             self._stored_state = replace(
                 self._stored_state,
                 installation_safety_lock=f"Startup valve feedback failed: {err}",
+                installation_safety_lock_at=datetime.now(UTC).isoformat(),
             )
             await self._store.async_save(self._stored_state)
         await self._async_recover_interrupted_execution(could_have_flowed=active_could_have_flowed)
@@ -783,6 +784,7 @@ class IrrigationManager:
                 self._stored_state = replace(
                     self._stored_state,
                     installation_safety_lock=f"{entity_id} feedback invalid at startup: {err}",
+                    installation_safety_lock_at=datetime.now(UTC).isoformat(),
                 )
                 await self._store.async_save(self._stored_state)
                 continue
@@ -1133,13 +1135,23 @@ class IrrigationManager:
             identity = self._active_run_identity()
             if opening or active is None or entity_id != active.zone_valve:
                 scope = "installation"
-                self._stored_state = replace(self._stored_state, installation_safety_lock=reason)
+                self._stored_state = replace(
+                    self._stored_state,
+                    installation_safety_lock=reason,
+                    installation_safety_lock_at=datetime.now(UTC).isoformat(),
+                )
             else:
                 assert active is not None
                 scope = "zone"
                 zone_locks = dict(self._stored_state.zone_safety_locks)
+                zone_lock_at = dict(self._stored_state.zone_safety_lock_at)
                 zone_locks[active.zone_id] = reason
-                self._stored_state = replace(self._stored_state, zone_safety_locks=zone_locks)
+                zone_lock_at[active.zone_id] = datetime.now(UTC).isoformat()
+                self._stored_state = replace(
+                    self._stored_state,
+                    zone_safety_locks=zone_locks,
+                    zone_safety_lock_at=zone_lock_at,
+                )
             close_entities = self._all_known_valves()
             if identity is not None:
                 self._active_external_violation = (identity, reason, scope)
@@ -1347,11 +1359,18 @@ class IrrigationManager:
                 self._stored_state = replace(
                     self._stored_state,
                     installation_safety_lock=reason,
+                    installation_safety_lock_at=datetime.now(UTC).isoformat(),
                 )
             else:
                 zone_locks = dict(self._stored_state.zone_safety_locks)
+                zone_lock_at = dict(self._stored_state.zone_safety_lock_at)
                 zone_locks[active.zone_id] = reason
-                self._stored_state = replace(self._stored_state, zone_safety_locks=zone_locks)
+                zone_lock_at[active.zone_id] = datetime.now(UTC).isoformat()
+                self._stored_state = replace(
+                    self._stored_state,
+                    zone_safety_locks=zone_locks,
+                    zone_safety_lock_at=zone_lock_at,
+                )
             if identity is not None:
                 self._active_external_violation = (identity, reason, scope)
             await self._store.async_save(self._stored_state)
@@ -1606,6 +1625,7 @@ class IrrigationManager:
         self._stored_state = replace(
             self._stored_state,
             installation_safety_lock=reason,
+            installation_safety_lock_at=datetime.now(UTC).isoformat(),
         )
         persistence_errors: list[Exception] = []
         try:
@@ -1653,6 +1673,7 @@ class IrrigationManager:
             unassigned_measurement_origin=origin,
             idle_meter_raw_baseline_liters=new_baseline,
             installation_safety_lock=reason,
+            installation_safety_lock_at=self._stored_state.installation_safety_lock_at,
         )
         self._stored_state = self._with_consumption_record(
             self._with_meter_continuity(self._stored_state),
@@ -4279,17 +4300,21 @@ class IrrigationManager:
         last_delivered[request.zone_id] = result.delivered_liters
         last_duration = dict(self._stored_state.zone_last_duration_seconds)
         last_duration[request.zone_id] = result.duration_seconds
+        now = datetime.now(UTC)
         zone_locks = dict(self._stored_state.zone_safety_locks)
+        zone_lock_at = dict(self._stored_state.zone_safety_lock_at)
         if result.safety_scope == "zone" and result.safety_violation:
             zone_locks[request.zone_id] = result.safety_violation
+            zone_lock_at[request.zone_id] = now.isoformat()
         installation_lock = self._stored_state.installation_safety_lock
+        installation_lock_at = self._stored_state.installation_safety_lock_at
         if result.safety_scope == "installation" and result.safety_violation:
             installation_lock = result.safety_violation
+            installation_lock_at = now.isoformat()
         idle_meter_baseline = self._stored_state.idle_meter_raw_baseline_liters
         if self._has_meter:
             with suppress(HomeAssistantError):
                 idle_meter_baseline = await self._meter.read_raw_liters()
-        now = datetime.now(UTC)
         deficits, last_effective = self._balance_after_delivery(
             zone_id=request.zone_id,
             delivered_liters=result.delivered_liters,
@@ -4451,7 +4476,9 @@ class IrrigationManager:
             zone_last_delivered_liters=last_delivered,
             zone_last_duration_seconds=last_duration,
             zone_safety_locks=zone_locks,
+            zone_safety_lock_at=zone_lock_at,
             installation_safety_lock=installation_lock,
+            installation_safety_lock_at=installation_lock_at,
             idle_meter_raw_baseline_liters=idle_meter_baseline,
             active_execution=None,
             manual_requests=self._with_request(request),
@@ -7288,11 +7315,15 @@ class IrrigationManager:
         if attributed_zone_id is not None:
             last_duration[test.zone_id] = result.duration_seconds
         zone_locks = dict(self._stored_state.zone_safety_locks)
+        zone_lock_at = dict(self._stored_state.zone_safety_lock_at)
         installation_lock = self._stored_state.installation_safety_lock
+        installation_lock_at = self._stored_state.installation_safety_lock_at
         if result.safety_scope == "zone" and result.safety_violation:
             zone_locks[test.zone_id] = result.safety_violation
+            zone_lock_at[test.zone_id] = datetime.now(UTC).isoformat()
         if result.safety_scope == "installation" and result.safety_violation:
             installation_lock = result.safety_violation
+            installation_lock_at = datetime.now(UTC).isoformat()
         profile = self._effective_zone_profile(subentry.data, datetime.now(UTC).date())
         deficits, last_effective = (
             self._balance_after_delivery(
@@ -7372,7 +7403,9 @@ class IrrigationManager:
             zone_last_delivered_liters=last_delivered,
             zone_last_duration_seconds=last_duration,
             zone_safety_locks=zone_locks,
+            zone_safety_lock_at=zone_lock_at,
             installation_safety_lock=installation_lock,
+            installation_safety_lock_at=installation_lock_at,
             zone_deficit_mm=deficits,
             zone_last_effective_irrigation=last_effective,
             unassigned_total_liters=(
@@ -7596,10 +7629,13 @@ class IrrigationManager:
             await self._async_preflight()
             zone_id = subentry.unique_id or subentry.subentry_id
             zone_locks = dict(self._stored_state.zone_safety_locks)
+            zone_lock_at = dict(self._stored_state.zone_safety_lock_at)
             zone_locks.pop(zone_id, None)
+            zone_lock_at.pop(zone_id, None)
             self._stored_state = replace(
                 self._stored_state,
                 zone_safety_locks=zone_locks,
+                zone_safety_lock_at=zone_lock_at,
             )
             await self._store.async_save(self._stored_state)
             self._publish(status="idle", active_zone_id=None)
@@ -7624,6 +7660,7 @@ class IrrigationManager:
             self._stored_state = replace(
                 self._stored_state,
                 installation_safety_lock=None,
+                installation_safety_lock_at=None,
             )
             await self._store.async_save(self._stored_state)
             await self._async_refresh_idle_meter_baseline()
@@ -7817,12 +7854,15 @@ class IrrigationManager:
             zone_status[zone_id] = (
                 "archived"
                 if self._zone_archived(zone_id)
+                else "safety_lock"
+                if (
+                    self._stored_state.installation_safety_lock is not None
+                    or zone_id in self._stored_state.zone_safety_locks
+                )
                 else "watering"
                 if active_zone_id == zone_id
                 else "suspended"
                 if self._automatic_suspension_active(zone_id, now)
-                else "safety_lock"
-                if zone_id in self._stored_state.zone_safety_locks
                 else "watering_needed"
                 if any(
                     planning.zone_id == zone_id and decision.needed
@@ -7853,6 +7893,7 @@ class IrrigationManager:
                 zone_last_delivered_liters=dict(self._stored_state.zone_last_delivered_liters),
                 zone_last_duration_seconds=dict(self._stored_state.zone_last_duration_seconds),
                 zone_safety_locks=dict(self._stored_state.zone_safety_locks),
+                zone_safety_lock_at=dict(self._stored_state.zone_safety_lock_at),
                 unassigned_total_liters=self._stored_state.unassigned_total_liters,
                 unassigned_available_liters=self._stored_state.unassigned_available_liters,
                 unassigned_measurement_quality=(self._stored_state.unassigned_measurement_quality),
@@ -7873,6 +7914,7 @@ class IrrigationManager:
                 active_zone_id=active_zone_id,
                 emergency_stop=self._stored_state.emergency_stop,
                 installation_safety_lock=(self._stored_state.installation_safety_lock),
+                installation_safety_lock_at=(self._stored_state.installation_safety_lock_at),
                 winter_lock=self._stored_state.winter_lock,
                 maintenance_active=self._stored_state.maintenance_test is not None,
                 maintenance_test_id=(

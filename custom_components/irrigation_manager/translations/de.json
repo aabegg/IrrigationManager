@@ -743,7 +743,7 @@
         },
         "calibration_running": {
           "title": "Kalibrierung läuft",
-          "description": "{zone} wird gemessen und anschließend automatisch geschlossen. Warte, bis Ventil und Nachlauf beendet sind, und wähle dann Weiter, um das Ergebnis abzurufen. Ein früher Aufruf erneuert lediglich die Sicherheitsaufsicht.",
+          "description": "{zone} wird gemessen und anschließend automatisch geschlossen. Wähle spätestens alle {interval} Sekunden OK, um die Sicherheitsaufsicht zu erneuern. Sobald Ventil und Nachlauf beendet sind, zeigt der nächste Aufruf das Ergebnis. {status}",
           "data": {}
         },
         "calibration_review": {
@@ -852,7 +852,6 @@
         ,"application_rate_required": "Gib die geschätzte Ausbringungsrate ein."
         ,"calibration_supervision_required": "Bestätige die Beaufsichtigung vor Ort, bevor ein Ventil geöffnet wird."
         ,"calibration_start_failed": "Die Kalibrierung konnte die Sicherheitsprüfung nicht bestehen oder die Anlage ist beschäftigt."
-        ,"calibration_still_running": "Die Messung läuft noch. Die Sicherheitsaufsicht wurde erneuert; warte kurz und wähle erneut Weiter."
         ,"calibration_resolution_required": "Prüfe das Ergebnis und bestätige deine Entscheidung."
         ,"calibration_resolution_failed": "Der Vorschlag konnte nicht übernommen oder verworfen werden. Die Zone wurde möglicherweise zwischenzeitlich geändert."
       }

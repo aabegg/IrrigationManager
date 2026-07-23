@@ -743,7 +743,7 @@
         },
         "calibration_running": {
           "title": "Calibration running",
-          "description": "{zone} is being measured and will close automatically. Wait until the valve and post-run observation have finished, then select Submit to retrieve the result. An early submission only renews safety supervision.",
+          "description": "{zone} is being measured and will close automatically. Select Submit at least every {interval} seconds to renew safety supervision. Once the valve and post-run observation have finished, the next submission shows the result. {status}",
           "data": {}
         },
         "calibration_review": {
@@ -852,7 +852,6 @@
         ,"application_rate_required": "Enter the estimated application rate."
         ,"calibration_supervision_required": "Confirm on-site supervision before opening a valve."
         ,"calibration_start_failed": "Calibration did not pass its safety preflight or the installation is busy."
-        ,"calibration_still_running": "The measurement is still running. Safety supervision was renewed; wait briefly and submit again."
         ,"calibration_resolution_required": "Review the result and confirm your decision."
         ,"calibration_resolution_failed": "The proposal could not be applied or discarded. The zone may have changed since measurement."
       }

@@ -56,6 +56,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             zone_last_delivered_liters=stored_state.zone_last_delivered_liters,
             zone_last_duration_seconds=stored_state.zone_last_duration_seconds,
             zone_safety_locks=stored_state.zone_safety_locks,
+            zone_safety_lock_at=stored_state.zone_safety_lock_at,
             unassigned_total_liters=stored_state.unassigned_total_liters,
             unassigned_available_liters=stored_state.unassigned_available_liters,
             unassigned_measurement_quality=stored_state.unassigned_measurement_quality,
@@ -71,6 +72,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             ),
             emergency_stop=stored_state.emergency_stop,
             installation_safety_lock=stored_state.installation_safety_lock,
+            installation_safety_lock_at=stored_state.installation_safety_lock_at,
             winter_lock=stored_state.winter_lock,
             maintenance_active=stored_state.maintenance_test is not None,
         )

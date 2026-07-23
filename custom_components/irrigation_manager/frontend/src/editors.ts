@@ -28,6 +28,7 @@ const zoneFields = [
   ["zone_entity", "Zone total / action identity"],
   ["automation_needed_entity", "Automatic demand"],
   ["safety_lock_entity", "Zone safety lock"],
+  ["installation_safety_lock_entity", "Installation safety lock"],
   ["deficit_entity", "Water deficit"],
   ["target_entity", "Automatic target"],
   ["planning_reason_entity", "Planning explanation"],

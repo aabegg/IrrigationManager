@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0-rc5 - 2026-07-23
+
+### Added
+
+- Show effective zone and installation safety locks on every affected zone card with
+  scope, understandable reason, persistent occurrence time, and a guarded reset button.
+- Persist safety-lock timestamps across Home Assistant restarts.
+
+### Changed
+
+- Publish an installation safety lock as the effective `safety_lock` status of every
+  non-archived zone instead of incorrectly leaving zone status at `idle`.
+- Recommend a 60-second flow calibration, allow longer measurements within the configured
+  hard test deadline, and require recurring dead-man confirmation for longer tests.
+
 ## 0.1.0-rc4 - 2026-07-22
 
 ### Added

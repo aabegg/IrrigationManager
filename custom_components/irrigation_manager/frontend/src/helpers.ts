@@ -58,6 +58,7 @@ const zoneRoles: Record<string, keyof ZoneCardConfig> = {
 const installationZoneRoles: Record<string, keyof ZoneCardConfig> = {
   active_zone: "active_zone_entity",
   dose: "request_entity",
+  lock: "installation_safety_lock_entity",
 };
 
 export function entityMapAttribute(

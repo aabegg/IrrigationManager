@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 
@@ -126,6 +127,34 @@ async def _setup(
     await hass.async_block_till_done()
     operations.clear()
     return entry, zone, operations
+
+
+async def test_installation_safety_lock_marks_every_zone_locked(
+    hass: HomeAssistant,
+) -> None:
+    """Publish a global safety lock as the effective status of every zone."""
+    entry, zone, _ = await _setup(hass)
+    manager = entry.runtime_data.manager
+    occurred_at = "2026-07-23T05:58:00+00:00"
+    manager._stored_state = replace(
+        manager._stored_state,
+        installation_safety_lock="switch.lawn opened unexpectedly",
+        installation_safety_lock_at=occurred_at,
+    )
+
+    manager._publish(status="safety_lock", active_zone_id=None)
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.coordinator.data.zone_status[zone.unique_id] == "safety_lock"
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(
+        "binary_sensor", DOMAIN, "installation-safety-modes_safety_lock"
+    )
+    assert entity_id is not None
+    lock_state = hass.states.get(entity_id)
+    assert lock_state is not None
+    assert lock_state.attributes["reason"] == "switch.lawn opened unexpectedly"
+    assert lock_state.attributes["occurred_at"] == occurred_at
 
 
 async def test_winter_lock_closes_persists_and_blocks_every_watering_path(

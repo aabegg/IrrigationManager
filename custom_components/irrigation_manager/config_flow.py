@@ -1736,6 +1736,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self._calibration_test_id: str | None = None
         self._calibration_previous_proposal_id: str | None = None
         self._calibration_proposal: dict[str, object] | None = None
+        self._calibration_supervision_renewed = False
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Choose guided setup or the complete expert form."""
@@ -1822,12 +1823,35 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         return cast(IrrigationManager, runtime) if runtime is not None else None
 
     def _calibration_duration_limit(self) -> float:
-        """Keep the guided measurement inside both hard and dead-man deadlines."""
+        """Keep the guided measurement inside the fixed supervised-test deadline."""
         data = self._get_entry().data
         hard_limit = float(data.get(CONF_MAINTENANCE_MAX_DURATION, 300.0))
-        confirmation = float(data.get(CONF_MAINTENANCE_CONFIRMATION_INTERVAL, 30.0))
         settle = float(data.get(CONF_CALIBRATION_SETTLE_SECONDS, 2.0))
-        return min(20.0, min(hard_limit, confirmation) - settle - 2.0)
+        return hard_limit - settle - 5.0
+
+    def _calibration_running_placeholders(self) -> dict[str, str]:
+        """Explain the manual heartbeat required by the supervised config flow."""
+        confirmation = float(
+            self._get_entry().data.get(CONF_MAINTENANCE_CONFIRMATION_INTERVAL, 30.0)
+        )
+        interval = max(1, min(20, int(confirmation) - 5))
+        if self.hass.config.language == "de":
+            status = (
+                "Die Sicherheitsaufsicht wurde erneuert."
+                if self._calibration_supervision_renewed
+                else "Die Messung wurde gestartet."
+            )
+        else:
+            status = (
+                "Safety supervision was renewed."
+                if self._calibration_supervision_renewed
+                else "The measurement was started."
+            )
+        return {
+            "zone": self._get_reconfigure_subentry().title,
+            "interval": str(interval),
+            "status": status,
+        }
 
     async def async_step_calibration(
         self, user_input: dict[str, Any] | None = None
@@ -1841,7 +1865,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             return self.async_abort(reason="calibration_configuration_invalid")
         schema = vol.Schema(
             {
-                vol.Required("duration", default=min(20.0, duration_limit)): NumberSelector(
+                vol.Required("duration", default=min(60.0, duration_limit)): NumberSelector(
                     NumberSelectorConfig(
                         min=1,
                         max=duration_limit,
@@ -1900,15 +1924,15 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             return self.async_show_form(
                 step_id="calibration_running",
                 data_schema=vol.Schema({}),
-                description_placeholders={"zone": self._get_reconfigure_subentry().title},
+                description_placeholders=self._calibration_running_placeholders(),
             )
         if manager.is_supervised_test_active(test_id):
             await manager.async_confirm_maintenance_test(test_id=test_id)
+            self._calibration_supervision_renewed = True
             return self.async_show_form(
                 step_id="calibration_running",
                 data_schema=vol.Schema({}),
-                errors={"base": "calibration_still_running"},
-                description_placeholders={"zone": self._get_reconfigure_subentry().title},
+                description_placeholders=self._calibration_running_placeholders(),
             )
         proposal = manager.calibration_proposal()
         if (

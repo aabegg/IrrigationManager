@@ -184,9 +184,14 @@ class InstallationSafetyLockBinarySensor(
     @property
     @override
     def extra_state_attributes(self) -> dict[str, str]:
-        """Expose the lock reason when present."""
+        """Expose the persistent lock reason and occurrence time when present."""
         reason = self.coordinator.data.installation_safety_lock
-        return {"reason": reason} if reason is not None else {}
+        occurred_at = self.coordinator.data.installation_safety_lock_at
+        return {
+            key: value
+            for key, value in {"reason": reason, "occurred_at": occurred_at}.items()
+            if value is not None
+        }
 
 
 class WinterLockBinarySensor(CoordinatorEntity[IrrigationCoordinator], BinarySensorEntity):
@@ -506,9 +511,14 @@ class ZoneSafetyLockBinarySensor(CoordinatorEntity[IrrigationCoordinator], Binar
     @property
     @override
     def extra_state_attributes(self) -> dict[str, str]:
-        """Expose the lock reason when present."""
+        """Expose the persistent lock reason and occurrence time when present."""
         reason = self.coordinator.data.zone_safety_locks.get(self._zone_id)
-        return {"reason": reason} if reason is not None else {}
+        occurred_at = self.coordinator.data.zone_safety_lock_at.get(self._zone_id)
+        return {
+            key: value
+            for key, value in {"reason": reason, "occurred_at": occurred_at}.items()
+            if value is not None
+        }
 
 
 class ZoneAutomationNeededBinarySensor(

@@ -138,6 +138,49 @@ export class IrrigationManagerZoneCard extends LitElement {
     );
   }
 
+  private lockTimestamp(lock: HassEntity): string | undefined {
+    const value = stringAttribute(lock, "occurred_at") ?? lock.last_changed;
+    if (!value) return undefined;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? value
+      : new Intl.DateTimeFormat(this.hass.language, {
+          dateStyle: "medium",
+          timeStyle: "medium",
+        }).format(date);
+  }
+
+  private lockReason(lock: HassEntity): string | undefined {
+    const reason = stringAttribute(lock, "reason");
+    if (!reason) return undefined;
+    const patterns: Array<[string, "unexpectedly_opened" | "unexpectedly_opened_during_startup" | "unexpectedly_closed"]> = [
+      [" opened unexpectedly during startup", "unexpectedly_opened_during_startup"],
+      [" opened unexpectedly", "unexpectedly_opened"],
+      [" closed unexpectedly during irrigation", "unexpectedly_closed"],
+    ];
+    for (const [suffix, message] of patterns) {
+      if (!reason.endsWith(suffix)) continue;
+      const entityId = reason.slice(0, -suffix.length);
+      const friendlyName = entity(this.hass, entityId)?.attributes.friendly_name;
+      const actuator = typeof friendlyName === "string" && friendlyName
+        ? `${friendlyName} (${entityId})`
+        : entityId;
+      return `${actuator} ${localize(this.hass, message)}`;
+    }
+    return reason;
+  }
+
+  private async resetSafety(
+    context: { config_entry_id: string; zone_subentry_id: string },
+    zoneLock: HassEntity | undefined,
+  ): Promise<void> {
+    await this.perform(
+      zoneLock?.state === "on" ? "reset_zone_safety" : "reset_installation_safety",
+      zoneLock?.state === "on" ? context : { config_entry_id: context.config_entry_id },
+      localize(this.hass, "confirm_reset_safety"),
+    );
+  }
+
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
     const config = resolveZoneConfig(this.hass, this._config);
@@ -146,7 +189,9 @@ export class IrrigationManagerZoneCard extends LitElement {
     }
     const zone = entity(this.hass, config.zone_entity);
     const needed = entity(this.hass, config.automation_needed_entity);
-    const lock = entity(this.hass, config.safety_lock_entity);
+    const zoneLock = entity(this.hass, config.safety_lock_entity);
+    const installationLock = entity(this.hass, config.installation_safety_lock_entity);
+    const lock = zoneLock?.state === "on" ? zoneLock : installationLock?.state === "on" ? installationLock : undefined;
     const quality = entity(this.hass, config.quality_entity);
     const zoneStatus = entity(this.hass, config.status_entity);
     const release = entity(this.hass, config.automation_release_entity);
@@ -161,6 +206,12 @@ export class IrrigationManagerZoneCard extends LitElement {
     const actions = this._config.visible_actions ?? DEFAULT_ACTIONS;
     const title = this._config.name ?? zone?.attributes.friendly_name ?? localize(this.hass, "zone");
     const qualityValue = quality?.state ?? stringAttribute(zone, "measurement_quality");
+    const displayedZoneStatus = lock && zoneStatus
+      ? { ...zoneStatus, state: "safety_lock" }
+      : zoneStatus;
+    const lockReason = lock ? this.lockReason(lock) : undefined;
+    const lockTimestamp = lock ? this.lockTimestamp(lock) : undefined;
+    const lockScope = zoneLock?.state === "on" ? "zone_safety_lock" : "installation_safety_lock";
 
     return html`
       <ha-card>
@@ -175,8 +226,8 @@ export class IrrigationManagerZoneCard extends LitElement {
             </div>
           </header>
 
-          ${lock?.state === "on"
-            ? html`<div class="warning danger"><ha-icon icon="mdi:lock-alert-outline"></ha-icon><span>${localize(this.hass, "safety_lock")}${stringAttribute(lock, "reason") ? `: ${stringAttribute(lock, "reason")}` : ""}</span></div>`
+          ${lock
+            ? html`<div class="warning danger"><ha-icon icon="mdi:lock-alert-outline"></ha-icon><span><strong>${localize(this.hass, lockScope)}</strong>${lockReason ? html`<br />${localize(this.hass, "lock_reason")}: ${lockReason}` : nothing}${lockTimestamp ? html`<br />${localize(this.hass, "lock_occurred_at")}: ${lockTimestamp}` : nothing}</span></div>`
             : nothing}
           ${qualityValue === "estimated"
             ? html`<div class="warning"><ha-icon icon="mdi:calculator-variant-outline"></ha-icon><span>${localize(this.hass, "warning_estimated")}</span></div>`
@@ -198,7 +249,7 @@ export class IrrigationManagerZoneCard extends LitElement {
             : nothing}
 
           <div class="metrics">
-            ${this.metric("status", localize(this.hass, "status"), zoneStatus)}
+            ${this.metric("status", localize(this.hass, "status"), displayedZoneStatus)}
             ${this.metric("balance", localize(this.hass, "water_balance"), entity(this.hass, config.deficit_entity))}
             ${this.metric("balance", localize(this.hass, "target"), entity(this.hass, config.target_entity))}
             ${metrics.includes("balance")
@@ -252,6 +303,7 @@ export class IrrigationManagerZoneCard extends LitElement {
             ${actions.includes("stop_skip") ? html`<button class="danger" ?disabled=${this._busy || !activeRequest} @click=${() => this.stop(true)}><ha-icon icon="mdi:skip-next-circle-outline"></ha-icon>${localize(this.hass, "stop_skip")}</button>` : nothing}
             ${actions.includes("suspend") ? html`<button ?disabled=${this._busy || !context || archived?.state === "on"} @click=${() => context && this.perform("suspend_automatic", { ...context, until: new Date(Date.now() + 86400000).toISOString() })}><ha-icon icon="mdi:calendar-clock"></ha-icon>${localize(this.hass, "suspend_24h")}</button>` : nothing}
             ${actions.includes("resume_auto") ? html`<button ?disabled=${this._busy || !context} @click=${() => context && this.perform("resume_automatic", context)}><ha-icon icon="mdi:calendar-check"></ha-icon>${localize(this.hass, "resume_automatic")}</button>` : nothing}
+            ${lock ? html`<button data-testid="reset-safety" class="danger" ?disabled=${this._busy || !context} @click=${() => context && this.resetSafety(context, zoneLock)}><ha-icon icon="mdi:lock-open-alert-outline"></ha-icon>${localize(this.hass, "reset_safety")}</button>` : nothing}
             ${actions.includes("archive") ? html`<button ?disabled=${this._busy || !context || archived?.state === "on"} @click=${() => context && this.perform("archive_zone", context, localize(this.hass, "confirm_archive"))}><ha-icon icon="mdi:archive-arrow-down-outline"></ha-icon>${localize(this.hass, "archive")}</button>` : nothing}
             ${actions.includes("restore") ? html`<button ?disabled=${this._busy || !context || archived?.state !== "on"} @click=${() => context && this.perform("restore_zone", context)}><ha-icon icon="mdi:archive-arrow-up-outline"></ha-icon>${localize(this.hass, "restore")}</button>` : nothing}
           </div>
