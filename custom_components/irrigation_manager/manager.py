@@ -1368,7 +1368,14 @@ class IrrigationManager:
                 return
             identity = self._active_run_identity()
             if identity is not None:
-                self._active_external_violation = (identity, reason, None)
+                self._active_external_violation = (identity, reason, "installation")
+            self._stored_state = replace(
+                self._stored_state,
+                installation_safety_lock=reason,
+                installation_safety_lock_at=datetime.now(UTC).isoformat(),
+            )
+            await self._store.async_save(self._stored_state)
+            self._publish(status="safety_lock", active_zone_id=active.zone_id)
             for task in (self._active_task, self._maintenance_task):
                 if task is not None and not task.done():
                     task.cancel()
