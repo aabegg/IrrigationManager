@@ -177,17 +177,12 @@ async def test_meter_adapter_rejects_non_finite_and_negative_values(
         await HomeAssistantMeter(hass, plant.meter_entity_id).read_raw_liters()
 
 
-async def test_meter_adapter_rejects_stale_samples(hass: HomeAssistant) -> None:
-    """Require a recent cumulative sample before trusting volume control."""
+async def test_meter_adapter_accepts_unchanged_available_sample(hass: HomeAssistant) -> None:
+    """Do not require quiet cumulative meters to publish artificial heartbeats."""
     plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
     await asyncio.sleep(0.01)
 
-    with pytest.raises(HomeAssistantError, match="stale"):
-        await HomeAssistantMeter(
-            hass,
-            plant.meter_entity_id,
-            max_age_seconds=0.001,
-        ).read_raw_liters()
+    assert await HomeAssistantMeter(hass, plant.meter_entity_id).read_raw_liters() == 0
 
 
 @pytest.mark.parametrize(
@@ -694,7 +689,7 @@ async def test_weather_interlocks_fail_safe_and_allow_manual_rain_override(
 async def test_runtime_snapshots_use_minimum_limits_and_lifetime_includes_soaking(
     hass: HomeAssistant,
 ) -> None:
-    """Persist minimum safety ceilings and expire the operation during its soak."""
+    """Persist the accepted target runtime and expire the operation during its soak."""
     plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.zone_lawn": 10})
     entry = await plant.setup_entry(
         with_flow=False,
@@ -723,7 +718,7 @@ async def test_runtime_snapshots_use_minimum_limits_and_lifetime_includes_soakin
     )
     request = manager._request(str(response["request_id"]))
     assert request is not None
-    assert request.delivery_runtime_limit_seconds == pytest.approx(0.03)
+    assert request.delivery_runtime_limit_seconds == pytest.approx(0.02)
     assert request.operation_deadline_at is not None
     assert datetime.fromisoformat(request.operation_deadline_at) < datetime.fromisoformat(
         request.expires_at
@@ -731,7 +726,7 @@ async def test_runtime_snapshots_use_minimum_limits_and_lifetime_includes_soakin
     assert request.status == "expired"
     execution = manager._execution(request.execution_id)
     assert execution is not None
-    assert execution.delivery_runtime_limit_seconds == pytest.approx(0.03)
+    assert execution.delivery_runtime_limit_seconds == pytest.approx(0.02)
     assert execution.operation_deadline_at == request.operation_deadline_at
 
     deadline = request.operation_deadline_at
@@ -796,6 +791,8 @@ async def test_weather_unsafe_stops_supervised_tests_without_leaking_violation(
             await asyncio.sleep(0.001)
 
     assert manager._active_external_violation is None
+    assert manager._stored_state.installation_safety_lock is not None
+    assert manager._stored_state.zone_safety_locks == {}
     if kind == "calibration":
         assert manager._stored_state.calibration_proposal is None
 
@@ -803,6 +800,7 @@ async def test_weather_unsafe_stops_supervised_tests_without_leaking_violation(
     hass.states.async_set("sensor.frost", "10", {"unit_of_measurement": "°C"})
     hass.states.async_set("sensor.rain", "0")
     await hass.async_block_till_done()
+    await manager.async_reset_safety_lock()
     await manager.async_start_maintenance_test(
         zone_subentry_id="qualification-zone-1",
         duration_seconds=0.01,
@@ -819,8 +817,8 @@ async def test_weather_unsafe_stops_supervised_tests_without_leaking_violation(
     [
         ("switch.irrigation_main", STATE_UNKNOWN, "installation"),
         ("switch.irrigation_main", STATE_UNAVAILABLE, "installation"),
-        ("switch.zone_lawn", STATE_UNKNOWN, "zone"),
-        ("switch.zone_lawn", STATE_UNAVAILABLE, "zone"),
+        ("switch.zone_lawn", STATE_UNKNOWN, "installation"),
+        ("switch.zone_lawn", STATE_UNAVAILABLE, "installation"),
     ],
 )
 async def test_unavailable_active_feedback_fails_after_configured_grace(
@@ -862,13 +860,9 @@ async def test_unavailable_active_feedback_fails_after_configured_grace(
     assert manager._stored_state.zone_safety_locks == {}
     await asyncio.sleep(0.03)
 
-    if lock_scope == "installation":
-        assert "feedback unavailable" in (manager._stored_state.installation_safety_lock or "")
-    else:
-        assert (
-            "feedback unavailable"
-            in manager._stored_state.zone_safety_locks["qualification-zone-1"]
-        )
+    assert lock_scope == "installation"
+    assert "feedback unavailable" in (manager._stored_state.installation_safety_lock or "")
+    assert manager._stored_state.zone_safety_locks == {}
     assert plant.open_valves == set()
 
 

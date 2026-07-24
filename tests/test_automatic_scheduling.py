@@ -41,11 +41,14 @@ async def _setup_automatic_zone(
         title="Garden irrigation",
         data={
             "name": "Garden irrigation",
+            "operation_enabled": True,
             "automation_enabled": True,
+            "planning_model": "demand",
             "hardware_shutoff_acknowledged": True,
         },
         unique_id="installation-automatic",
-        minor_version=7,
+        version=2,
+        minor_version=0,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -875,6 +878,7 @@ async def test_delivery_credit_uses_request_snapshot_after_zone_reconfiguration(
     stored = await IrrigationStore(hass, entry.entry_id).async_load()
     assert stored.zone_deficit_mm["zone-lawn"] == pytest.approx(39)
     assert "zone-lawn" in stored.zone_last_effective_irrigation
+    assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_legacy_recovery_backfills_active_snapshot_from_linked_execution(

@@ -1,11 +1,9 @@
 """Config-flow behavior tests for Irrigation Manager."""
 
 import asyncio
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock, patch
 
-import pytest
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import STATE_OFF, UnitOfSpeed
 from homeassistant.core import HomeAssistant
@@ -17,16 +15,11 @@ from custom_components.irrigation_manager.const import (
     CONF_AUTOMATION_ENABLED,
     CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_FLOW_SENSOR,
-    CONF_LEAK_DURATION_SECONDS,
-    CONF_LEAK_FLOW_THRESHOLD,
-    CONF_LEAK_MONITORING,
     CONF_MAIN_VALVE,
     CONF_MAINTENANCE_CONFIRMATION_INTERVAL,
     CONF_MAINTENANCE_MAX_DURATION,
     CONF_METER_FAILURE_STRATEGY,
-    CONF_WATER_METER,
     CONF_WATERING_WINDOWS,
-    CONF_WEATHER_ENTITY,
     DOMAIN,
 )
 
@@ -44,7 +37,7 @@ async def test_user_can_create_an_irrigation_installation(
     hass: HomeAssistant,
     mock_setup_entry: None,
 ) -> None:
-    """Create one installation from validated HA entity selections."""
+    """Create one canonical v2 installation and its first timed zone."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_USER},
@@ -60,10 +53,13 @@ async def test_user_can_create_an_irrigation_installation(
     with patch(
         "custom_components.irrigation_manager.config_flow.uuid4",
     ) as uuid4:
-        uuid4.return_value.hex = "installation-1"
+        uuid4.side_effect = [
+            type("Id", (), {"hex": "installation-1"})(),
+            type("Id", (), {"hex": "zone-1"})(),
+        ]
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {"name": "Gartenbewässerung", "purpose": "private_garden"},
+            {"name": "Gartenbewässerung"},
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
@@ -72,38 +68,36 @@ async def test_user_can_create_an_irrigation_installation(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
-                "meter_kind": "cumulative",
-                CONF_WATER_METER: ("sensor.wasserzahler_bewasserung_wasserzahler_gesamt"),
-                CONF_FLOW_SENSOR: ("sensor.wasserzahler_bewasserung_wasserdurchfluss"),
+                "meter_type": "cumulative",
+                "meter_entity": "sensor.wasserzahler_bewasserung_wasserzahler_gesamt",
             },
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
-                "weather_strategy": "local",
-                CONF_WEATHER_ENTITY: "weather.forecast_home",
+                "name": "Rasen",
+                "zone_valve": "switch.relais_11",
+                "control_type": "time",
             },
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
-                "installation_max_delivery_runtime": 14_400,
-                "hardware_shutoff_acknowledged": True,
+                "monday_start": "04:00:00",
+                "monday_end": "05:00:00",
+                "monday_target": 600,
             },
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {"confirm_ready": True}
         )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Gartenbewässerung"
     assert result["result"].unique_id == "installation-1"
+    assert result["result"].version == 2
     assert result["data"][CONF_MAIN_VALVE] == "switch.relais_09"
-    assert result["data"][CONF_LEAK_MONITORING] is True
-    assert result["data"][CONF_LEAK_FLOW_THRESHOLD] == 0.5
-    assert result["data"][CONF_LEAK_DURATION_SECONDS] == 30
-    assert result["data"]["actuator_feedback_max_age_seconds"] == 300
-    assert result["data"]["external_failure_policy"] == "fail_safe"
+    assert result["data"]["meter_type"] == "cumulative"
+    zone = next(iter(result["result"].subentries.values()))
+    assert zone.unique_id == "zone-1"
+    assert zone.data["weekly_schedule"][0]["target"] == 600
 
 
 async def test_user_can_add_a_zone_subentry(hass: HomeAssistant) -> None:
@@ -305,23 +299,11 @@ async def test_portable_import_creates_new_entry_with_zone_subentries(
     )
 
     options = await hass.config_entries.options.async_init(entry.entry_id)
+    assert options["type"] is FlowResultType.MENU
     options = await hass.config_entries.options.async_configure(
-        options["flow_id"], {"next_step_id": "guided"}
+        options["flow_id"], {"next_step_id": "v2_installation"}
     )
-    options = await hass.config_entries.options.async_configure(
-        options["flow_id"], {"next_step_id": "guided_installation"}
-    )
-    options = await hass.config_entries.options.async_configure(
-        options["flow_id"],
-        {
-            "name": "Imported garden",
-            "hardware_shutoff_acknowledged": True,
-            CONF_AUTOMATION_ENABLED: True,
-        },
-    )
-    assert options["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.data["hardware_shutoff_acknowledged"] is True
-    assert entry.data[CONF_AUTOMATION_ENABLED] is True
+    assert options["step_id"] == "v2_installation"
 
 
 async def test_portable_new_entry_import_rejects_missing_target_entities(
@@ -1042,10 +1024,10 @@ async def test_zone_reconfigure_guides_flow_calibration(hass: HomeAssistant) -> 
     )
 
 
-async def test_novice_runtime_readiness_and_targets_match_guided_preview(
+async def test_legacy_guided_profiles_require_v2_reconfiguration_before_runtime(
     hass: HomeAssistant,
 ) -> None:
-    """Exercise persisted novice configs through the production automatic planner."""
+    """Reset legacy guided demand profiles instead of silently running them under v2."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden",
@@ -1059,7 +1041,7 @@ async def test_novice_runtime_readiness_and_targets_match_guided_preview(
         minor_version=7,
     )
     entry.add_to_hass(hass)
-    _, raised = await _create_guided_zone(
+    await _create_guided_zone(
         hass,
         entry,
         name="Runtime vegetables",
@@ -1081,7 +1063,7 @@ async def test_novice_runtime_readiness_and_targets_match_guided_preview(
         rate={"rate_source": "measured", "min_flow": 1.8, "max_flow": 2.2},
         request_automation=True,
     )
-    _, lawn = await _create_guided_zone(
+    await _create_guided_zone(
         hass,
         entry,
         name="Runtime lawn",
@@ -1108,33 +1090,20 @@ async def test_novice_runtime_readiness_and_targets_match_guided_preview(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     manager = entry.runtime_data.manager
-    for task in (manager._dispatcher_task, manager._automatic_planner_task):
-        if task is not None:
-            task.cancel()
-    await asyncio.gather(
-        *(task for task in (manager._dispatcher_task, manager._automatic_planner_task) if task),
-        return_exceptions=True,
+    assert entry.version == 2
+    assert entry.data["needs_reconfiguration"] is True
+    assert entry.data["operation_enabled"] is False
+    assert entry.data[CONF_AUTOMATION_ENABLED] is False
+    assert all(
+        subentry.data["needs_reconfiguration"] is True
+        and subentry.data["operation_enabled"] is False
+        and subentry.data[CONF_AUTOMATION_ENABLED] is False
+        and len(subentry.data["weekly_schedule"]) == 7
+        for subentry in entry.subentries.values()
     )
-    manager._dispatcher_task = None
-    manager._automatic_planner_task = None
     assert manager._stored_state.installation_safety_lock is None
     assert manager._stored_state.zone_safety_locks == {}
     now = datetime(2026, 7, 22, 4, 30, tzinfo=UTC)
-    manager._stored_state = replace(
-        manager._stored_state,
-        zone_deficit_mm={raised.unique_id: 15.75, lawn.unique_id: 18.0},
-        zone_last_effective_irrigation={
-            raised.unique_id: (now - timedelta(days=2)).isoformat(),
-            lawn.unique_id: (now - timedelta(days=2)).isoformat(),
-        },
-    )
 
     report = await manager.async_plan_automatic(dry_run=True, now=now)
-    decisions = {item["zone_id"]: item for item in report["zones"]}
-
-    assert decisions[raised.unique_id]["reason"] == "planned"
-    assert decisions[raised.unique_id]["target_liters"] == pytest.approx(42.0)
-    assert decisions[lawn.unique_id]["reason"] == "automation_disabled"
-    assert all(
-        lawn.unique_id not in request_id for request_id in report["would_create_request_ids"]
-    )
+    assert report["would_create_request_ids"] == []

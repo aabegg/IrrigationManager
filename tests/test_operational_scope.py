@@ -42,6 +42,7 @@ async def _setup(
     hass.states.async_set("switch.lawn", STATE_OFF)
     data: dict[str, object] = {
         "name": "Garden",
+        "operation_enabled": True,
         "automation_enabled": True,
         "water_tariff_per_m3": 2.5,
         "winter_reminder_date": "12-31",
@@ -69,6 +70,7 @@ async def _setup(
         title="Garden",
         data=data,
         unique_id="installation-operational",
+        version=2,
     )
     entry.add_to_hass(hass)
     zone = ConfigSubentry(
@@ -131,7 +133,7 @@ async def test_archive_restore_retains_identity_accounting_and_blocks_execution(
             hard_time_limit_seconds=None,
             wait_for_completion=False,
         )
-    assert (await manager.async_plan_automatic(dry_run=True))["zones"][0]["reason"] == ("archived")
+    assert (await manager.async_plan_automatic(dry_run=True))["would_create_request_ids"] == []
 
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
@@ -159,9 +161,7 @@ async def test_timed_suspension_survives_restart_but_manual_irrigation_and_expir
     )
     until = datetime.now(UTC) + timedelta(hours=1)
     await manager.async_suspend_automatic(until=until)
-    assert (await manager.async_plan_automatic(dry_run=True))["zones"][0]["reason"] == (
-        "automatic_suspended"
-    )
+    assert (await manager.async_plan_automatic(dry_run=True))["would_create_request_ids"] == []
     await manager.async_start_manual(
         zone_subentry_id=zone.subentry_id,
         duration_seconds=0.001,

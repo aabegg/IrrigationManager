@@ -25,8 +25,12 @@ const overviewRoles: Record<string, keyof OverviewCardConfig> = {
   dose: "dose_entity",
   pending: "pending_entity",
   next: "next_entity",
+  next_start: "next_start_entity",
   today_consumption: "today_consumption_entity",
   month_consumption: "month_consumption_entity",
+  runtime_today: "runtime_today_entity",
+  runtime_month: "runtime_month_entity",
+  physical_meter: "physical_meter_entity",
   model_quality: "model_quality_entity",
   winter: "winter_entity",
   maintenance: "maintenance_entity",
@@ -35,6 +39,7 @@ const overviewRoles: Record<string, keyof OverviewCardConfig> = {
 };
 
 const zoneRoles: Record<string, keyof ZoneCardConfig> = {
+  anchor: "zone_entity",
   zone: "zone_entity",
   automation_needed: "automation_needed_entity",
   safety_lock: "safety_lock_entity",
@@ -53,6 +58,11 @@ const zoneRoles: Record<string, keyof ZoneCardConfig> = {
   actual_flow: "actual_flow_entity",
   flow_deviation: "flow_deviation_entity",
   calculation: "calculation_entity",
+  water_today: "water_today_entity",
+  water_month: "water_month_entity",
+  runtime_today: "runtime_today_entity",
+  runtime_month: "runtime_month_entity",
+  next_irrigation: "next_irrigation_entity",
 };
 
 const installationZoneRoles: Record<string, keyof ZoneCardConfig> = {
@@ -131,10 +141,12 @@ function anchorValue(state: HassEntity, kind: "installation" | "zone"): string |
       : undefined;
   }
   const zoneSubentryId = state.attributes.zone_subentry_id;
-  return typeof zoneSubentryId === "string" &&
-    Object.keys(entityMapAttribute(state, "card_entities")).length > 0
-    ? `${configEntryId}:${zoneSubentryId}`
-    : undefined;
+  if (typeof zoneSubentryId !== "string") return undefined;
+  const roles = entityMapAttribute(state, "card_entities");
+  const isAnchor = roles.anchor
+    ? roles.anchor === state.entity_id
+    : roles.zone === state.entity_id;
+  return isAnchor ? `${configEntryId}:${zoneSubentryId}` : undefined;
 }
 
 export function inferConfigurationMode(
@@ -213,6 +225,10 @@ export function statusIcon(value: string): string {
     error: "mdi:alert-circle-outline",
     safety_lock: "mdi:lock-alert-outline",
     emergency_stop: "mdi:alert-octagon",
+    disabled: "mdi:water-off-outline",
+    automatic_disabled: "mdi:calendar-remove-outline",
+    installation_disabled: "mdi:power-plug-off-outline",
+    needs_reconfiguration: "mdi:cog-alert-outline",
     unavailable: "mdi:cloud-alert-outline",
     unknown: "mdi:help-circle-outline",
     on: "mdi:check-circle-outline",

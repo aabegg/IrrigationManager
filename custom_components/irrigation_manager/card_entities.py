@@ -15,8 +15,12 @@ INSTALLATION_CARD_ROLES: Mapping[str, tuple[str, str]] = {
     "dose": ("sensor", "current_dose"),
     "pending": ("sensor", "pending_requests"),
     "next": ("sensor", "next_zone"),
+    "next_start": ("sensor", "next_start"),
     "today_consumption": ("sensor", "water_today"),
     "month_consumption": ("sensor", "water_month"),
+    "runtime_today": ("sensor", "runtime_today"),
+    "runtime_month": ("sensor", "runtime_month"),
+    "physical_meter": ("sensor", "physical_meter"),
     "model_quality": ("sensor", "weather_model_quality"),
     "winter": ("binary_sensor", "winter_lock"),
     "maintenance": ("binary_sensor", "maintenance_mode"),
@@ -25,6 +29,7 @@ INSTALLATION_CARD_ROLES: Mapping[str, tuple[str, str]] = {
 }
 
 ZONE_CARD_ROLES: Mapping[str, tuple[str, str]] = {
+    "anchor": ("sensor", "zone_status"),
     "zone": ("sensor", "water_total"),
     "automation_needed": ("binary_sensor", "automation_needed"),
     "safety_lock": ("binary_sensor", "safety_lock"),
@@ -42,6 +47,11 @@ ZONE_CARD_ROLES: Mapping[str, tuple[str, str]] = {
     "expected_flow": ("sensor", "expected_flow"),
     "actual_flow": ("sensor", "actual_flow"),
     "flow_deviation": ("sensor", "flow_deviation"),
+    "water_today": ("sensor", "water_today"),
+    "water_month": ("sensor", "water_month"),
+    "runtime_today": ("sensor", "runtime_today"),
+    "runtime_month": ("sensor", "runtime_month"),
+    "next_irrigation": ("sensor", "next_irrigation"),
 }
 
 

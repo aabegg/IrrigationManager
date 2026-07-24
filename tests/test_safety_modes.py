@@ -41,6 +41,8 @@ async def _setup(
     confirmation_interval: float = 0.03,
     max_duration: float = 1,
     measured: bool = False,
+    with_flow: bool = True,
+    measured_liters: float = 0.003,
 ) -> tuple[MockConfigEntry, ConfigSubentry, list[tuple[str, str]]]:
     operations: list[tuple[str, str]] = []
 
@@ -57,7 +59,7 @@ async def _setup(
         if measured and entity_id == "switch.lawn" and was_on:
             hass.states.async_set(
                 "sensor.water_meter",
-                "0.003",
+                str(measured_liters),
                 {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolume.LITERS},
             )
 
@@ -66,7 +68,10 @@ async def _setup(
     hass.states.async_set("switch.lawn", STATE_OFF)
     data: dict[str, object] = {
         "name": "Garden",
+        "operation_enabled": True,
         "automation_enabled": True,
+        "meter_type": "none",
+        "leak_flow_threshold": 100,
         "hardware_shutoff_acknowledged": True,
         "maintenance_max_duration": max_duration,
         "maintenance_confirmation_interval": confirmation_interval,
@@ -76,8 +81,8 @@ async def _setup(
         data.update(
             {
                 "water_meter": "sensor.water_meter",
-                "flow_sensor": "sensor.flow",
-                "flow_max_age_seconds": 300,
+                "meter_type": "cumulative",
+                "meter_entity": "sensor.water_meter",
                 "leak_monitoring": False,
             }
         )
@@ -86,17 +91,20 @@ async def _setup(
             "0",
             {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolume.LITERS},
         )
-        hass.states.async_set(
-            "sensor.flow",
-            "10",
-            {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolumeFlowRate.LITERS_PER_MINUTE},
-        )
+        if with_flow:
+            data["flow_sensor"] = "sensor.flow"
+            hass.states.async_set(
+                "sensor.flow",
+                "10",
+                {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolumeFlowRate.LITERS_PER_MINUTE},
+            )
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden",
         data=data,
         unique_id="installation-safety-modes",
-        minor_version=7,
+        version=2,
+        minor_version=0,
     )
     entry.add_to_hass(hass)
     zone = ConfigSubentry(
@@ -125,6 +133,9 @@ async def _setup(
     hass.config_entries.async_add_subentry(entry, zone)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    assert entry.runtime_data.manager._stored_state.installation_safety_lock is None, (
+        entry.runtime_data.manager._stored_state.installation_safety_lock
+    )
     operations.clear()
     return entry, zone, operations
 
@@ -203,6 +214,20 @@ async def test_winter_lock_closes_persists_and_blocks_every_watering_path(
     assert ("off", "switch.lawn") in operations
     assert timeline.index("close") < timeline.index("event")
     unsubscribe()
+    assert entry.runtime_data.manager._stored_state.installation_safety_lock is not None
+    await hass.services.async_call(
+        DOMAIN,
+        "clear_winter_lock",
+        {"config_entry_id": entry.entry_id},
+        blocking=True,
+    )
+    await entry.runtime_data.manager.async_reset_safety_lock()
+    await hass.services.async_call(
+        DOMAIN,
+        "set_winter_lock",
+        {"config_entry_id": entry.entry_id},
+        blocking=True,
+    )
     with pytest.raises(HomeAssistantError, match="winter lock"):
         await entry.runtime_data.manager.async_start_manual(
             zone_subentry_id=zone.subentry_id,
@@ -217,7 +242,7 @@ async def test_winter_lock_closes_persists_and_blocks_every_watering_path(
             duration_seconds=0.1,
         )
     report = await entry.runtime_data.manager.async_plan_automatic(dry_run=True)
-    assert report["zones"][0]["reason"] == "safety_blocked"
+    assert report["would_create_request_ids"] == []
 
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
@@ -265,8 +290,6 @@ async def test_lost_deadman_confirmation_closes_valve_and_clears_maintenance(
             hard_time_limit_seconds=None,
             wait_for_completion=False,
         )
-    report = await entry.runtime_data.manager.async_plan_automatic(dry_run=True)
-    assert report["zones"][0]["reason"] == "safety_blocked"
     await _wait_until(lambda: entry.runtime_data.manager._stored_state.maintenance_test is None)
 
     assert hass.states.get("switch.lawn").state == STATE_OFF
@@ -415,6 +438,10 @@ async def test_calibration_books_water_and_requires_separate_acceptance(
     assert proposal is not None
     assert proposal.status == "pending"
     assert proposal.delivered_liters == pytest.approx(0.003)
+    assert 0 < proposal.duration_seconds < 0.02
+    assert proposal.average_flow_l_min == pytest.approx(
+        proposal.delivered_liters * 60 / proposal.duration_seconds
+    )
     assert stored.zone_totals_liters["zone-lawn"] == pytest.approx(0.003)
     assert entry.subentries[zone.subentry_id].data["min_flow"] == 5
     assert entry.subentries[zone.subentry_id].data["max_flow"] == 15
@@ -425,8 +452,69 @@ async def test_calibration_books_water_and_requires_separate_acceptance(
     )
     await hass.async_block_till_done()
 
-    assert entry.subentries[zone.subentry_id].data["min_flow"] == pytest.approx(8)
-    assert entry.subentries[zone.subentry_id].data["max_flow"] == pytest.approx(12)
+    assert entry.subentries[zone.subentry_id].data["min_flow"] == pytest.approx(
+        proposal.average_flow_l_min * 0.8
+    )
+    assert entry.subentries[zone.subentry_id].data["max_flow"] == pytest.approx(
+        proposal.average_flow_l_min * 1.2
+    )
+
+
+async def test_calibration_derives_flow_from_cumulative_meter_without_flow_sensor(
+    hass: HomeAssistant,
+) -> None:
+    """Calibrate from delivered volume and duration without a direct flow sensor."""
+    entry, zone, operations = await _setup(hass, measured=True, with_flow=False)
+    manager = entry.runtime_data.manager
+    await manager.async_start_maintenance_test(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=0.02,
+        kind="calibration",
+    )
+    task = manager._maintenance_task
+    assert task is not None
+    result = await task
+
+    assert result.safety_violation is None
+    assert ("on", "switch.lawn") in operations
+    assert manager._stored_state.installation_safety_lock is None
+    assert manager._stored_state.maintenance_test is None
+    proposal = manager._stored_state.calibration_proposal
+    assert proposal is not None
+    assert proposal.average_flow_l_min == pytest.approx(
+        proposal.delivered_liters * 60 / proposal.duration_seconds
+    )
+
+
+async def test_calibration_without_meter_progress_locks_installation(
+    hass: HomeAssistant,
+) -> None:
+    """Fail safely when a supervised calibration observes no physical water response."""
+    entry, zone, _ = await _setup(
+        hass,
+        measured=True,
+        with_flow=False,
+        measured_liters=0,
+    )
+    manager = entry.runtime_data.manager
+    await manager.async_start_maintenance_test(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=0.02,
+        kind="calibration",
+    )
+    task = manager._maintenance_task
+    assert task is not None
+
+    result = await task
+
+    assert result.safety_scope == "zone"
+    assert "no cumulative meter progress" in (result.safety_violation or "").lower()
+    assert manager._stored_state.zone_safety_locks == {}
+    assert (
+        "no cumulative meter progress"
+        in (manager._stored_state.installation_safety_lock or "").lower()
+    )
+    assert manager._stored_state.calibration_proposal is None
 
 
 async def test_calibration_accept_rejects_reconfigured_zone(hass: HomeAssistant) -> None:

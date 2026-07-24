@@ -1,5 +1,7 @@
 # Sicherheit
 
+> **Überholt für Version 2, soweit widersprüchlich:** `docs/17_Neukonzept.md` ist bindend. Version 2 besitzt eine anlagenweite Sicherheitssperre; frühere Anforderungen an eigenständige zonale Sicherheitssperren sind nicht maßgeblich. Die bestehenden Fail-safe-Schließ-, Exklusivitäts- und Zeitbegrenzungsregeln gelten weiter, soweit das Neukonzept sie nicht ersetzt.
+
 ## Sicherheitsprinzipien
 
 - Sicherheit hat Vorrang vor Pflanzenschutz, Wassersparen und Komfort.
@@ -124,7 +126,11 @@ Das Hauptventil wird zwischen Zonen und Teilgaben geschlossen.
 ## Sensor- und Wetterausfall
 
 - keine stille Umdeutung ungültiger Werte zu null
-- Datenalter und Plausibilität prüfen
+- Verfügbarkeit und Plausibilität bei jeder aktiven Abfrage prüfen
+- das Datenalter für Zustandsaussagen wie Freigaben, Rückmeldungen und Wetter prüfen;
+  unveränderte kumulative Zähler- und Durchflusswerte benötigen keinen künstlichen Heartbeat
+- physische Messreaktion relativ zum Bewässerungsvorgang prüfen; eine Kalibrierung ohne
+  positive kumulative Zählerdifferenz sperrt die Zone
 - festgelegte Modell- oder Zählerfallbacks verwenden
 - verwendeten Fallback sichtbar kennzeichnen
 - nach Ablauf erlaubter Fallbackdauer automatische Bedarfsbewässerung aussetzen

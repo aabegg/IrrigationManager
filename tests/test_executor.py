@@ -425,6 +425,126 @@ async def test_final_meter_failure_uses_integrated_flow_consumption() -> None:
     assert result.safety_violation is None
 
 
+async def test_required_meter_progress_rejects_zero_delivery() -> None:
+    """Treat a missing cumulative response as a zone fault for calibration."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FakeMeter([100, 100, 100]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            duration_seconds=5,
+            monitor_interval_seconds=1,
+            require_meter_progress=True,
+        )
+    )
+
+    assert not result.target_reached
+    assert result.safety_scope == "zone"
+    assert "No cumulative meter progress" in (result.safety_violation or "")
+
+
+async def test_explicit_stop_does_not_turn_missing_meter_progress_into_lock() -> None:
+    """Let a user stop before the next meter increment without creating a safety fault."""
+    clock = BlockingClock()
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FakeMeter([100, 100]),
+        clock=clock,
+    )
+    task = asyncio.create_task(
+        executor.execute(
+            ExecutionRequest(
+                zone_id="lawn",
+                zone_valve="switch.zone_lawn",
+                main_valve=None,
+                duration_seconds=60,
+                monitor_interval_seconds=1,
+                require_meter_progress=True,
+            )
+        )
+    )
+    await clock.started.wait()
+
+    task.cancel()
+    result = await task
+
+    assert result.stopped
+    assert result.safety_violation is None
+    assert result.safety_scope is None
+
+
+async def test_required_meter_progress_does_not_accept_direct_flow_fallback() -> None:
+    """Require cumulative evidence even when direct flow can account consumption."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FailingMeter([100, RuntimeError("offline")]),
+        flow=FakeFlow([60]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            duration_seconds=1,
+            monitor_interval_seconds=1,
+            observe_flow=True,
+            require_meter_progress=True,
+        )
+    )
+
+    assert result.measurement_quality == "integrated"
+    assert not result.target_reached
+    assert result.safety_scope == "zone"
+    assert "No cumulative meter progress" in (result.safety_violation or "")
+
+
+@pytest.mark.parametrize(
+    ("meter_end", "minimum", "maximum", "scope", "message"),
+    [
+        (0.1, 10, 20, "zone", "below minimum"),
+        (1.0, 10, 20, "installation", "plausible execution maximum"),
+    ],
+)
+async def test_required_meter_progress_checks_average_flow(
+    meter_end: float,
+    minimum: float,
+    maximum: float,
+    scope: str,
+    message: str,
+) -> None:
+    """Use cumulative delivery for authoritative end-of-operation flow safety."""
+    executor = IrrigationExecutor(
+        actuators=FakeActuators(),
+        meter=FakeMeter([0, meter_end]),
+        clock=FakeClock(),
+    )
+
+    result = await executor.execute(
+        ExecutionRequest(
+            zone_id="lawn",
+            zone_valve="switch.zone_lawn",
+            main_valve=None,
+            duration_seconds=1,
+            monitor_interval_seconds=1,
+            minimum_flow_l_min=minimum,
+            maximum_flow_l_min=maximum,
+            require_meter_progress=True,
+        )
+    )
+
+    assert not result.target_reached
+    assert result.safety_scope == scope
+    assert message in (result.safety_violation or "")
+
+
 async def test_initial_meter_read_can_enter_explicit_estimated_fallback() -> None:
     """Handle meter loss between manager preflight and executor baseline read."""
     executor = IrrigationExecutor(

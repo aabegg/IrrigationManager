@@ -11,7 +11,13 @@ export interface HassEntity {
 export interface HomeAssistant {
   language: string;
   states: Record<string, HassEntity>;
-  callService(domain: string, service: string, data?: Record<string, unknown>): Promise<unknown>;
+  callService(
+    domain: string,
+    service: string,
+    data?: Record<string, unknown>,
+    target?: Record<string, unknown>,
+    returnResponse?: boolean,
+  ): Promise<unknown>;
   formatEntityState?(state: HassEntity): string;
 }
 
@@ -30,8 +36,12 @@ export interface OverviewCardConfig {
   dose_entity?: string;
   pending_entity?: string;
   next_entity?: string;
+  next_start_entity?: string;
   today_consumption_entity?: string;
   month_consumption_entity?: string;
+  runtime_today_entity?: string;
+  runtime_month_entity?: string;
+  physical_meter_entity?: string;
   model_quality_entity?: string;
   winter_entity?: string;
   maintenance_entity?: string;
@@ -68,6 +78,11 @@ export interface ZoneCardConfig {
   actual_flow_entity?: string;
   flow_deviation_entity?: string;
   calculation_entity?: string;
+  water_today_entity?: string;
+  water_month_entity?: string;
+  runtime_today_entity?: string;
+  runtime_month_entity?: string;
+  next_irrigation_entity?: string;
   display_mode?: DisplayMode;
   visible_metrics?: string[];
   visible_actions?: string[];

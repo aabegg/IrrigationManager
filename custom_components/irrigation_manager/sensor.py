@@ -30,7 +30,16 @@ from .card_entities import (
     ZONE_CARD_ROLES,
     registry_card_entities,
 )
-from .const import CONF_WATER_TARIFF_PER_M3, DOMAIN, INTEGRATION_NAME, SUBENTRY_TYPE_ZONE
+from .const import (
+    CONF_METER_TYPE,
+    CONF_RAW_METER,
+    CONF_WATER_METER,
+    CONF_WATER_TARIFF_PER_M3,
+    DOMAIN,
+    INTEGRATION_NAME,
+    METER_TYPE_NONE,
+    SUBENTRY_TYPE_ZONE,
+)
 from .coordinator import IrrigationCoordinator
 from .models import InstallationSnapshot
 from .runtime import IrrigationConfigEntry
@@ -70,7 +79,13 @@ async def async_setup_entry(
 ) -> None:
     """Create installation and per-zone water sensors."""
     installation_id = entry.unique_id or entry.entry_id
-    async_add_entities(
+    meter_configured = (
+        entry.version < 2
+        or entry.data.get(CONF_METER_TYPE, METER_TYPE_NONE) != METER_TYPE_NONE
+        or CONF_WATER_METER in entry.data
+        or CONF_RAW_METER in entry.data
+    )
+    water_entities = (
         [
             InstallationWaterSensor(
                 coordinator=entry.runtime_data.coordinator,
@@ -102,6 +117,13 @@ async def async_setup_entry(
                 )
                 for key in ("current_flow", "physical_meter", "meter_measurement_quality")
             ],
+        ]
+        if meter_configured
+        else []
+    )
+    async_add_entities(
+        [
+            *water_entities,
             InstallationStatusSensor(
                 hass=hass,
                 coordinator=entry.runtime_data.coordinator,
@@ -123,6 +145,18 @@ async def async_setup_entry(
                 entry=entry,
                 installation_id=installation_id,
                 key="pending_requests",
+            ),
+            InstallationRuntimeSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                period="today",
+            ),
+            InstallationRuntimeSensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry=entry,
+                installation_id=installation_id,
+                period="month",
             ),
             IrrigationQueueSensor(
                 coordinator=entry.runtime_data.coordinator,
@@ -195,7 +229,7 @@ async def async_setup_entry(
 
     for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
         zone_id = subentry.unique_id or subentry.subentry_id
-        async_add_entities(
+        zone_water_entities = (
             [
                 ZoneWaterSensor(
                     hass=hass,
@@ -207,6 +241,31 @@ async def async_setup_entry(
                     config_entry_id=entry.entry_id,
                     zone_subentry_id=subentry.subentry_id,
                 ),
+                ZonePeriodSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    period="today",
+                    metric="water",
+                ),
+                ZonePeriodSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    period="month",
+                    metric="water",
+                ),
+            ]
+            if meter_configured
+            else []
+        )
+        async_add_entities(
+            [
+                *zone_water_entities,
                 ZoneLastDeliveredSensor(
                     coordinator=entry.runtime_data.coordinator,
                     entry=entry,
@@ -227,6 +286,24 @@ async def async_setup_entry(
                     installation_id=installation_id,
                     zone_id=zone_id,
                     zone_name=subentry.title,
+                ),
+                ZonePeriodSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    period="today",
+                    metric="runtime",
+                ),
+                ZonePeriodSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    period="month",
+                    metric="runtime",
                 ),
                 ZonePlanningValueSensor(
                     coordinator=entry.runtime_data.coordinator,
@@ -251,6 +328,14 @@ async def async_setup_entry(
                     zone_id=zone_id,
                     zone_name=subentry.title,
                     key="next_watering_window",
+                ),
+                ZonePlanningValueSensor(
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    key="next_irrigation",
                 ),
                 ZonePlanningValueSensor(
                     coordinator=entry.runtime_data.coordinator,
@@ -300,6 +385,16 @@ async def async_setup_entry(
                     zone_name=subentry.title,
                     key="hardware_health",
                 ),
+                ZoneStatusContractSensor(
+                    hass=hass,
+                    coordinator=entry.runtime_data.coordinator,
+                    entry=entry,
+                    installation_id=installation_id,
+                    zone_id=zone_id,
+                    zone_name=subentry.title,
+                    config_entry_id=entry.entry_id,
+                    zone_subentry_id=subentry.subentry_id,
+                ),
                 *[
                     ZoneContractSensor(
                         coordinator=entry.runtime_data.coordinator,
@@ -310,7 +405,6 @@ async def async_setup_entry(
                         key=key,
                     )
                     for key in (
-                        "zone_status",
                         "zone_priority",
                         "last_effective_irrigation",
                         "demand_coverage",
@@ -425,6 +519,46 @@ class InstallationPeriodWaterSensor(CoordinatorEntity[IrrigationCoordinator], Se
         return {"history_quality": self.coordinator.data.water_period_quality}
 
 
+class InstallationRuntimeSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Completed irrigation runtime in a local calendar period."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_suggested_display_precision = 0
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        period: str,
+    ) -> None:
+        """Initialize one installation runtime period."""
+        super().__init__(coordinator)
+        self._period = period
+        self._attr_translation_key = f"runtime_{period}"
+        self._attr_unique_id = f"{installation_id}_runtime_{period}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, installation_id)},
+            name=entry.title,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation installation",
+        )
+
+    @property
+    @override
+    def native_value(self) -> Decimal:
+        value = (
+            self.coordinator.data.runtime_today_seconds
+            if self._period == "today"
+            else self.coordinator.data.runtime_month_seconds
+        )
+        return Decimal(str(value))
+
+
 class InstallationMeterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
     """Expose current flow, corrected physical total, or meter quality."""
 
@@ -518,6 +652,9 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
             "emergency_stop",
             "winter_lock",
             "maintenance",
+            "disabled",
+            "automatic_disabled",
+            "needs_reconfiguration",
         ]
         self._attr_unique_id = f"{installation_id}_status"
         self._attr_device_info = DeviceInfo(
@@ -542,6 +679,9 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
             "card_name": self._card_name,
             "card_entities": registry_card_entities(
                 self._hass, self._installation_id, INSTALLATION_CARD_ROLES
+            ),
+            "volume_control_available": (
+                self.coordinator.data.meter_measurement_quality == "measured"
             ),
             "recent_history": list(self.coordinator.data.recent_history),
         }
@@ -962,6 +1102,62 @@ class ZoneWaterSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
         self.async_write_ha_state()
 
 
+class ZonePeriodSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
+    """Zone runtime or measured water for one local calendar period."""
+
+    _attr_has_entity_name = True
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(
+        self,
+        *,
+        coordinator: IrrigationCoordinator,
+        entry: IrrigationConfigEntry,
+        installation_id: str,
+        zone_id: str,
+        zone_name: str,
+        period: str,
+        metric: str,
+    ) -> None:
+        """Initialize one zone period metric."""
+        super().__init__(coordinator)
+        self._zone_id = zone_id
+        self._period = period
+        self._metric = metric
+        self._attr_translation_key = f"{metric}_{period}"
+        self._attr_unique_id = f"{zone_id}_{metric}_{period}"
+        if metric == "water":
+            self._attr_device_class = SensorDeviceClass.WATER
+            self._attr_native_unit_of_measurement = UnitOfVolume.LITERS
+            self._attr_suggested_display_precision = 1
+        else:
+            self._attr_device_class = SensorDeviceClass.DURATION
+            self._attr_native_unit_of_measurement = UnitOfTime.SECONDS
+            self._attr_suggested_display_precision = 0
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, zone_id)},
+            name=zone_name,
+            manufacturer=INTEGRATION_NAME,
+            model="Irrigation zone",
+            via_device=(DOMAIN, installation_id),
+        )
+
+    @property
+    @override
+    def native_value(self) -> Decimal:
+        snapshot = self.coordinator.data
+        if self._metric == "water":
+            value = snapshot.zone_water_period_liters.get(self._zone_id, {}).get(self._period, 0.0)
+        else:
+            values = (
+                snapshot.zone_runtime_today_seconds
+                if self._period == "today"
+                else snapshot.zone_runtime_month_seconds
+            )
+            value = values.get(self._zone_id, 0.0)
+        return Decimal(str(value))
+
+
 class _ZoneObservationSensor(CoordinatorEntity[IrrigationCoordinator], SensorEntity):
     """Base entity for a zone's latest delivery observations."""
 
@@ -1078,7 +1274,7 @@ class ZonePlanningValueSensor(_ZoneObservationSensor):
             self._attr_native_unit_of_measurement = UnitOfVolume.LITERS
             self._attr_state_class = SensorStateClass.MEASUREMENT
             self._attr_suggested_display_precision = 1
-        elif key == "next_watering_window":
+        elif key in {"next_watering_window", "next_irrigation"}:
             self._attr_device_class = SensorDeviceClass.TIMESTAMP
         elif key in {"soil_moisture_status", "hardware_health"}:
             self._attr_device_class = SensorDeviceClass.ENUM
@@ -1109,6 +1305,9 @@ class ZonePlanningValueSensor(_ZoneObservationSensor):
             return Decimal(str(value)) if value is not None else None
         if self._observation_key == "next_watering_window":
             timestamp = snapshot.zone_next_window.get(self._zone_id)
+            return datetime.fromisoformat(timestamp) if timestamp is not None else None
+        if self._observation_key == "next_irrigation":
+            timestamp = snapshot.zone_next_irrigation.get(self._zone_id)
             return datetime.fromisoformat(timestamp) if timestamp is not None else None
         if self._observation_key == "soil_moisture_status":
             moisture = snapshot.zone_soil_moisture.get(self._zone_id)
@@ -1158,6 +1357,10 @@ class ZoneContractSensor(_ZoneObservationSensor):
                 "suspended",
                 "safety_lock",
                 "archived",
+                "disabled",
+                "installation_disabled",
+                "automatic_disabled",
+                "needs_reconfiguration",
             ]
         elif key == "last_effective_irrigation":
             self._attr_device_class = SensorDeviceClass.TIMESTAMP
@@ -1189,3 +1392,52 @@ class ZoneContractSensor(_ZoneObservationSensor):
         }[key]
         numeric_value = values.get(self._zone_id)
         return Decimal(str(numeric_value)) if numeric_value is not None else None
+
+
+class ZoneStatusContractSensor(ZoneContractSensor):
+    """Effective zone status and stable card action/capability anchor."""
+
+    def __init__(
+        self,
+        *,
+        hass: HomeAssistant,
+        config_entry_id: str,
+        zone_subentry_id: str,
+        **kwargs: object,
+    ) -> None:
+        """Initialize the zone card anchor."""
+        self._hass = hass
+        self._installation_id = str(kwargs["installation_id"])
+        self._config_entry_id = config_entry_id
+        self._zone_subentry_id = zone_subentry_id
+        self._card_name = str(kwargs["zone_name"])
+        super().__init__(key="zone_status", **kwargs)
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, object]:
+        snapshot = self.coordinator.data
+        return {
+            "config_entry_id": self._config_entry_id,
+            "zone_subentry_id": self._zone_subentry_id,
+            "card_name": self._card_name,
+            "card_entities": registry_card_entities(self._hass, self._zone_id, ZONE_CARD_ROLES),
+            "installation_card_entities": registry_card_entities(
+                self._hass, self._installation_id, INSTALLATION_CARD_ROLES
+            ),
+            "volume_control_available": snapshot.meter_measurement_quality == "measured",
+            "active_execution": snapshot.active_execution_id is not None,
+        }
+
+    @override
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._hass.bus.async_listen(
+                er.EVENT_ENTITY_REGISTRY_UPDATED, self._handle_registry_update
+            )
+        )
+
+    @callback
+    def _handle_registry_update(self, event: Event[er.EventEntityRegistryUpdatedData]) -> None:
+        self.async_write_ha_state()

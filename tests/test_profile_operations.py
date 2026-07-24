@@ -17,8 +17,16 @@ async def _setup_manager(hass: HomeAssistant):
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden",
-        data={"name": "Garden", "unrelated_setting": "preserve-me"},
+        data={
+            "name": "Garden",
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": False,
+            CONF_CUSTOM_PROFILES: {},
+            "unrelated_setting": "preserve-me",
+        },
         unique_id="profile-races",
+        version=2,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -91,7 +99,7 @@ async def test_stale_profile_hash_rejects_copy_without_losing_concurrent_update(
 async def test_profile_copy_during_open_operation_persists_but_runtime_stays_immutable(
     hass: HomeAssistant,
 ) -> None:
-    """Defer applying a fresh profile config until the current snapshot is fully idle."""
+    """A pending queue does not defer applying fresh profile configuration."""
     entry, manager = await _setup_manager(hass)
     now = datetime.now(UTC)
     pending = ManualIrrigationRequest(
@@ -116,9 +124,10 @@ async def test_profile_copy_during_open_operation_persists_but_runtime_stays_imm
         new_id="plant:during-operation",
         name="During operation",
     )
-    await asyncio.sleep(0)
+    await hass.async_block_till_done()
 
     assert "plant:during-operation" in entry.data[CONF_CUSTOM_PROFILES]
-    assert manager._installation_data[CONF_CUSTOM_PROFILES] == {}
-    assert manager._pending_reload_task is not None
-    assert not manager._pending_reload_task.done()
+    reloaded = entry.runtime_data.manager
+    assert reloaded is not manager
+    assert "plant:during-operation" in reloaded._installation_data[CONF_CUSTOM_PROFILES]
+    assert await hass.config_entries.async_unload(entry.entry_id)

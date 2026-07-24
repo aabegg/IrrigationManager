@@ -10,10 +10,11 @@ CONF_MAIN_VALVE_FEEDBACK: Final = "main_valve_feedback"
 CONF_WATER_METER: Final = "water_meter"
 CONF_RAW_METER: Final = "raw_meter"
 CONF_LITERS_PER_COUNT: Final = "liters_per_count"
+CONF_METER_TYPE: Final = "meter_type"
+CONF_METER_ENTITY: Final = "meter_entity"
+CONF_LITERS_PER_PULSE: Final = "liters_per_pulse"
 CONF_METER_RESOLUTION_LITERS: Final = "meter_resolution_liters"
-CONF_METER_MAX_AGE_SECONDS: Final = "meter_max_age_seconds"
 CONF_FLOW_SENSOR: Final = "flow_sensor"
-CONF_FLOW_MAX_AGE_SECONDS: Final = "flow_max_age_seconds"
 CONF_LEAK_MONITORING: Final = "leak_monitoring"
 CONF_LEAK_FLOW_THRESHOLD: Final = "leak_flow_threshold"
 CONF_LEAK_DURATION_SECONDS: Final = "leak_duration_seconds"
@@ -69,6 +70,11 @@ CONF_MAX_DOSE_AMOUNT: Final = "max_dose_amount"
 CONF_MAX_DOSE_DURATION: Final = "max_dose_duration"
 CONF_SOAK_DURATION: Final = "soak_duration"
 CONF_AUTOMATION_ENABLED: Final = "automation_enabled"
+CONF_OPERATION_ENABLED: Final = "operation_enabled"
+CONF_NEEDS_RECONFIGURATION: Final = "needs_reconfiguration"
+CONF_CONTROL_TYPE: Final = "control_type"
+CONF_WEEKLY_SCHEDULE: Final = "weekly_schedule"
+CONF_VOLUME_MAX_RUNTIME: Final = "volume_max_runtime"
 CONF_WATERING_MODE: Final = "watering_mode"
 CONF_AREA_M2: Final = "area_m2"
 CONF_APPLICATION_EFFICIENCY: Final = "application_efficiency"
@@ -138,6 +144,21 @@ SOIL_MOISTURE_ROLE_INHIBIT: Final = "safety_wet_inhibit"
 SOIL_MOISTURE_ROLE_CORRECTION: Final = "conservative_correction"
 
 SUBENTRY_TYPE_ZONE: Final = "zone"
+
+METER_TYPE_NONE: Final = "none"
+METER_TYPE_CUMULATIVE: Final = "cumulative"
+METER_TYPE_PULSE: Final = "pulse"
+CONTROL_TYPE_TIME: Final = "time"
+CONTROL_TYPE_VOLUME: Final = "volume"
+WEEKDAYS: Final = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
 
 EVENT_IRRIGATION_MANAGER: Final = "irrigation_manager_event"
 EXPORT_SCHEMA_VERSION: Final = 1

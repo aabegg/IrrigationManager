@@ -421,6 +421,7 @@ class InstallationSnapshot:
     unassigned_measurement_quality: str = "unknown"
     unassigned_measurement_origin: str = "unknown"
     water_period_liters: dict[str, float] = field(default_factory=dict)
+    zone_water_period_liters: dict[str, dict[str, float]] = field(default_factory=dict)
     water_period_quality: str = "complete"
     current_flow_l_min: float | None = None
     physical_meter_liters: float | None = None
@@ -450,6 +451,7 @@ class InstallationSnapshot:
     zone_target_liters: dict[str, float] = field(default_factory=dict)
     zone_automation_needed: dict[str, bool] = field(default_factory=dict)
     zone_next_window: dict[str, str] = field(default_factory=dict)
+    zone_next_irrigation: dict[str, str] = field(default_factory=dict)
     zone_planning_reason: dict[str, str] = field(default_factory=dict)
     frost_blocked: bool = False
     rain_stop_active: bool = False
@@ -477,6 +479,8 @@ class InstallationSnapshot:
     unassigned_cost: float | None = None
     water_tariff_per_m3: float | None = None
     automation_enabled: bool = True
+    operation_enabled: bool = True
+    zone_operation_enabled: dict[str, bool] = field(default_factory=dict)
     automatic_suspended_until: str | None = None
     zone_automatic_suspended_until: dict[str, str] = field(default_factory=dict)
     zone_automation_enabled: dict[str, bool] = field(default_factory=dict)
@@ -495,6 +499,10 @@ class InstallationSnapshot:
     spring_checklist_status: str = "not_configured"
     spring_test_status: str = "not_started"
     recent_history: tuple[dict[str, object], ...] = ()
+    runtime_today_seconds: float = 0.0
+    runtime_month_seconds: float = 0.0
+    zone_runtime_today_seconds: dict[str, float] = field(default_factory=dict)
+    zone_runtime_month_seconds: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -806,6 +814,10 @@ class StoredInstallationState:
     spring_checklist_completed: tuple[str, ...] = ()
     spring_test_status: str = "not_started"
     winter_reminder_last_year: int | None = None
+    operation_enabled: bool | None = None
+    automation_enabled: bool | None = None
+    zone_operation_enabled: dict[str, bool] = field(default_factory=dict)
+    zone_automation_enabled: dict[str, bool] = field(default_factory=dict)
 
     @staticmethod
     def _float(value: object) -> float:
@@ -957,6 +969,8 @@ class StoredInstallationState:
         raw_zone_costs = data.get("zone_costs", {})
         raw_archived_zones = data.get("archived_zones", {})
         raw_zone_suspensions = data.get("zone_automatic_suspended_until", {})
+        raw_zone_operation = data.get("zone_operation_enabled", {})
+        raw_zone_automation = data.get("zone_automation_enabled", {})
         raw_task_state = data.get("maintenance_task_state", {})
         automatic_suspended_until = data.get("automatic_suspended_until")
         spring_test_status = data.get("spring_test_status", "not_started")
@@ -973,6 +987,22 @@ class StoredInstallationState:
             for key, value in raw_zone_suspensions.items()
         ):
             raise ValueError("Stored zone suspensions are malformed")
+        if not isinstance(raw_zone_operation, dict) or not all(
+            isinstance(key, str) and isinstance(value, bool)
+            for key, value in raw_zone_operation.items()
+        ):
+            raise ValueError("Stored zone operation releases are malformed")
+        if not isinstance(raw_zone_automation, dict) or not all(
+            isinstance(key, str) and isinstance(value, bool)
+            for key, value in raw_zone_automation.items()
+        ):
+            raise ValueError("Stored zone automation releases are malformed")
+        operation_enabled = data.get("operation_enabled")
+        automation_enabled = data.get("automation_enabled")
+        if operation_enabled is not None and not isinstance(operation_enabled, bool):
+            raise ValueError("Stored installation operation release is malformed")
+        if automation_enabled is not None and not isinstance(automation_enabled, bool):
+            raise ValueError("Stored installation automation release is malformed")
         if not isinstance(raw_task_state, dict) or not all(
             isinstance(key, str) and isinstance(value, dict)
             for key, value in raw_task_state.items()
@@ -1073,6 +1103,10 @@ class StoredInstallationState:
             spring_checklist_completed=_stored_string_tuple(data, "spring_checklist_completed"),
             spring_test_status=spring_test_status,
             winter_reminder_last_year=winter_reminder_last_year,
+            operation_enabled=operation_enabled,
+            automation_enabled=automation_enabled,
+            zone_operation_enabled=dict(raw_zone_operation),
+            zone_automation_enabled=dict(raw_zone_automation),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -1147,4 +1181,8 @@ class StoredInstallationState:
             "spring_checklist_completed": list(self.spring_checklist_completed),
             "spring_test_status": self.spring_test_status,
             "winter_reminder_last_year": self.winter_reminder_last_year,
+            "operation_enabled": self.operation_enabled,
+            "automation_enabled": self.automation_enabled,
+            "zone_operation_enabled": self.zone_operation_enabled,
+            "zone_automation_enabled": self.zone_automation_enabled,
         }

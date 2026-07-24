@@ -1,5 +1,7 @@
 # Wasserzähler und Durchfluss
 
+> **Teilweise überholt für Version 2:** Maßgeblich ist `docs/17_Neukonzept.md`. Dieses Dokument bleibt technische Hintergrundinformation für optionale Messmodule, soweit es dem Version-2-Vertrag nicht widerspricht. Ein konfigurierter Zähler macht fehlenden Zählerfortschritt bei gewöhnlicher Zeitsteuerung nicht zum Fehler; zwingend ist dieser Nachweis nur bei Mengensteuerung und Kalibrierung.
+
 ## Unterstützte Quellen
 
 - kumulatives Volumen mit erkannter Volumeneinheit
@@ -22,6 +24,10 @@ Auflösung angegeben ist.
 - abgeleiteter Durchfluss aus Zählerdifferenz als Plausibilitätsvergleich
 
 Bei einem ESPHome-`pulse_meter` können deshalb dessen Rate und `total` gemeinsam ausgewählt werden.
+Unveränderte gültige Zähler- und Durchflusswerte benötigen keinen Heartbeat und kein
+`force_update`. Verfügbarkeit und Plausibilität werden bei jeder aktiven Abfrage geprüft;
+physische Reaktion wird relativ zum Bewässerungsvorgang über Zählerdifferenzen und optionale
+Durchflusswerte bewertet.
 
 ## Betrieb ohne Messquelle
 
@@ -107,7 +113,10 @@ Pro Zone:
 - Anlauf- und Stabilisierungszeit
 - Nachlauf und Messlatenz
 
-Werte werden manuell eingegeben oder in einem geführten Test gemessen. Langsame Trends erzeugen nur Vorschläge; automatische Grenzwertverschiebung ist verboten.
+Werte werden manuell eingegeben oder in einem geführten Test gemessen. Die Kalibrierung
+berechnet den mittleren Durchfluss aus gelieferter Menge und Laufzeit; ein direkter
+Durchflusssensor liefert zusätzliche Momentanwerte, ist dafür aber nicht erforderlich.
+Langsame Trends erzeugen nur Vorschläge; automatische Grenzwertverschiebung ist verboten.
 
 ## Leckage und Abweichungen
 

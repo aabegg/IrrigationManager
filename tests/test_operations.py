@@ -9,12 +9,15 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import STATE_OFF
 from homeassistant.core import Context, Event, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
 
 from custom_components.irrigation_manager.const import DOMAIN, EVENT_IRRIGATION_MANAGER
 from custom_components.irrigation_manager.diagnostics import async_get_config_entry_diagnostics
 from custom_components.irrigation_manager.models import (
+    ActiveExecutionState,
     IrrigationExecutionState,
+    ManualIrrigationRequest,
     UncreditedBalanceDelivery,
 )
 
@@ -32,8 +35,13 @@ async def _setup_installation(hass: HomeAssistant) -> tuple[MockConfigEntry, Con
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Private garden",
-        data={"name": "Private garden", "weather_entity": "weather.home"},
+        data={
+            "name": "Private garden",
+            "weather_entity": "weather.home",
+            "operation_enabled": True,
+        },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -184,6 +192,330 @@ async def test_events_exports_diagnostics_and_reconciliation(hass: HomeAssistant
     assert event["target"] == {"type": "zone", "id": "zone-1"}
     assert "switch.lawn" not in str(event)
     assert "Private garden" not in str(event)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_card_presentation_services_return_open_queue_and_zone_history(
+    hass: HomeAssistant,
+) -> None:
+    """Expose bounded card DTOs without leaking closed orders or another zone's history."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    requests = (
+        ManualIrrigationRequest(
+            request_id="open-1",
+            sequence=1,
+            zone_id="zone-1",
+            zone_subentry_id=subentry.subentry_id,
+            zone_name="Back lawn",
+            zone_valve="switch.lawn",
+            main_valve=None,
+            target_type="duration",
+            target_value=60,
+            remaining_value=60,
+            created_at="2026-07-25T05:00:00+00:00",
+            requested_start_at="2026-07-25T05:00:00+00:00",
+            expires_at="2026-07-25T07:00:00+00:00",
+            source="automatic",
+        ),
+        ManualIrrigationRequest(
+            request_id="closed-1",
+            sequence=2,
+            zone_id="zone-1",
+            zone_subentry_id=subentry.subentry_id,
+            zone_name="Back lawn",
+            zone_valve="switch.lawn",
+            main_valve=None,
+            target_type="duration",
+            target_value=30,
+            remaining_value=0,
+            created_at="2026-07-23T05:00:00+00:00",
+            expires_at="2026-07-23T07:00:00+00:00",
+            status="completed",
+        ),
+    )
+    executions = (
+        IrrigationExecutionState(
+            execution_id="execution-zone-1",
+            request_id="closed-1",
+            zone_id="zone-1",
+            target_type="duration",
+            target_value=30,
+            remaining_value=0,
+            status="completed",
+            created_at="2026-07-23T05:00:00+00:00",
+            ended_at="2026-07-23T05:00:30+00:00",
+            result="target_reached",
+            delivered_duration_seconds=30,
+            delivered_liters=0,
+        ),
+        IrrigationExecutionState(
+            execution_id="execution-other-zone",
+            request_id="other-1",
+            zone_id="zone-2",
+            target_type="duration",
+            target_value=10,
+            remaining_value=0,
+            status="completed",
+            created_at="2026-07-22T05:00:00+00:00",
+            ended_at="2026-07-22T05:00:10+00:00",
+            result="target_reached",
+            delivered_duration_seconds=10,
+        ),
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=requests,
+        irrigation_executions=executions,
+    )
+
+    orders = await hass.services.async_call(
+        DOMAIN,
+        "list_card_orders",
+        {"config_entry_id": entry.entry_id},
+        blocking=True,
+        return_response=True,
+    )
+    assert orders == {
+        "orders": [
+            {
+                "request_id": "open-1",
+                "zone_subentry_id": "subentry-1",
+                "zone": "Back lawn",
+                "source": "automatic",
+                "target_type": "duration",
+                "target_value": 60,
+                "expected_start": "2026-07-25T05:00:00+00:00",
+                "status": "pending",
+            }
+        ]
+    }
+
+    history = await hass.services.async_call(
+        DOMAIN,
+        "list_zone_history",
+        {
+            "config_entry_id": entry.entry_id,
+            "zone_subentry_id": subentry.subentry_id,
+            "offset": 0,
+            "limit": 20,
+        },
+        blocking=True,
+        return_response=True,
+    )
+    assert history["total"] == 1
+    assert history["has_more"] is False
+    assert history["items"] == [
+        {
+            "execution_id": "execution-zone-1",
+            "started_at": "2026-07-23T05:00:00+00:00",
+            "ended_at": "2026-07-23T05:00:30+00:00",
+            "source": "manual",
+            "target_type": "duration",
+            "target_value": 30,
+            "result": "completed",
+            "actual_duration": 30,
+            "actual_water": None,
+            "completion_reason": "target_reached",
+        }
+    ]
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_card_open_orders_matches_dispatcher_priority_and_excludes_started_work(
+    hass: HomeAssistant,
+) -> None:
+    """Show only pending work, with ready manual work ahead of ready automatic work."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 25, 5, tzinfo=UTC)
+    common = {
+        "zone_id": "zone-1",
+        "zone_subentry_id": subentry.subentry_id,
+        "zone_name": "Back lawn",
+        "zone_valve": "switch.lawn",
+        "main_valve": None,
+        "target_type": "duration",
+        "expires_at": (now + timedelta(hours=2)).isoformat(),
+    }
+    automatic = ManualIrrigationRequest(
+        request_id="automatic-ready",
+        sequence=1,
+        target_value=60,
+        remaining_value=60,
+        created_at=(now - timedelta(hours=1)).isoformat(),
+        requested_start_at=(now - timedelta(minutes=30)).isoformat(),
+        source="automatic",
+        **common,
+    )
+    manual = ManualIrrigationRequest(
+        request_id="manual-ready",
+        sequence=2,
+        target_value=30,
+        remaining_value=30,
+        created_at=(now - timedelta(minutes=5)).isoformat(),
+        **common,
+    )
+    executing = replace(
+        manual,
+        request_id="already-started",
+        sequence=3,
+        status="executing",
+        execution_id="execution-1",
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=(automatic, manual, executing),
+    )
+
+    orders = manager.card_open_orders(now=now)
+
+    assert [order["request_id"] for order in orders] == ["manual-ready", "automatic-ready"]
+    assert [order["expected_start"] for order in orders] == [
+        "2026-07-25T05:00:00+00:00",
+        "2026-07-25T05:00:30+00:00",
+    ]
+    assert all(order["status"] == "pending" for order in orders)
+
+
+async def test_card_open_orders_starts_pending_work_after_active_bounded_runtime(
+    hass: HomeAssistant,
+) -> None:
+    """Place only pending orders after the literal remaining active delivery bound."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 25, 5, 0, 30, tzinfo=UTC)
+    pending = ManualIrrigationRequest(
+        request_id="pending-after-active",
+        sequence=2,
+        zone_id="zone-1",
+        zone_subentry_id=subentry.subentry_id,
+        zone_name="Back lawn",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=60,
+        remaining_value=60,
+        created_at="2026-07-25T04:00:00+00:00",
+        expires_at="2026-07-25T08:00:00+00:00",
+    )
+    active_request = replace(
+        pending,
+        request_id="active",
+        sequence=1,
+        target_value=120,
+        remaining_value=120,
+        status="executing",
+        execution_id="active-execution",
+    )
+    active = ActiveExecutionState(
+        zone_id="zone-1",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        meter_raw_baseline_liters=None,
+        prepared_at="2026-07-25T05:00:00+00:00",
+        watering_started_at="2026-07-25T05:00:00+00:00",
+        requested_duration_seconds=120,
+        estimated_flow_l_min=None,
+        request_id="active",
+        execution_id="active-execution",
+        hard_time_limit_seconds=120,
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=(active_request, pending),
+        active_execution=active,
+    )
+
+    orders = manager.card_open_orders(now=now)
+
+    assert [order["request_id"] for order in orders] == ["pending-after-active"]
+    assert orders[0]["expected_start"] == "2026-07-25T05:02:00+00:00"
+
+
+async def test_card_manual_start_resolves_active_execution_in_one_service_call(
+    hass: HomeAssistant,
+) -> None:
+    """Accept a priority-next manual order atomically while another execution is active."""
+    entry, subentry = await _setup_installation(hass)
+    manager = entry.runtime_data.manager
+    active_request = ManualIrrigationRequest(
+        request_id="active-1",
+        sequence=1,
+        zone_id="zone-1",
+        zone_subentry_id=subentry.subentry_id,
+        zone_name="Back lawn",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=120,
+        remaining_value=120,
+        created_at="2026-07-24T05:00:00+00:00",
+        expires_at="2026-07-25T05:00:00+00:00",
+        status="executing",
+        execution_id="execution-active",
+    )
+    active = ActiveExecutionState(
+        zone_id="zone-1",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        meter_raw_baseline_liters=None,
+        prepared_at="2026-07-24T05:00:00+00:00",
+        watering_started_at="2026-07-24T05:00:00+00:00",
+        requested_duration_seconds=120,
+        estimated_flow_l_min=None,
+        request_id="active-1",
+        execution_id="execution-active",
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=(active_request,),
+        active_execution=active,
+        next_request_sequence=2,
+    )
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        "start_manual_from_card",
+        {
+            "config_entry_id": entry.entry_id,
+            "zone_subentry_id": subentry.subentry_id,
+            "duration": 30,
+            "conflict_policy": "priority_next",
+        },
+        blocking=True,
+        return_response=True,
+    )
+
+    queued = manager._request(response["request_id"])
+    assert queued is not None
+    assert queued.status == "pending"
+    assert manager._stored_state.active_execution == active
+
+    manager._stored_state = replace(manager._stored_state, active_execution=None)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_unmetered_v2_cards_use_status_anchor_and_runtime_roles(
+    hass: HomeAssistant,
+) -> None:
+    """Keep zone cards selectable and useful when no water measurement is configured."""
+    entry, _ = await _setup_installation(hass)
+    registry = er.async_get(hass)
+    anchor_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_zone_status")
+    water_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_water_total")
+    runtime_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_runtime_today")
+
+    assert anchor_id is not None
+    assert water_id is None
+    assert runtime_id is not None
+    anchor = hass.states.get(anchor_id)
+    assert anchor.attributes["card_entities"]["anchor"] == anchor_id
+    assert "water_today" not in anchor.attributes["card_entities"]
+    assert anchor.attributes["card_entities"]["runtime_today"] == runtime_id
+    assert anchor.attributes["volume_control_available"] is False
 
     assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -347,6 +679,8 @@ async def test_import_config_service_requires_admin_user(hass: HomeAssistant) ->
         ),
         ("set_winter_lock", {}),
         ("clear_winter_lock", {}),
+        ("reset_emergency_stop", {}),
+        ("reset_installation_safety", {}),
         (
             "start_maintenance_test",
             {

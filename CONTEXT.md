@@ -26,6 +26,9 @@ Eine bewässerungsfreie Zeit zwischen zwei Teilgaben derselben Zone, in der Wass
 Eine noch nicht begonnene Anforderung, eine Zone mit einem bestimmten Bewässerungsziel zu versorgen. Ein Auftrag kann automatisch geplant oder manuell angefordert und bis zu seinem Beginn zurückgenommen werden.
 _Avoid_: Job, Queue-Eintrag
 
+**Bewässerungsplanung**:
+Die Ableitung noch nicht begonnener automatischer Bewässerungsaufträge aus den aktuellen Wochenplänen und Freigaben. Eine Neuberechnung verändert weder aktive Bewässerungsvorgänge noch manuelle Bewässerungsaufträge.
+
 **Bewässerungsvorgang**:
 Die Ausführung eines angenommenen Bewässerungsauftrags für genau eine Zone. Ein Vorgang kann mehrere Teilgaben umfassen und besitzt ein gemeinsames Ziel sowie ein abschließendes Ergebnis.
 _Avoid_: Zyklus, Lauf, Session
@@ -53,15 +56,21 @@ Eine Bewässerung, die nach der festgelegten Laufzeit endet. Der Wasserzähler d
 **Zählerausfallstrategie**:
 Die zonenspezifische Festlegung, ob eine Mengensteuerung bei fehlender plausibler Zählermessung ausfällt oder ersatzweise zeitgesteuert mit geschätzter Wassermenge läuft.
 
+**Kumulativer Anlagenverbrauch**:
+Die fortlaufende Summe aller von einer Bewässerungsanlage akzeptierten gemessenen Verbrauchsdifferenzen. Zählerstandskorrekturen verändern weder diesen Wert noch bereits zugeordnete Verbräuche.
+
+**Abgeglichener Zählerstand**:
+Der anhand der Messquelle fortgeführte und durch physische Ablesungen korrigierbare Stand des Wasserzählers. Eine Korrektur dient dem Abgleich mit dem physischen Zähler und ist selbst kein Wasserverbrauch.
+
 **Bewässerungsfenster**:
 Die zonenspezifische Menge täglicher Zeitintervalle, innerhalb derer automatische Bewässerungsvorgänge zulässig sind. Ein einzelnes Intervall darf über Mitternacht reichen.
 
 **Automatikfreigabe**:
-Die zonenspezifische Erlaubnis für automatische Bewässerungsvorgänge. Eine fehlende Automatikfreigabe verhindert keine ausdrücklich angeforderte manuelle Bewässerung.
+Die anlagen- oder zonenspezifische Erlaubnis für automatische Bewässerungsvorgänge. Eine fehlende Automatikfreigabe verhindert keine ausdrücklich angeforderte manuelle Bewässerung.
 _Avoid_: Aktiv, eingeschaltet
 
 **Sicherheitssperre**:
-Eine Sperre, die automatische und manuelle Bewässerungsvorgänge verhindert, bis ihre Ursache behoben und die Sperre zurückgesetzt wurde.
+Eine Sperre der gesamten Bewässerungsanlage, die automatische und manuelle Bewässerungsvorgänge aller Zonen verhindert, bis ihre Ursache behoben und die Sperre zurückgesetzt wurde. Einzelne Bewässerungszonen besitzen keine eigene Sicherheitssperre.
 _Avoid_: Deaktiviert
 
 **Durchflussprofil**:

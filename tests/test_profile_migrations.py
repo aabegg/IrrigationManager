@@ -125,8 +125,8 @@ async def test_storage_27_preserves_legacy_one_limit_as_equal_taw_and_raw() -> N
     assert request["balance_readily_available_water_mm"] == 40
 
 
-async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant) -> None:
-    """Migrate existing installations and zones without weakening external inputs."""
+async def test_legacy_profile_config_resets_to_disabled_v2_shell(hass: HomeAssistant) -> None:
+    """Discard incompatible v1 planning fields and require explicit v2 reconfiguration."""
     entry = MockConfigEntry(
         domain="irrigation_manager",
         title="Garden",
@@ -134,6 +134,8 @@ async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant
             "name": "Garden",
             "automation_enabled": True,
             "hardware_shutoff_acknowledged": True,
+            "meter_max_age_seconds": 300,
+            "flow_max_age_seconds": 30,
         },
         version=1,
         minor_version=3,
@@ -151,10 +153,23 @@ async def test_config_entry_3_adds_fail_safe_external_policy(hass: HomeAssistant
     hass.config_entries.async_add_subentry(entry, zone)
 
     assert await async_migrate_entry(hass, entry)
-    assert entry.minor_version == 7
+    assert entry.version == 2
+    assert entry.minor_version == 0
+    assert set(entry.data) == {
+        "name",
+        "meter_type",
+        "operation_enabled",
+        "automation_enabled",
+        "needs_reconfiguration",
+    }
+    assert entry.data["meter_type"] == "none"
+    assert entry.data["operation_enabled"] is False
     assert entry.data["automation_enabled"] is False
-    assert entry.data["hardware_shutoff_acknowledged"] is False
-    assert entry.data["external_failure_policy"] == "fail_safe"
-    assert entry.subentries["zone-1"].data["external_failure_policy"] == "fail_safe"
-    assert entry.subentries["zone-1"].data["automation_enabled"] is False
-    assert "plant_profile" not in entry.subentries["zone-1"].data
+    assert entry.data["needs_reconfiguration"] is True
+    migrated_zone = entry.subentries["zone-1"].data
+    assert migrated_zone["zone_valve"] == "switch.lawn"
+    assert migrated_zone["control_type"] == "time"
+    assert migrated_zone["operation_enabled"] is False
+    assert migrated_zone["automation_enabled"] is False
+    assert migrated_zone["needs_reconfiguration"] is True
+    assert len(migrated_zone["weekly_schedule"]) == 7

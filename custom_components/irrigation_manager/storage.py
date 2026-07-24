@@ -9,7 +9,7 @@ from homeassistant.helpers.storage import Store
 from .models import StoredInstallationState
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 28
+STORAGE_MINOR_VERSION = 29
 
 
 class _StateStore(Store[dict[str, object]]):
@@ -51,6 +51,7 @@ class _StateStore(Store[dict[str, object]]):
             25,
             26,
             27,
+            28,
         }:
             migrated = dict(old_data)
             if old_minor_version == 1:
@@ -342,6 +343,11 @@ class _StateStore(Store[dict[str, object]]):
                 raw_active = migrated.get("active_execution")
                 if isinstance(raw_active, dict):
                     migrated["active_execution"] = _migrate_available_water_snapshot(raw_active)
+            if old_minor_version < 29:
+                migrated["operation_enabled"] = None
+                migrated["automation_enabled"] = None
+                migrated["zone_operation_enabled"] = {}
+                migrated["zone_automation_enabled"] = {}
             return migrated
         raise NotImplementedError
 

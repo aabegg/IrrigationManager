@@ -55,6 +55,12 @@ ATTR_ITEM_ID = "item_id"
 ATTR_COMPLETED = "completed"
 ATTR_KIND = "kind"
 ATTR_WATER_ATTRIBUTION = "water_attribution"
+ATTR_ENABLED = "enabled"
+ATTR_STOP_ACTIVE = "stop_active"
+ATTR_CONFLICT_POLICY = "conflict_policy"
+ATTR_OFFSET = "offset"
+ATTR_SOURCE = "source"
+ATTR_RESULT = "result"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
@@ -100,6 +106,14 @@ SERVICE_LIST_MAINTENANCE = "list_maintenance"
 SERVICE_COMPLETE_MAINTENANCE_TASK = "complete_maintenance_task"
 SERVICE_SNOOZE_MAINTENANCE_TASK = "snooze_maintenance_task"
 SERVICE_UPDATE_SPRING_CHECKLIST = "update_spring_checklist"
+SERVICE_SET_INSTALLATION_OPERATION = "set_installation_operation"
+SERVICE_SET_INSTALLATION_AUTOMATION = "set_installation_automation"
+SERVICE_SET_ZONE_OPERATION = "set_zone_operation"
+SERVICE_SET_ZONE_AUTOMATION = "set_zone_automation"
+SERVICE_RESET_SAFETY_LOCK = "reset_safety_lock"
+SERVICE_START_MANUAL_FROM_CARD = "start_manual_from_card"
+SERVICE_LIST_CARD_ORDERS = "list_card_orders"
+SERVICE_LIST_ZONE_HISTORY = "list_zone_history"
 
 
 def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
@@ -120,16 +134,35 @@ START_MANUAL_SCHEMA = vol.All(
             vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
             vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
             vol.Optional(ATTR_DURATION): vol.All(
-                vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+                vol.Coerce(float), vol.Range(min=0.001, max=604_800)
             ),
             vol.Optional(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
             vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(
-                vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+                vol.Coerce(float), vol.Range(min=0.001, max=604_800)
             ),
-            vol.Optional(ATTR_EXPIRY, default=3600): vol.All(
+            vol.Optional(ATTR_EXPIRY): vol.All(
                 vol.Coerce(float), vol.Range(min=0.001, max=604_800)
             ),
             vol.Optional(ATTR_START_AT): cv.datetime,
+        }
+    ),
+    _validate_manual_target,
+)
+START_MANUAL_FROM_CARD_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+            vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+            vol.Optional(ATTR_DURATION): vol.All(
+                vol.Coerce(float), vol.Range(min=0.001, max=604_800)
+            ),
+            vol.Optional(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+            vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(
+                vol.Coerce(float), vol.Range(min=0.001, max=604_800)
+            ),
+            vol.Required(ATTR_CONFLICT_POLICY): vol.In(
+                {"start_now", "stop_active", "priority_next"}
+            ),
         }
     ),
     _validate_manual_target,
@@ -152,10 +185,10 @@ EDIT_REQUEST_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_REQUEST_ID): cv.string,
-        vol.Optional(ATTR_DURATION): vol.All(vol.Coerce(float), vol.Range(min=0.001, max=14_400)),
+        vol.Optional(ATTR_DURATION): vol.All(vol.Coerce(float), vol.Range(min=0.001, max=604_800)),
         vol.Optional(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
         vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(
-            vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+            vol.Coerce(float), vol.Range(min=0.001, max=604_800)
         ),
         vol.Optional(ATTR_START_AT): cv.datetime,
         vol.Optional(ATTR_EXPIRES_AT): cv.datetime,
@@ -166,11 +199,11 @@ PLAN_ITEM_SCHEMA = vol.All(
         {
             vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
             vol.Optional(ATTR_DURATION): vol.All(
-                vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+                vol.Coerce(float), vol.Range(min=0.001, max=604_800)
             ),
             vol.Optional(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
             vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(
-                vol.Coerce(float), vol.Range(min=0.001, max=14_400)
+                vol.Coerce(float), vol.Range(min=0.001, max=604_800)
             ),
         }
     ),
@@ -181,9 +214,7 @@ CREATE_MANUAL_PLAN_SCHEMA = vol.Schema(
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_ITEMS): vol.All(cv.ensure_list, [PLAN_ITEM_SCHEMA], vol.Length(min=1)),
         vol.Optional(ATTR_START_AT): cv.datetime,
-        vol.Optional(ATTR_EXPIRY, default=3600): vol.All(
-            vol.Coerce(float), vol.Range(min=0.001, max=604_800)
-        ),
+        vol.Optional(ATTR_EXPIRY): vol.All(vol.Coerce(float), vol.Range(min=0.001, max=604_800)),
         vol.Optional(ATTR_PLAN_ID): cv.string,
     }
 )
@@ -224,6 +255,16 @@ EXPORT_HISTORY_SCHEMA = vol.Schema(
         vol.Optional(ATTR_LIMIT, default=100): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=1_000)
         ),
+    }
+)
+ZONE_HISTORY_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+        vol.Optional(ATTR_OFFSET, default=0): vol.All(vol.Coerce(int), vol.Range(min=0)),
+        vol.Optional(ATTR_LIMIT, default=20): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+        vol.Optional(ATTR_SOURCE): vol.In({"manual", "automatic", "maintenance", "calibration"}),
+        vol.Optional(ATTR_RESULT): cv.string,
     }
 )
 RECONCILIATION_SCHEMA = vol.Schema(
@@ -305,6 +346,21 @@ ZONE_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+    }
+)
+INSTALLATION_RELEASE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ENABLED): cv.boolean,
+        vol.Optional(ATTR_STOP_ACTIVE, default=False): cv.boolean,
+    }
+)
+ZONE_RELEASE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
+        vol.Required(ATTR_ENABLED): cv.boolean,
+        vol.Optional(ATTR_STOP_ACTIVE, default=False): cv.boolean,
     }
 )
 SUSPEND_AUTOMATIC_SCHEMA = vol.Schema(
@@ -395,7 +451,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             duration_seconds=cast(float | None, call.data.get(ATTR_DURATION)),
             amount_liters=cast(float | None, call.data.get(ATTR_AMOUNT)),
             hard_time_limit_seconds=cast(float | None, call.data.get(ATTR_HARD_TIME_LIMIT)),
-            expiry_seconds=cast(float, call.data[ATTR_EXPIRY]),
+            expiry_seconds=cast(float | None, call.data.get(ATTR_EXPIRY)),
             requested_start_at=cast(Any, call.data.get(ATTR_START_AT)),
             wait_for_completion=wait,
         )
@@ -406,6 +462,19 @@ async def async_register_services(hass: HomeAssistant) -> None:
     async def create_manual(call: ServiceCall) -> dict[str, Any]:
         return await request_manual(call, wait=False)
 
+    async def start_manual_from_card(call: ServiceCall) -> dict[str, Any]:
+        manager = manager_for(call)
+        zone_subentry_id = cast(str, call.data[ATTR_ZONE_SUBENTRY_ID])
+        await require_manual_control(call, manager, zone_subentry_ids=(zone_subentry_id,))
+        return await manager.async_start_manual(
+            zone_subentry_id=zone_subentry_id,
+            duration_seconds=cast(float | None, call.data.get(ATTR_DURATION)),
+            amount_liters=cast(float | None, call.data.get(ATTR_AMOUNT)),
+            hard_time_limit_seconds=cast(float | None, call.data.get(ATTR_HARD_TIME_LIMIT)),
+            wait_for_completion=False,
+            conflict_policy=cast(str, call.data[ATTR_CONFLICT_POLICY]),
+        )
+
     async def list_requests(call: ServiceCall) -> dict[str, Any]:
         manager = manager_for(call)
         return {
@@ -413,6 +482,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "executions": manager.list_irrigation_executions(),
             "uncredited_balance_deliveries": (manager.list_uncredited_balance_deliveries()),
         }
+
+    async def list_card_orders(call: ServiceCall) -> dict[str, Any]:
+        return {"orders": manager_for(call).card_open_orders()}
+
+    async def list_zone_history(call: ServiceCall) -> dict[str, Any]:
+        return manager_for(call).zone_history_page(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
+            offset=cast(int, call.data[ATTR_OFFSET]),
+            limit=cast(int, call.data[ATTR_LIMIT]),
+            source=cast(str | None, call.data.get(ATTR_SOURCE)),
+            result=cast(str | None, call.data.get(ATTR_RESULT)),
+        )
 
     async def stop(call: ServiceCall) -> None:
         manager = manager_for(call)
@@ -486,7 +567,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         return await manager.async_create_manual_plan(
             items=items,
             requested_start_at=cast(Any, call.data.get(ATTR_START_AT)),
-            expiry_seconds=cast(float, call.data[ATTR_EXPIRY]),
+            expiry_seconds=cast(float | None, call.data.get(ATTR_EXPIRY)),
             plan_id=cast(str | None, call.data.get(ATTR_PLAN_ID)),
         )
 
@@ -506,7 +587,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
         await manager_for(call).async_emergency_stop()
 
     async def reset_emergency_stop(call: ServiceCall) -> None:
-        await manager_for(call).async_reset_emergency_stop()
+        await require_admin(call)
+        await manager_for(call).async_reset_safety_lock()
 
     async def reset_zone_safety(call: ServiceCall) -> None:
         await manager_for(call).async_reset_zone_safety(
@@ -514,7 +596,40 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
     async def reset_installation_safety(call: ServiceCall) -> None:
-        await manager_for(call).async_reset_installation_safety()
+        await require_admin(call)
+        await manager_for(call).async_reset_safety_lock()
+
+    async def set_installation_operation(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_set_installation_operation(
+            enabled=cast(bool, call.data[ATTR_ENABLED])
+        )
+
+    async def set_installation_automation(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_set_installation_automation(
+            enabled=cast(bool, call.data[ATTR_ENABLED]),
+            stop_active=cast(bool, call.data[ATTR_STOP_ACTIVE]),
+        )
+
+    async def set_zone_operation(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_set_zone_operation(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
+            enabled=cast(bool, call.data[ATTR_ENABLED]),
+        )
+
+    async def set_zone_automation(call: ServiceCall) -> dict[str, Any]:
+        await require_admin(call)
+        return await manager_for(call).async_set_zone_automation(
+            zone_subentry_id=cast(str, call.data[ATTR_ZONE_SUBENTRY_ID]),
+            enabled=cast(bool, call.data[ATTR_ENABLED]),
+            stop_active=cast(bool, call.data[ATTR_STOP_ACTIVE]),
+        )
+
+    async def reset_safety_lock(call: ServiceCall) -> None:
+        await require_admin(call)
+        await manager_for(call).async_reset_safety_lock()
 
     async def assign_water(call: ServiceCall) -> None:
         await manager_for(call).async_assign_water(
@@ -696,6 +811,27 @@ async def async_register_services(hass: HomeAssistant) -> None:
         start_manual,
         schema=START_MANUAL_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_START_MANUAL_FROM_CARD,
+        start_manual_from_card,
+        schema=START_MANUAL_FROM_CARD_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_CARD_ORDERS,
+        list_card_orders,
+        schema=INSTALLATION_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_ZONE_HISTORY,
+        list_zone_history,
+        schema=ZONE_HISTORY_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     for service, handler in (
         (SERVICE_ARCHIVE_ZONE, archive_zone),
@@ -940,6 +1076,33 @@ async def async_register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_EMERGENCY_STOP,
         emergency_stop,
+        schema=INSTALLATION_SCHEMA,
+    )
+    for service, handler, schema in (
+        (
+            SERVICE_SET_INSTALLATION_OPERATION,
+            set_installation_operation,
+            INSTALLATION_RELEASE_SCHEMA,
+        ),
+        (
+            SERVICE_SET_INSTALLATION_AUTOMATION,
+            set_installation_automation,
+            INSTALLATION_RELEASE_SCHEMA,
+        ),
+        (SERVICE_SET_ZONE_OPERATION, set_zone_operation, ZONE_RELEASE_SCHEMA),
+        (SERVICE_SET_ZONE_AUTOMATION, set_zone_automation, ZONE_RELEASE_SCHEMA),
+    ):
+        hass.services.async_register(
+            DOMAIN,
+            service,
+            handler,
+            schema=schema,
+            supports_response=SupportsResponse.ONLY,
+        )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESET_SAFETY_LOCK,
+        reset_safety_lock,
         schema=INSTALLATION_SCHEMA,
     )
     hass.services.async_register(

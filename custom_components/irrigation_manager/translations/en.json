@@ -26,6 +26,9 @@
         "start_at": {"name": "Desired start"}
       }
     },
+    "start_manual_from_card": {"name": "Start manual irrigation from a card", "description": "Create one manual irrigation order and atomically resolve an active irrigation execution using the selected policy.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "zone_subentry_id": {"name": "Irrigation zone"}, "duration": {"name": "Duration"}, "amount": {"name": "Amount"}, "hard_time_limit": {"name": "Maximum duration"}, "conflict_policy": {"name": "Active execution policy"}}},
+    "list_card_orders": {"name": "List open irrigation orders for cards", "description": "Return only open irrigation orders with queue-adjusted expected starts."},
+    "list_zone_history": {"name": "List zone history for cards", "description": "Return a filtered, paginated irrigation execution history for exactly one irrigation zone.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "zone_subentry_id": {"name": "Irrigation zone"}, "offset": {"name": "Offset"}, "limit": {"name": "Page size"}, "source": {"name": "Source"}, "result": {"name": "Result"}}},
     "create_manual_plan": {"name": "Create manual multi-zone plan", "description": "Atomically create an ordered set of future or immediate zone requests."},
     "edit_request": {"name": "Edit irrigation request", "description": "Edit target, desired start, or expiry before execution."},
     "reorder_requests": {"name": "Reorder irrigation requests", "description": "Set an explicit stable order for unstarted manual requests."},
@@ -131,11 +134,19 @@
     "list_maintenance": {"name": "List irrigation maintenance", "description": "Return recurring tasks, due dates, history, and spring recommission status."},
     "complete_maintenance_task": {"name": "Complete maintenance task", "description": "Complete a recurring task and calculate its next due date."},
     "snooze_maintenance_task": {"name": "Snooze maintenance task", "description": "Delay one task while retaining its original due date and history."},
-    "update_spring_checklist": {"name": "Update spring checklist", "description": "Confirm or reopen one configured recommission checklist item."}
+    "update_spring_checklist": {"name": "Update spring checklist", "description": "Confirm or reopen one configured recommission checklist item."},
+    "set_installation_operation": {"name": "Set installation operation release", "description": "Enable or disable all manual and automatic irrigation."},
+    "set_installation_automation": {"name": "Set installation automatic release", "description": "Enable or disable automatic irrigation without changing manual operation."},
+    "set_zone_operation": {"name": "Set zone operation release", "description": "Enable or disable all irrigation for one zone."},
+    "set_zone_automation": {"name": "Set zone automatic release", "description": "Enable or disable automatic irrigation for one zone."},
+    "reset_safety_lock": {"name": "Reset safety lock", "description": "Reset the canonical installation safety lock after inspection."}
   },
   "selector": {
     "installation_purpose": {"options": {"private_garden": "Private garden", "landscape": "Ornamental landscape", "food_garden": "Food garden", "mixed": "Mixed use"}},
     "meter_kind": {"options": {"cumulative": "Cumulative volume meter", "raw": "Pulse or count meter", "none": "No water meter"}},
+    "meter_type": {"options": {"cumulative": "Cumulative volume meter", "pulse": "Pulse meter", "none": "No water measurement"}},
+    "pulse_factor_mode": {"options": {"liters_per_pulse": "Liters per pulse", "pulses_per_liter": "Pulses per liter"}},
+    "control_type": {"options": {"time": "Time control", "volume": "Volume control"}},
     "weather_strategy": {"options": {"recommended": "Use the recommended available source", "local": "Local sensors or weather entity", "open_meteo": "Open-Meteo", "seasonal": "Seasonal fallback only"}},
     "setup_mode": {"options": {"guided": "Guided setup", "expert": "Expert settings"}},
     "calibration_resolution": {"options": {"accept": "Apply measured values", "discard": "Discard measured values"}},
@@ -251,7 +262,10 @@
            "emergency_stop": "Emergency stop",
            "soaking": "Soaking",
            "winter_lock": "Winter lock",
-           "maintenance": "Maintenance"
+           "maintenance": "Maintenance",
+           "disabled": "Disabled",
+           "automatic_disabled": "Active, automatic irrigation disabled",
+           "needs_reconfiguration": "Reconfiguration required"
         }
       },
       "active_zone": {
@@ -272,12 +286,14 @@
           "measured": "Measured",
           "integrated": "Integrated from flow",
           "estimated": "Estimated",
-          "unknown": "Unknown"
+          "unknown": "Unknown",
+          "unavailable": "Unavailable"
         }
       },
       "water_deficit": {"name": "Water deficit"},
       "automatic_target": {"name": "Automatic target"},
       "next_watering_window": {"name": "Next watering window"},
+      "next_irrigation": {"name": "Next irrigation"},
       "planning_reason": {"name": "Planning reason"},
       "weather_model_quality": {
         "name": "Weather model quality",
@@ -304,7 +320,7 @@
       "next_start": {"name": "Next planned start"},
       "maintenance_due": {"name": "Maintenance tasks due"},
       "water_cost": {"name": "Water cost"},
-      "zone_status": {"name": "Status", "state": {"idle": "Idle", "watering_needed": "Watering needed", "watering": "Watering", "suspended": "Suspended", "safety_lock": "Safety lock", "archived": "Archived"}},
+      "zone_status": {"name": "Status", "state": {"idle": "Idle", "watering_needed": "Watering needed", "watering": "Watering", "suspended": "Suspended", "safety_lock": "Safety lock", "archived": "Archived", "disabled": "Disabled", "installation_disabled": "Installation disabled", "automatic_disabled": "Automatic irrigation disabled", "needs_reconfiguration": "Reconfiguration required"}},
       "zone_priority": {"name": "Priority"},
       "last_effective_irrigation": {"name": "Last effective irrigation"},
       "demand_coverage": {"name": "Demand coverage"},
@@ -335,12 +351,10 @@
           "raw_meter": "Raw pulse or count meter",
           "liters_per_count": "Liters per pulse or count",
           "meter_resolution_liters": "Meter resolution",
-          "meter_max_age_seconds": "Maximum water meter data age",
           "flow_sensor": "Flow sensor",
           "leak_monitoring": "Monitor for leaks while idle",
           "leak_flow_threshold": "Idle leak flow threshold",
           "leak_duration_seconds": "Leak confirmation duration",
-          "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity",
           "temperature_sensors": "Temperature sensors in priority order",
           "humidity_sensors": "Humidity sensors in priority order",
@@ -392,7 +406,6 @@
         "data_description": {
           "main_valve": "Optional switch or valve that isolates the complete installation.",
           "water_meter": "Optional cumulative water sensor. Without it only time control is available.",
-          "meter_max_age_seconds": "Maximum accepted age of a cumulative meter sample before volume control uses its configured failure strategy.",
           "flow_sensor": "Optional rate sensor for faster flow safety checks and idle leak monitoring.",
           "leak_monitoring": "Enabled by default when a flow sensor is configured.",
           "leak_flow_threshold": "Continuous idle flow above this rate is hazardous.",
@@ -403,9 +416,11 @@
           "weather_backfill_days": "Safety and retention cap for missing daily periods processed after downtime. Older periods are outside retained automatic backfill."
         }
       },
-      "create": {"title": "Create irrigation installation", "description": "Start with the purpose and a recognizable name. Shared hardware, metering, weather, and safety follow in manageable steps.", "data": {"name": "Name", "purpose": "What will this installation water?"}},
-      "installation_hardware": {"title": "Valve and feedback", "description": "Select a shared main valve only if one valve physically isolates the complete installation. Independent feedback makes failures visible.", "data": {"main_valve": "Optional main valve", "main_valve_feedback": "Optional independent valve feedback"}},
-      "installation_meter": {"title": "Water measurement", "description": "A cumulative meter enables volume targets. A flow sensor improves leak and plausibility checks. The selected unit and capability are checked before review.", "data": {"meter_kind": "What kind of meter is available?", "water_meter": "Cumulative volume sensor", "raw_meter": "Pulse or count sensor", "liters_per_count": "Liters per pulse/count", "flow_sensor": "Optional flow-rate sensor"}},
+      "create": {"title": "Create irrigation installation", "description": "Enter a recognizable installation name.", "data": {"name": "Name"}},
+      "installation_hardware": {"title": "Optional main valve", "description": "Leave this empty when the installation has no shared main valve.", "data": {"main_valve": "Main valve"}},
+      "installation_meter": {"title": "Optional water measurement", "description": "Select no measurement, a cumulative volume meter, or a pulse meter. Pulse factors are stored canonically as liters per pulse.", "data": {"meter_type": "Measurement type", "meter_entity": "Meter entity", "pulse_factor_mode": "Factor format", "pulse_factor": "Factor"}},
+      "installation_zone": {"title": "First irrigation zone", "data": {"name": "Name", "zone_valve": "Zone valve", "control_type": "Control type", "volume_max_runtime": "Hard maximum runtime"}},
+      "installation_schedule": {"title": "Weekly schedule", "description": "Each weekday is either completely empty or has start, end, and one full target."},
       "installation_weather": {"title": "Weather source", "description": "{meter_preview} {comparison}", "data": {"weather_strategy": "Weather approach", "weather_entity": "Local weather entity", "et0_sensors": "Direct reference-evapotranspiration sensors"}},
       "installation_safety": {"title": "Safety limits", "description": "Software and wireless valves can fail. Use a physical hardware shutoff timer or equivalent independent limit so water stops even if Home Assistant does not.", "data": {"installation_max_delivery_runtime": "Hard maximum delivery time", "hardware_shutoff_acknowledged": "I understand and have considered an independent hardware shutoff"}},
       "installation_review": {"title": "Review and dry-run readiness", "description": "{preview}", "data": {"confirm_ready": "Create this installation"}},
@@ -451,11 +466,19 @@
       "init": {
         "title": "Irrigation Manager settings",
         "menu_options": {
+          "v2_installation": "Installation configuration",
+          "actions": "Operation and safety actions",
           "guided": "Guided settings",
           "expert": "Expert settings",
           "import_config": "Import portable configuration"
         }
       },
+      "v2_installation": {"title": "Installation settings", "data": {"name": "Name", "operation_enabled": "Operation release", "automation_enabled": "Automatic release", "main_valve": "Main valve", "meter_type": "Meter type", "meter_entity": "Meter entity", "pulse_factor_mode": "Factor format", "pulse_factor": "Factor"}},
+      "actions": {"title": "Operation and safety actions", "menu_options": {"installation_releases": "Enable or disable operation", "emergency_stop": "Emergency stop now", "reset_safety": "Clear safety lock", "replan": "Replan automatic irrigation"}},
+      "installation_releases": {"title": "Installation releases", "data": {"operation_enabled": "Operation release", "automation_enabled": "Automatic release"}},
+      "installation_automation_disable": {"title": "Disable automatic irrigation", "description": "An automatic irrigation execution is active. Choose whether to stop it now or let it finish.", "data": {"active_execution": "Active execution"}},
+      "reset_safety": {"title": "Clear safety lock", "description": "Warning: clear the lock only after inspecting the installation and confirming that every valve is safely closed.", "data": {"confirm_reset": "The installation was inspected and is safe to release"}},
+      "action_result": {"title": "Action completed", "description": "Result: {result}"},
       "guided": {"title": "Guided settings", "menu_options": {"guided_installation": "Installation essentials", "guided_zone": "Zone and profile settings"}},
       "expert": {"title": "Expert settings", "menu_options": {"installation": "Installation expert settings", "zone": "Zone expert settings"}},
       "guided_installation": {"title": "Installation essentials", "description": "Only common choices are shown. Hidden expert values are preserved. Imported and migrated installations remain automatically disabled until the hardware warning is acknowledged locally.", "data": {"name": "Name", "main_valve": "Main valve", "main_valve_feedback": "Main-valve feedback", "water_meter": "Cumulative water meter", "flow_sensor": "Flow sensor", "weather_entity": "Weather entity", "open_meteo_enabled": "Use Open-Meteo fallback", "hardware_shutoff_acknowledged": "Independent hardware-shutoff warning acknowledged", "automation_enabled": "Global automatic release"}},
@@ -472,12 +495,10 @@
           "raw_meter": "Raw pulse or count meter",
           "liters_per_count": "Liters per pulse or count",
           "meter_resolution_liters": "Meter resolution",
-          "meter_max_age_seconds": "Maximum water meter data age",
           "flow_sensor": "Flow sensor",
           "leak_monitoring": "Monitor for leaks while idle",
           "leak_flow_threshold": "Idle leak flow threshold",
           "leak_duration_seconds": "Leak confirmation duration",
-          "flow_max_age_seconds": "Maximum flow data age",
           "weather_entity": "Weather entity",
           "temperature_sensors": "Temperature sensors in priority order",
           "humidity_sensors": "Humidity sensors in priority order",
@@ -638,7 +659,10 @@
       "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
       ,"wind_interlock_requires_source_and_threshold": "Wind source and threshold must be configured together."
       ,"invalid_import": "The portable file, version, entity mappings, or zone mappings are invalid."
-      ,"invalid_maintenance_configuration": "Use a valid MM-DD reminder date, unique task/checklist IDs, ISO due dates, and positive recurrence intervals."
+       ,"invalid_maintenance_configuration": "Use a valid MM-DD reminder date, unique task/checklist IDs, ISO due dates, and positive recurrence intervals."
+       ,"selected_meter_required": "Select the sensor matching the chosen meter type."
+       ,"meter_required_by_volume_zones": "Convert all volume-controlled zones to time control before removing the water meter."
+       ,"reset_confirmation_required": "Inspect the installation and explicitly confirm the safety reset."
     }
   },
   "config_subentries": {
@@ -824,9 +848,16 @@
             "phenology_stage_schedule": "For staged profiles, provide season_start as MM-DD plus initial_days, development_days, mid_days, and late_days, or explicit recurring stage boundary dates. No hemisphere is assumed."
           }
         },
-        "reconfigure": {"title": "Irrigation zone", "menu_options": {"reconfigure_guided": "Guided editing", "reconfigure_expert": "Expert settings", "calibration": "Calibrate flow"}}
+        "minimal": {"title": "Add irrigation zone", "data": {"name": "Name", "operation_enabled": "Operation release", "automation_enabled": "Automatic release", "zone_valve": "Zone valve", "control_type": "Control type", "volume_max_runtime": "Hard maximum runtime"}},
+        "minimal_schedule": {"title": "Weekly schedule"},
+        "reconfigure_minimal": {"title": "Edit irrigation zone", "data": {"name": "Name", "operation_enabled": "Operation release", "automation_enabled": "Automatic release", "zone_valve": "Zone valve", "control_type": "Control type", "volume_max_runtime": "Hard maximum runtime"}},
+        "reconfigure_minimal_schedule": {"title": "Weekly schedule"},
+        "reconfigure": {"title": "Irrigation zone", "menu_options": {"reconfigure_minimal": "Zone and weekly schedule", "releases": "Operation and automatic releases", "reconfigure_guided": "Guided editing", "reconfigure_expert": "Expert settings", "calibration": "Calibrate flow"}},
+        "releases": {"title": "Zone releases", "data": {"operation_enabled": "Operation release", "automation_enabled": "Automatic release"}},
+        "automation_disable": {"title": "Disable automatic irrigation", "description": "An automatic irrigation execution is active in this zone. Choose whether to stop it now or let it finish.", "data": {"active_execution": "Active execution"}}
       },
       "abort": {
+        "releases_updated": "The zone releases were updated.",
         "already_configured": "This zone valve is already configured.",
         "profile_selection_not_pending": "There is no researched profile selection awaiting confirmation.",
         "profile_selection_cancelled": "The researched profile selection was not saved.",
@@ -854,6 +885,12 @@
         ,"calibration_start_failed": "Calibration did not pass its safety preflight or the installation is busy."
         ,"calibration_resolution_required": "Review the result and confirm your decision."
         ,"calibration_resolution_failed": "The proposal could not be applied or discarded. The zone may have changed since measurement."
+        ,"volume_max_runtime_required": "Volume control requires a hard maximum runtime."
+        ,"schedule_row_incomplete": "Every configured weekday requires start, end, and target."
+        ,"schedule_row_invalid": "Enter a valid start and end time."
+        ,"schedule_target_invalid": "Enter a positive duration or volume target."
+        ,"schedule_overlap": "Adjacent weekday windows must not overlap, including across midnight."
+        ,"schedule_target_does_not_fit": "The complete target must fit inside its window."
       }
     }
   }

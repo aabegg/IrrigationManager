@@ -26,6 +26,9 @@
         "start_at": {"name": "Gewünschter Start"}
       }
     },
+    "start_manual_from_card": {"name": "Manuelle Bewässerung aus einer Card starten", "description": "Erstellt einen manuellen Bewässerungsauftrag und löst einen aktiven Bewässerungsvorgang atomar gemäß der gewählten Strategie auf.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}, "zone_subentry_id": {"name": "Bewässerungszone"}, "duration": {"name": "Dauer"}, "amount": {"name": "Menge"}, "hard_time_limit": {"name": "Maximale Dauer"}, "conflict_policy": {"name": "Strategie bei aktivem Bewässerungsvorgang"}}},
+    "list_card_orders": {"name": "Offene Bewässerungsaufträge für Cards auflisten", "description": "Gibt ausschließlich offene Bewässerungsaufträge mit warteschlangenbereinigtem erwartetem Start zurück."},
+    "list_zone_history": {"name": "Zonenverlauf für Cards auflisten", "description": "Gibt einen gefilterten und paginierten Verlauf der Bewässerungsvorgänge genau einer Bewässerungszone zurück.", "fields": {"config_entry_id": {"name": "Bewässerungsanlage"}, "zone_subentry_id": {"name": "Bewässerungszone"}, "offset": {"name": "Versatz"}, "limit": {"name": "Seitengröße"}, "source": {"name": "Quelle"}, "result": {"name": "Ergebnis"}}},
     "create_manual_plan": {"name": "Manuellen Mehrzonenplan erstellen", "description": "Erstellt atomar eine geordnete Menge sofortiger oder zukünftiger Zonenaufträge."},
     "edit_request": {"name": "Bewässerungsauftrag bearbeiten", "description": "Bearbeitet Ziel, Wunschstart oder Ablauf vor der Ausführung."},
     "reorder_requests": {"name": "Bewässerungsaufträge sortieren", "description": "Legt eine ausdrückliche stabile Reihenfolge ungestarteter manueller Aufträge fest."},
@@ -131,11 +134,19 @@
     "list_maintenance": {"name": "Wartung auflisten", "description": "Gibt Aufgaben, Fälligkeiten, Historie und Frühjahrsstatus zurück."},
     "complete_maintenance_task": {"name": "Wartungsaufgabe abschließen", "description": "Schließt eine wiederkehrende Aufgabe ab und berechnet die nächste Fälligkeit."},
     "snooze_maintenance_task": {"name": "Wartungsaufgabe verschieben", "description": "Verschiebt eine Aufgabe unter Erhalt ihrer ursprünglichen Fälligkeit und Historie."},
-    "update_spring_checklist": {"name": "Frühjahrscheckliste aktualisieren", "description": "Bestätigt oder öffnet einen konfigurierten Inbetriebnahmepunkt erneut."}
+    "update_spring_checklist": {"name": "Frühjahrscheckliste aktualisieren", "description": "Bestätigt oder öffnet einen konfigurierten Inbetriebnahmepunkt erneut."},
+    "set_installation_operation": {"name": "Betriebsfreigabe der Anlage setzen", "description": "Gibt die manuelle und automatische Bewässerung der gesamten Anlage frei oder sperrt sie."},
+    "set_installation_automation": {"name": "Automatikfreigabe der Anlage setzen", "description": "Gibt automatische Bewässerung frei oder sperrt sie, ohne den manuellen Betrieb zu ändern."},
+    "set_zone_operation": {"name": "Betriebsfreigabe der Zone setzen", "description": "Gibt sämtliche Bewässerung einer Zone frei oder sperrt sie."},
+    "set_zone_automation": {"name": "Automatikfreigabe der Zone setzen", "description": "Gibt automatische Bewässerung einer Zone frei oder sperrt sie."},
+    "reset_safety_lock": {"name": "Sicherheitssperre zurücksetzen", "description": "Setzt die zentrale Sicherheitssperre der Anlage nach einer Prüfung zurück."}
   },
   "selector": {
     "installation_purpose": {"options": {"private_garden": "Privatgarten", "landscape": "Ziergarten", "food_garden": "Nutzgarten", "mixed": "Gemischte Nutzung"}},
     "meter_kind": {"options": {"cumulative": "Kumulativer Volumenzähler", "raw": "Impuls- oder Zählwert", "none": "Kein Wasserzähler"}},
+    "meter_type": {"options": {"cumulative": "Kumulativer Mengenzähler", "pulse": "Impulszähler", "none": "Keine Wassermessung"}},
+    "pulse_factor_mode": {"options": {"liters_per_pulse": "Liter pro Impuls", "pulses_per_liter": "Impulse pro Liter"}},
+    "control_type": {"options": {"time": "Zeitsteuerung", "volume": "Mengensteuerung"}},
     "weather_strategy": {"options": {"recommended": "Empfohlene verfügbare Quelle", "local": "Lokale Sensoren oder Wetter-Entity", "open_meteo": "Open-Meteo", "seasonal": "Nur saisonaler Ersatz"}},
     "setup_mode": {"options": {"guided": "Geführte Einrichtung", "expert": "Experteneinstellungen"}},
     "calibration_resolution": {"options": {"accept": "Messwerte übernehmen", "discard": "Messwerte verwerfen"}},
@@ -251,7 +262,10 @@
            "emergency_stop": "Not-Aus",
            "soaking": "Sickerpause",
            "winter_lock": "Wintersperre",
-           "maintenance": "Wartung"
+           "maintenance": "Wartung",
+           "disabled": "Gesperrt",
+           "automatic_disabled": "Betriebsbereit, Automatik gesperrt",
+           "needs_reconfiguration": "Neukonfiguration erforderlich"
         }
       },
       "active_zone": {
@@ -272,12 +286,14 @@
           "measured": "Gemessen",
           "integrated": "Aus Durchfluss integriert",
           "estimated": "Geschätzt",
-          "unknown": "Unbekannt"
+          "unknown": "Unbekannt",
+          "unavailable": "Nicht verfügbar"
         }
       },
       "water_deficit": {"name": "Wasserdefizit"},
       "automatic_target": {"name": "Automatisches Ziel"},
       "next_watering_window": {"name": "Nächstes Bewässerungsfenster"},
+      "next_irrigation": {"name": "Nächste Bewässerung"},
       "planning_reason": {"name": "Planungsgrund"},
       "weather_model_quality": {
         "name": "Qualität des Wettermodells",
@@ -304,7 +320,7 @@
       "next_start": {"name": "Nächster geplanter Start"},
       "maintenance_due": {"name": "Fällige Wartungsaufgaben"},
       "water_cost": {"name": "Wasserkosten"},
-      "zone_status": {"name": "Status", "state": {"idle": "Bereit", "watering_needed": "Bewässerung erforderlich", "watering": "Bewässerung", "suspended": "Ausgesetzt", "safety_lock": "Sicherheitssperre", "archived": "Archiviert"}},
+      "zone_status": {"name": "Status", "state": {"idle": "Bereit", "watering_needed": "Bewässerung erforderlich", "watering": "Bewässerung", "suspended": "Ausgesetzt", "safety_lock": "Sicherheitssperre", "archived": "Archiviert", "disabled": "Gesperrt", "installation_disabled": "Anlage gesperrt", "automatic_disabled": "Automatik gesperrt", "needs_reconfiguration": "Neukonfiguration erforderlich"}},
       "zone_priority": {"name": "Priorität"},
       "last_effective_irrigation": {"name": "Letzte wirksame Bewässerung"},
       "demand_coverage": {"name": "Bedarfsdeckung"},
@@ -335,12 +351,10 @@
           "raw_meter": "Roher Impuls- oder Zählwert",
           "liters_per_count": "Liter je Impuls oder Zählschritt",
           "meter_resolution_liters": "Zählerauflösung",
-          "meter_max_age_seconds": "Maximales Alter der Wasserzählerdaten",
           "flow_sensor": "Durchflusssensor",
           "leak_monitoring": "Leckage im Leerlauf überwachen",
           "leak_flow_threshold": "Durchflussgrenze für Leckage",
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
-          "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity",
           "temperature_sensors": "Temperatursensoren nach Priorität",
           "humidity_sensors": "Feuchtesensoren nach Priorität",
@@ -392,7 +406,6 @@
         "data_description": {
           "main_valve": "Optionaler Schalter oder Ventil für die gesamte Anlage.",
           "water_meter": "Optionaler kumulativer Wassersensor. Ohne ihn ist nur Zeitsteuerung möglich.",
-          "meter_max_age_seconds": "Maximal akzeptiertes Alter eines Zählerwerts, bevor die konfigurierte Zählerausfallstrategie greift.",
           "flow_sensor": "Optionale Durchflussrate für schnellere Sicherheitsprüfungen und Leckageüberwachung.",
           "leak_monitoring": "Bei konfiguriertem Durchflusssensor standardmäßig aktiv.",
           "leak_flow_threshold": "Ein dauerhaft höherer Durchfluss im Leerlauf gilt als Gefahr.",
@@ -403,9 +416,11 @@
           "weather_backfill_days": "Sicherheits- und Aufbewahrungsgrenze für nach einem Ausfall nachzuholende Tageszeiträume."
         }
       },
-      "create": {"title": "Bewässerungsanlage anlegen", "description": "Beginne mit Zweck und erkennbarem Namen. Hardware, Messung, Wetter und Sicherheit folgen in kleinen Schritten.", "data": {"name": "Name", "purpose": "Was soll diese Anlage bewässern?"}},
-      "installation_hardware": {"title": "Ventil und Rückmeldung", "description": "Ein Hauptventil nur wählen, wenn es die komplette Anlage physisch absperrt. Eine unabhängige Rückmeldung macht Fehler sichtbar.", "data": {"main_valve": "Optionales Hauptventil", "main_valve_feedback": "Optionale unabhängige Rückmeldung"}},
-      "installation_meter": {"title": "Wassermessung", "description": "Ein kumulativer Zähler ermöglicht Mengenziele. Ein Durchflusssensor verbessert Leckage- und Plausibilitätsprüfungen.", "data": {"meter_kind": "Welcher Zähler ist vorhanden?", "water_meter": "Kumulativer Volumensensor", "raw_meter": "Impuls- oder Zählsensor", "liters_per_count": "Liter je Impuls/Zählschritt", "flow_sensor": "Optionaler Durchflusssensor"}},
+      "create": {"title": "Bewässerungsanlage anlegen", "description": "Gib einen gut erkennbaren Namen für die Anlage ein.", "data": {"name": "Name"}},
+      "installation_hardware": {"title": "Optionales Hauptventil", "description": "Leer lassen, wenn die Anlage kein gemeinsames Hauptventil besitzt.", "data": {"main_valve": "Hauptventil"}},
+      "installation_meter": {"title": "Optionale Wassermessung", "description": "Wähle keine Messung, einen kumulativen Mengenzähler oder einen Impulszähler. Impulsfaktoren werden einheitlich als Liter pro Impuls gespeichert.", "data": {"meter_type": "Messart", "meter_entity": "Zählerentität", "pulse_factor_mode": "Faktorformat", "pulse_factor": "Faktor"}},
+      "installation_zone": {"title": "Erste Bewässerungszone", "data": {"name": "Name", "zone_valve": "Zonenventil", "control_type": "Steuerungsart", "volume_max_runtime": "Harte maximale Laufzeit"}},
+      "installation_schedule": {"title": "Wochenplan", "description": "Jeder Wochentag ist entweder vollständig leer oder enthält Start, Ende und genau ein vollständiges Ziel."},
       "installation_weather": {"title": "Wetterquelle", "description": "{meter_preview} {comparison}", "data": {"weather_strategy": "Wetteransatz", "weather_entity": "Lokale Wetter-Entity", "et0_sensors": "Direkte Referenzverdunstungssensoren"}},
       "installation_safety": {"title": "Sicherheitsgrenzen", "description": "Software und Funkventile können ausfallen. Eine unabhängige Hardware-Abschaltung muss das Wasser auch ohne Home Assistant stoppen.", "data": {"installation_max_delivery_runtime": "Harte maximale Bewässerungsdauer", "hardware_shutoff_acknowledged": "Ich habe eine unabhängige Hardware-Abschaltung berücksichtigt"}},
       "installation_review": {"title": "Prüfung und Trockenlauf-Bereitschaft", "description": "{preview}", "data": {"confirm_ready": "Diese Anlage erstellen"}},
@@ -443,7 +458,13 @@
       ,"main_feedback_requires_main_valve": "Eine Hauptventil-Rückmeldung benötigt ein konfiguriertes Hauptventil."
       ,"selected_meter_required": "Wähle den Sensor passend zum gewählten Zählertyp."
       ,"local_weather_source_required": "Wähle eine lokale Wetter-Entity oder direkte Referenzverdunstung."
-      ,"hardware_shutoff_acknowledgement_required": "Automatik bleibt gesperrt, bis der Hinweis zur unabhängigen Hardware-Abschaltung bestätigt ist."
+       ,"hardware_shutoff_acknowledgement_required": "Automatik bleibt gesperrt, bis der Hinweis zur unabhängigen Hardware-Abschaltung bestätigt ist."
+       ,"volume_max_runtime_required": "Eine Mengensteuerung benötigt eine harte maximale Laufzeit."
+       ,"schedule_row_incomplete": "Jeder konfigurierte Wochentag benötigt Start, Ende und Ziel."
+       ,"schedule_row_invalid": "Gib eine gültige Start- und Endzeit ein."
+       ,"schedule_target_invalid": "Gib ein positives Laufzeit- oder Mengenziel ein."
+       ,"schedule_target_does_not_fit": "Das vollständige Ziel muss in das Zeitfenster passen."
+       ,"schedule_overlap": "Zeitfenster benachbarter Wochentage dürfen sich auch über Mitternacht nicht überschneiden."
     }
   },
   "options": {
@@ -451,11 +472,19 @@
       "init": {
         "title": "Einstellungen des Irrigation Managers",
         "menu_options": {
+          "v2_installation": "Anlagenkonfiguration",
+          "actions": "Betriebs- und Sicherheitsaktionen",
           "guided": "Geführte Einstellungen",
           "expert": "Experteneinstellungen",
           "import_config": "Portable Konfiguration importieren"
         }
       },
+      "v2_installation": {"title": "Anlageneinstellungen", "data": {"name": "Name", "operation_enabled": "Betriebsfreigabe", "automation_enabled": "Automatikfreigabe", "main_valve": "Hauptventil", "meter_type": "Messart", "meter_entity": "Zählerentität", "pulse_factor_mode": "Faktorformat", "pulse_factor": "Faktor"}},
+      "actions": {"title": "Betriebs- und Sicherheitsaktionen", "menu_options": {"installation_releases": "Betrieb freigeben oder sperren", "emergency_stop": "Not-Aus sofort auslösen", "reset_safety": "Sicherheitssperre zurücksetzen", "replan": "Automatik neu planen"}},
+      "installation_releases": {"title": "Anlagenfreigaben", "data": {"operation_enabled": "Betriebsfreigabe", "automation_enabled": "Automatikfreigabe"}},
+      "installation_automation_disable": {"title": "Bewässerungsautomatik sperren", "description": "Ein automatischer Bewässerungsvorgang ist aktiv. Wähle, ob er sofort gestoppt oder abgeschlossen werden soll.", "data": {"active_execution": "Aktiver Vorgang"}},
+      "reset_safety": {"title": "Sicherheitssperre zurücksetzen", "description": "Warnung: Sperre erst nach Prüfung der Anlage und aller sicher geschlossenen Ventile zurücksetzen.", "data": {"confirm_reset": "Anlage wurde geprüft und kann sicher freigegeben werden"}},
+      "action_result": {"title": "Aktion abgeschlossen", "description": "Ergebnis: {result}"},
       "guided": {"title": "Geführte Einstellungen", "menu_options": {"guided_installation": "Grundlagen der Anlage", "guided_zone": "Zone und Profile"}},
       "expert": {"title": "Experteneinstellungen", "menu_options": {"installation": "Experteneinstellungen der Anlage", "zone": "Experteneinstellungen einer Zone"}},
       "guided_installation": {"title": "Grundlagen der Anlage", "description": "Nur häufige Einstellungen werden gezeigt. Verborgene Expertenwerte bleiben erhalten. Importierte und migrierte Anlagen bleiben automatisch gesperrt, bis der Hardware-Hinweis lokal bestätigt wurde.", "data": {"name": "Name", "main_valve": "Hauptventil", "main_valve_feedback": "Hauptventil-Rückmeldung", "water_meter": "Kumulativer Wasserzähler", "flow_sensor": "Durchflusssensor", "weather_entity": "Wetter-Entity", "open_meteo_enabled": "Open-Meteo als Ersatz", "hardware_shutoff_acknowledged": "Hardware-Abschalthinweis bestätigt", "automation_enabled": "Globale Automatikfreigabe"}},
@@ -472,12 +501,10 @@
           "raw_meter": "Roher Impuls- oder Zählwert",
           "liters_per_count": "Liter je Impuls oder Zählschritt",
           "meter_resolution_liters": "Zählerauflösung",
-          "meter_max_age_seconds": "Maximales Alter der Wasserzählerdaten",
           "flow_sensor": "Durchflusssensor",
           "leak_monitoring": "Leckage im Leerlauf überwachen",
           "leak_flow_threshold": "Durchflussgrenze für Leckage",
           "leak_duration_seconds": "Bestätigungsdauer für Leckage",
-          "flow_max_age_seconds": "Maximales Alter der Durchflussdaten",
           "weather_entity": "Wetter-Entity",
           "temperature_sensors": "Temperatursensoren nach Priorität",
           "humidity_sensors": "Feuchtesensoren nach Priorität",
@@ -638,7 +665,10 @@
       "soil_moisture_correction_limit_required": "Die konservative Korrektur benötigt eine ausdrücklich positive Korrekturgrenze."
       ,"wind_interlock_requires_source_and_threshold": "Windquelle und Schwellwert müssen gemeinsam konfiguriert werden."
       ,"invalid_import": "Portable Datei, Version oder Entity-/Zonenzuordnung ist ungültig."
-      ,"invalid_maintenance_configuration": "Erforderlich sind ein gültiges MM-TT-Datum, eindeutige Aufgaben-/Checklisten-IDs, ISO-Fälligkeiten und positive Intervalle."
+       ,"invalid_maintenance_configuration": "Erforderlich sind ein gültiges MM-TT-Datum, eindeutige Aufgaben-/Checklisten-IDs, ISO-Fälligkeiten und positive Intervalle."
+       ,"selected_meter_required": "Wähle den Sensor passend zum gewählten Zählertyp."
+       ,"meter_required_by_volume_zones": "Stelle alle mengengesteuerten Zonen auf Zeitsteuerung um, bevor du den Wasserzähler entfernst."
+       ,"reset_confirmation_required": "Prüfe die Anlage und bestätige das Zurücksetzen der Sicherheitssperre ausdrücklich."
     }
   },
   "config_subentries": {
@@ -824,9 +854,16 @@
             "phenology_stage_schedule": "Für gestufte Profile season_start als MM-TT sowie initial_days, development_days, mid_days und late_days oder wiederkehrende Datumsgrenzen angeben. Es wird keine Hemisphäre angenommen."
           }
         },
-        "reconfigure": {"title": "Bewässerungszone", "menu_options": {"reconfigure_guided": "Geführt bearbeiten", "reconfigure_expert": "Experteneinstellungen", "calibration": "Durchfluss kalibrieren"}}
+        "minimal": {"title": "Bewässerungszone hinzufügen", "data": {"name": "Name", "operation_enabled": "Betriebsfreigabe", "automation_enabled": "Automatikfreigabe", "zone_valve": "Zonenventil", "control_type": "Steuerungsart", "volume_max_runtime": "Harte maximale Laufzeit"}},
+        "minimal_schedule": {"title": "Wochenplan"},
+        "reconfigure_minimal": {"title": "Bewässerungszone bearbeiten", "data": {"name": "Name", "operation_enabled": "Betriebsfreigabe", "automation_enabled": "Automatikfreigabe", "zone_valve": "Zonenventil", "control_type": "Steuerungsart", "volume_max_runtime": "Harte maximale Laufzeit"}},
+        "reconfigure_minimal_schedule": {"title": "Wochenplan"},
+        "reconfigure": {"title": "Bewässerungszone", "menu_options": {"reconfigure_minimal": "Zone und Wochenplan", "releases": "Betriebs- und Automatikfreigabe", "reconfigure_guided": "Geführt bearbeiten", "reconfigure_expert": "Experteneinstellungen", "calibration": "Durchfluss kalibrieren"}},
+        "releases": {"title": "Zonenfreigaben", "data": {"operation_enabled": "Betriebsfreigabe", "automation_enabled": "Automatikfreigabe"}},
+        "automation_disable": {"title": "Bewässerungsautomatik sperren", "description": "In dieser Zone ist ein automatischer Bewässerungsvorgang aktiv. Wähle, ob er sofort gestoppt oder abgeschlossen werden soll.", "data": {"active_execution": "Aktiver Vorgang"}}
       },
       "abort": {
+        "releases_updated": "Die Zonenfreigaben wurden aktualisiert.",
         "already_configured": "Dieses Zonenventil ist bereits konfiguriert.",
         "profile_selection_not_pending": "Es wartet keine Auswahl eines Forschungsprofils auf Bestätigung.",
         "profile_selection_cancelled": "Die Auswahl des Forschungsprofils wurde nicht gespeichert.",
@@ -854,6 +891,12 @@
         ,"calibration_start_failed": "Die Kalibrierung konnte die Sicherheitsprüfung nicht bestehen oder die Anlage ist beschäftigt."
         ,"calibration_resolution_required": "Prüfe das Ergebnis und bestätige deine Entscheidung."
         ,"calibration_resolution_failed": "Der Vorschlag konnte nicht übernommen oder verworfen werden. Die Zone wurde möglicherweise zwischenzeitlich geändert."
+        ,"volume_max_runtime_required": "Eine Mengensteuerung benötigt eine harte maximale Laufzeit."
+        ,"schedule_row_incomplete": "Jeder konfigurierte Wochentag benötigt Start, Ende und Ziel."
+        ,"schedule_row_invalid": "Gib eine gültige Start- und Endzeit ein."
+        ,"schedule_target_invalid": "Gib ein positives Laufzeit- oder Mengenziel ein."
+        ,"schedule_overlap": "Zeitfenster benachbarter Wochentage dürfen sich auch über Mitternacht nicht überschneiden."
+        ,"schedule_target_does_not_fit": "Das vollständige Ziel muss in das Zeitfenster passen."
       }
     }
   }

@@ -224,13 +224,18 @@ class FakeHaIrrigationPlant:
         """Set up a persisted integration entry backed by this fake plant."""
         data: dict[str, Any] = {
             "name": "Qualification irrigation",
+            "operation_enabled": True,
             "automation_enabled": True,
+            "planning_model": "demand",
             "hardware_shutoff_acknowledged": True,
+            "meter_type": "none",
         }
         if self.main_valve is not None:
             data["main_valve"] = self.main_valve
         if with_meter:
             data["water_meter"] = self.meter_entity_id
+            data["meter_type"] = "cumulative"
+            data["meter_entity"] = self.meter_entity_id
         if with_flow:
             data["flow_sensor"] = self.flow_entity_id
         data["weather_entity"] = self.weather_entity_id
@@ -240,7 +245,8 @@ class FakeHaIrrigationPlant:
             title="Qualification irrigation",
             data=data,
             unique_id=unique_id,
-            minor_version=7,
+            version=2,
+            minor_version=0,
         )
         entry.add_to_hass(self.hass)
         specs = list(zone_data or ({},) * len(self.zone_valves))

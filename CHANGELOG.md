@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.0-rc6 - 2026-07-24
+
+### Added
+
+- Introduce the authoritative v2 configuration model with a minimal installation wizard,
+  one required first zone, and explicit seven-day time or volume schedules.
+- Add independent installation and zone operation and automatic releases plus one
+  persistent installation-wide safety lock.
+- Add optional main-valve, cumulative-volume, and pulse-meter modules with corrected
+  physical meter continuity and measured zone, installation, and unassigned consumption.
+- Add Energy Dashboard-compatible water entities, runtime period sensors, fixed-weekly
+  atomic replanning, and guided per-zone flow calibration.
+- Add focused installation and zone cards with open-order and history dialogs, atomic
+  manual conflict handling, adaptive runtime/water metrics, and immediate Not-Aus.
+
+### Changed
+
+- Existing v1 installations migrate fail-closed and must be explicitly reconfigured;
+  legacy demand schedules are not guessed or silently converted into weekly targets.
+- Runtime faults now set the installation-wide safety lock instead of a zone-local lock.
+- Unchanged available meter values remain valid without artificial heartbeat updates;
+  only volume targets and calibration require physical meter progress.
+- Make automatic replanning idempotent, DST-aware, active-window aware, and atomic while
+  preserving active executions and manual requests.
+
+### Safety
+
+- Block all actuator paths until migrated installations and zones are fully reconfigured.
+- Enforce global actuator ownership across installations and fail closed on meter loss,
+  volume timeout, invalid release transitions, and unconfirmed safety-lock reset.
+
 ## 0.1.0-rc5 - 2026-07-23
 
 ### Added

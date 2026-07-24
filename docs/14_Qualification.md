@@ -1,6 +1,8 @@
 # Software-Qualifikation
 
-Stand: 2026-07-22
+> **Qualifikationsstatus für Version 2:** `docs/17_Neukonzept.md` ist der verbindliche Vertrag. Die nachfolgenden erweiterten Version-1-Szenarien bleiben Regressionstests, sind aber keine Quelle zusätzlicher Version-2-Pflichten, insbesondere nicht für zonale Sicherheitssperren.
+
+Stand: 2026-07-24
 
 ## Umfang
 
@@ -29,8 +31,8 @@ wird aus diesem Bericht ausdrücklich nicht abgeleitet.
 | --- | --- |
 | Sicherheit hat Vorrang und Fehler führen soweit erreichbar zum geschlossenen Zustand | `test_valve_feedback_faults_fail_closed_when_hardware_is_reachable`, `test_cleanup_attempts_main_close_when_zone_close_fails` |
 | Höchstens eine hydraulisch aktive Bewässerungszone | `test_serialized_plant_never_opens_two_zones_and_orders_main_valve`, `test_monitor_closes_a_second_zone_that_opens_during_watering`, Preflight-Tests in `test_init.py` |
-| Hauptventil öffnet vor und schließt nach dem Zonenventil; zwischen Teilgaben ist es geschlossen | `test_serialized_plant_never_opens_two_zones_and_orders_main_valve`, `test_execute_timed_waters_one_zone_and_attributes_meter_delta`, `test_split_request_persists_one_execution_across_soak_doses` |
-| Bewässerungslaufzeit und gesamte Vorgangsdauer sind getrennt begrenzt | `test_execution_hard_runtime_is_consumed_across_split_volume_doses`, `test_active_request_stops_at_expiry_and_never_continues`, `test_soaking_request_expires_without_another_dose` |
+| Hauptventil öffnet vor und schließt nach dem Zonenventil; die Wiederverwendung zwischen Aufträgen ist aufgeschoben | `test_serialized_plant_never_opens_two_zones_and_orders_main_valve`, `test_execute_timed_waters_one_zone_and_attributes_meter_delta`, `test_split_request_persists_one_execution_across_soak_doses` |
+| Bewässerungslaufzeit und gesamte Vorgangsdauer sind getrennt begrenzt; angenommene manuelle Ziele werden nicht still auf 3600 s gekürzt | `test_execution_hard_runtime_is_consumed_across_split_volume_doses`, `test_active_request_stops_at_expiry_and_never_continues`, `test_soaking_request_expires_without_another_dose`, `test_manual_targets_above_one_hour_use_submitted_runtime_and_reject_configured_max` |
 | Harte Mengenvorgänge enden auch bei Wandzeitsprung am monotonen Deadline | `test_volume_deadline_ignores_backward_wall_clock_jump`, alle `test_volume_deadline_*` in `test_executor.py` |
 | Stop, Pause und Abbruch schließen Ventile und erhalten nur den tatsächlich gelieferten Fortschritt | `test_cancellation_race_uses_monotonic_progress_and_closes_every_valve`, `test_pause_and_resume_preserve_the_remaining_target`, `test_stop_actions_close_active_valves_and_account_partial_water` |
 | Eine konkurrierende Änderung darf keinen veralteten Auftrag starten | `test_stale_selected_request_cannot_overwrite_concurrent_change` für Cancel, Pause und Ersetzung |
@@ -38,12 +40,16 @@ wird aus diesem Bericht ausdrücklich nicht abgeleitet.
 | Neustart schließt Ventile, unterbricht aktive und sickernde Vorgänge und setzt sie nicht blind fort | `test_restart_interrupts_active_dose_and_replans_unexpired_remainder`, `test_soaking_state_is_interrupted_before_remainder_is_replanned`, Recovery-Tests in `test_init.py` |
 | Gemessene oder geschätzte Teilmengen werden auch bei Abbruch und Neustart verbucht | `test_cancellation_preserves_measured_and_estimated_fallback_progress`, `test_setup_recovers_interrupted_execution_from_meter_baseline`, `test_setup_caps_durable_fallback_recovery_after_long_downtime` |
 | Unerwartetes Öffnen oder Schließen und fehlende Rückmeldung werden erkannt | `test_monitor_closes_a_second_zone_that_opens_during_watering`, `test_valve_feedback_faults_fail_closed_when_hardware_is_reachable`, `test_volume_deadline_closes_zone_when_open_feedback_never_confirms` |
-| Unterdurchfluss sperrt die Zone, Überdurchfluss die Anlage | `test_flow_faults_stop_with_the_required_lock_scope`, `test_flow_fault_stops_and_applies_correct_safety_scope` |
+| Durchflussfehler stoppen die Bewässerung und setzen im verbindlichen Version-2-Modell die anlagenweite Sicherheitssperre | `test_flow_faults_stop_with_the_required_lock_scope`, `test_flow_fault_stops_and_applies_correct_safety_scope` |
 | Durchfluss im Leerlauf wird zeitlich bestätigt, geschlossen, unzugeordnet verbucht und persistent gesperrt | `test_idle_leak_and_weather_idempotency_survive_restart`, `test_persistent_idle_flow_closes_valves_and_sets_installation_lock`, Artefakt- und Unload-Tests in `test_init.py` |
-| Ungültige Sensorwerte werden nicht als null oder gültig umgedeutet | `test_meter_adapter_rejects_non_finite_and_negative_values`, `test_meter_adapter_rejects_stale_samples`, `test_invalid_flow_breaks_continuous_leak_observation`, `test_finalized_weather_rejects_nan_without_mutating_balance` |
+| Ungültige Sensorwerte werden nicht als null oder gültig umgedeutet; unveränderte verfügbare Messwerte benötigen keinen künstlichen Heartbeat | `test_meter_adapter_rejects_non_finite_and_negative_values`, `test_unchanged_measurements_remain_readable_without_heartbeat`, `test_invalid_flow_breaks_continuous_leak_observation`, `test_finalized_weather_rejects_nan_without_mutating_balance` |
 | Zählerreset erhält Kontinuität; Regression und unplausibler Sprung während einer Teilgabe brechen ab | `test_meter_adapter_rejects_small_regression_without_corrupting_baseline`, `test_meter_adapter_preserves_continuity_for_conservative_reset`, `test_executor_uses_production_meter_reset_classification`, `test_volume_control_rejects_regressing_and_jumping_meter_samples` |
 | Zählerausfall bricht ab oder verwendet nur den expliziten, gekennzeichneten Schätzfallback | `test_volume_meter_loss_aborts_or_uses_explicit_estimated_fallback`, Fallback- und Checkpoint-Tests in `test_executor.py` und `test_init.py` |
-| Automatische Planung ist bei doppelten Ereignissen und Neustarts idempotent | `test_duplicate_planning_events_create_one_stable_request`, `test_restart_does_not_duplicate_a_persisted_window_opportunity`, Wetterperioden-Test in `test_automatic_scheduling.py` |
+| Automatische Planung ist bei doppelten Ereignissen und Neustarts idempotent | `test_unchanged_weekly_replan_preserves_request_and_sequence`, `test_duplicate_planning_events_create_one_stable_request`, `test_restart_does_not_duplicate_a_persisted_window_opportunity` |
+| Ein bereits begonnenes festes Wochenfenster bleibt planbar, wenn das vollständige Ziel noch passt | `test_weekly_replan_keeps_started_window_when_full_target_still_fits`, `test_weekly_replan_drops_started_window_when_full_target_no_longer_fits` |
+| Zeitsteuerung benötigt auch mit konfiguriertem Zähler keinen Zählerfortschritt | `test_metered_timed_operation_completes_without_meter_progress_or_lock`, `test_required_meter_progress_rejects_zero_delivery` |
+| Card-Aufträge entsprechen der Dispatcher-Priorität, enthalten nur ungestartete Aufträge und beginnen rechnerisch nach der begrenzten Restlaufzeit eines aktiven Vorgangs | `test_card_open_orders_matches_dispatcher_priority_and_excludes_started_work`, `test_card_open_orders_starts_pending_work_after_active_bounded_runtime` |
+| Migrierte Version-2-Konfigurationen bleiben an Freigabe-, Manuell-, Dispatcher- und Kalibriergrenzen geschlossen und werden ausschließlich nach gültiger UI-Neukonfiguration freigegeben | `test_v2_migration_disables_and_requires_reconfiguration`, `test_v2_reconfiguration_exposes_releases_and_clears_flag_only_after_validation`, `test_reconfiguration_flags_block_activation_manual_dispatch_and_calibration`, `test_v2_settings_actions_control_releases_emergency_reset_and_replan` |
 | Alte Speicherversionen werden additiv migriert; korrupte Sicherheitsdaten brechen den Start ab | `test_storage_migration_is_additive_and_corruption_fails_closed`, alle Migrationsfälle in `test_init.py` |
 | Konfigurationsänderungen werden erst im vollständigen Leerlauf aktiviert | `test_config_reload_waits_for_idle_and_unload_cleans_runtime_tasks`, `test_options_update_during_watering_reloads_only_after_complete_idle`, Snapshot-Tests in `test_automatic_scheduling.py` |
 | Unload entfernt Listener und beendet oder erwartet alle eigenen Tasks | `test_config_reload_waits_for_idle_and_unload_cleans_runtime_tasks`, `test_short_idle_flow_artifact_is_ignored_and_unload_cancels_monitoring`, `test_unload_awaits_an_already_confirmed_leak_application` |
@@ -59,7 +65,7 @@ wird aus diesem Bericht ausdrücklich nicht abgeleitet.
 ## Speicher- und Wetterannahmen
 
 - Korrupte sicherheitskritische Datensätze führen absichtlich zu einem fehlgeschlagenen Setup statt zu stillen Standardwerten.
-- `meter_max_age_seconds` ist im Config/Options Flow konfigurierbar und beträgt standardmäßig 300 Sekunden.
+- Kumulative und direkte Durchflusswerte werden bei jeder aktiven Abfrage auf Verfügbarkeit und Plausibilität geprüft. Ihr HA-Publikationsalter ist keine Sensorfunktionsprüfung und erfordert deshalb keinen Heartbeat.
 - Finalisierte Wetterwerte müssen endlich und nicht negativ sein. Eine Perioden-ID ist idempotent; abweichende Wiederholung wird abgelehnt.
 - Ein Rückgang wird nur als Zählerreset akzeptiert, wenn der neue Rohwert höchstens 10 L beträgt, der Rückgang mindestens 5 L groß ist und mindestens dem Fünffachen des neuen Rohwerts entspricht. Kleinere oder mehrdeutige Rückgänge werden abgelehnt, ohne die letzte gültige Baseline zu verändern. Ein anhand von Maximaldurchfluss und harter Laufzeit unmöglicher Sprung wird ebenfalls als Anlagenfehler behandelt.
 
@@ -80,10 +86,11 @@ reale Durchfluss- und Nachlaufkalibrierung sowie einen unabhängig geprüften Ha
 
 ## Anforderungsabnahme und verbleibende Gates
 
-Die vollständige Zuordnung aller 177 normativen Anforderungen und der zusätzlichen
-Sicherheits-MUSTs steht in `docs/15_Traceability.md`. Phase 5 ist softwareseitig für die
-simulierbaren Pfade qualifiziert, aber nicht als Gesamtprodukt oder Feldfreigabe
-abgeschlossen. Insbesondere bleiben:
+`docs/15_Traceability.md` enthält weiterhin die historische Zuordnung der 177
+Version-1-Anforderungen und der zusätzlichen Sicherheits-MUSTs. Für Version 2 gilt diese
+Zuordnung nur als Regressionsevidenz; die fachliche Abnahme richtet sich nach
+`docs/17_Neukonzept.md`. Die simulierbaren Pfade sind softwareseitig qualifiziert, aber
+nicht als Gesamtprodukt oder Feldfreigabe abgeschlossen. Insbesondere bleiben:
 
 - fachliche Validierung der Pflanzen-, Boden-, Wetter-, Schwellen- und Profilstandardwerte
 - reale Ventil-, Relais-, Zähler-, Durchfluss-, Impuls-, Nachlauf- und Messlatenzprüfung
@@ -99,17 +106,16 @@ Mindestversion definiert; ein erfundener Schlüssel würde Hassfest verletzen.
 
 ## Ausgeführte Validierungen
 
-Lokal am 2026-07-22 tatsächlich ausgeführt:
+Lokal am 2026-07-24 tatsächlich ausgeführt:
 
 | Prüfung | Beobachtetes Ergebnis |
 | --- | --- |
-| `uv run pytest` | 271 Tests bestanden in 106,11 s |
+| `uv run pytest` | 338 Tests bestanden in 83,10 s |
 | `uv run ruff check .` | bestanden |
-| `uv run ruff format --check .` | 50 Dateien formatiert, bestanden |
-| `uv run mypy` | bestanden, 24 Quelldateien geprüft |
-| `npm ci` | 59 Pakete installiert, 0 gemeldete Schwachstellen |
-| `npm run check` | TypeScript-Prüfung und 5 Vitest-Tests bestanden |
-| `npm run build` | Vite-Build bestanden; Bundle 57,44 kB, gzip 15,04 kB |
+| `uv run ruff format --check .` | 52 Dateien formatiert, bestanden |
+| `uv run mypy` | bestanden, 25 Quelldateien geprüft |
+| `npm run check` | TypeScript-Prüfung und 24 Vitest-Tests bestanden |
+| `npm run build` | Vite-Build bestanden; Bundle 79,45 kB, gzip 20,02 kB |
 
 Auf diesem Rechner waren weder `hassfest` noch ein lokaler HACS-Validator noch Docker
 verfügbar. `.github/workflows/home-assistant.yml` führt beide offiziellen Actions aus;

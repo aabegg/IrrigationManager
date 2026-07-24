@@ -1,5 +1,7 @@
 """Behavior tests for Home Assistant hardware adapters."""
 
+import asyncio
+
 import pytest
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
@@ -30,7 +32,30 @@ async def test_flow_adapter_rejects_non_finite_values(
     )
 
     with pytest.raises(HomeAssistantError, match="not plausible"):
-        await HomeAssistantFlow(hass, "sensor.flow", max_age_seconds=30).read_l_min()
+        await HomeAssistantFlow(hass, "sensor.flow").read_l_min()
+
+
+async def test_unchanged_measurements_remain_readable_without_heartbeat(
+    hass: HomeAssistant,
+) -> None:
+    """Treat available cumulative and flow states as observations without republishing."""
+    hass.states.async_set(
+        "sensor.water_meter",
+        "42",
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolume.LITERS},
+    )
+    hass.states.async_set(
+        "sensor.flow",
+        "0",
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolumeFlowRate.LITERS_PER_MINUTE},
+    )
+    meter = HomeAssistantMeter(hass, "sensor.water_meter")
+    flow = HomeAssistantFlow(hass, "sensor.flow")
+
+    await asyncio.sleep(0.01)
+
+    assert await meter.read_liters() == 42
+    assert await flow.read_l_min() == 0
 
 
 async def test_meter_adapter_rejects_small_regression_without_corrupting_baseline(

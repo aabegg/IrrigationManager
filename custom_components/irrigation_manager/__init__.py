@@ -9,13 +9,25 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    CONF_AGRONOMIC_VALUES_CONFIRMED,
     CONF_AUTOMATION_ENABLED,
-    CONF_CUSTOM_PROFILES,
-    CONF_EXTERNAL_FAILURE_POLICY,
-    CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED,
+    CONF_CONTROL_TYPE,
+    CONF_LITERS_PER_COUNT,
+    CONF_LITERS_PER_PULSE,
+    CONF_MAIN_VALVE,
+    CONF_METER_ENTITY,
+    CONF_METER_TYPE,
+    CONF_NEEDS_RECONFIGURATION,
+    CONF_OPERATION_ENABLED,
+    CONF_RAW_METER,
+    CONF_WATER_METER,
+    CONF_WEEKLY_SCHEDULE,
+    CONF_ZONE_VALVE,
+    CONTROL_TYPE_TIME,
     DOMAIN,
-    EXTERNAL_FAILURE_FAIL_SAFE,
+    METER_TYPE_CUMULATIVE,
+    METER_TYPE_NONE,
+    METER_TYPE_PULSE,
+    WEEKDAYS,
 )
 from .coordinator import IrrigationCoordinator
 from .frontend import async_register_frontend, async_unregister_frontend
@@ -108,73 +120,61 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Mark legacy entries compatible with additive automatic-planning defaults."""
-    if entry.version != 1:
-        return False
-    if entry.minor_version < 2:
-        for subentry in entry.get_subentries_of_type("zone"):
-            if CONF_AGRONOMIC_VALUES_CONFIRMED not in subentry.data:
-                hass.config_entries.async_update_subentry(
-                    entry,
-                    subentry,
-                    data={**subentry.data, CONF_AGRONOMIC_VALUES_CONFIRMED: True},
-                )
-        hass.config_entries.async_update_entry(
-            entry,
-            data={CONF_CUSTOM_PROFILES: {}, **entry.data},
-            minor_version=2,
+    """Reset legacy demand configuration into a disabled v2 reconfiguration shell."""
+    if entry.version == 1:
+        source_entity = entry.data.get(CONF_WATER_METER) or entry.data.get(CONF_RAW_METER)
+        meter_type = (
+            METER_TYPE_CUMULATIVE
+            if entry.data.get(CONF_WATER_METER)
+            else METER_TYPE_PULSE
+            if entry.data.get(CONF_RAW_METER)
+            else METER_TYPE_NONE
         )
-    if entry.minor_version < 3:
-        hass.config_entries.async_update_entry(entry, minor_version=3)
-    if entry.minor_version < 4:
+        migrated_data: dict[str, object] = {
+            "name": entry.data.get("name", entry.title),
+            CONF_METER_TYPE: meter_type,
+            CONF_OPERATION_ENABLED: False,
+            CONF_AUTOMATION_ENABLED: False,
+            CONF_NEEDS_RECONFIGURATION: True,
+        }
+        if isinstance(entry.data.get(CONF_MAIN_VALVE), str):
+            migrated_data[CONF_MAIN_VALVE] = entry.data[CONF_MAIN_VALVE]
+        if isinstance(source_entity, str):
+            migrated_data[CONF_METER_ENTITY] = source_entity
+        if meter_type == METER_TYPE_PULSE and isinstance(
+            entry.data.get(CONF_LITERS_PER_COUNT), int | float
+        ):
+            migrated_data[CONF_LITERS_PER_PULSE] = float(entry.data[CONF_LITERS_PER_COUNT])
+        empty_schedule = [
+            {"weekday": weekday, "start": None, "end": None, "target": None} for weekday in WEEKDAYS
+        ]
         for subentry in entry.get_subentries_of_type("zone"):
-            if CONF_EXTERNAL_FAILURE_POLICY not in subentry.data:
-                hass.config_entries.async_update_subentry(
-                    entry,
-                    subentry,
-                    data={
-                        CONF_EXTERNAL_FAILURE_POLICY: EXTERNAL_FAILURE_FAIL_SAFE,
-                        **subentry.data,
-                    },
-                )
-        hass.config_entries.async_update_entry(
-            entry,
-            data={
-                CONF_EXTERNAL_FAILURE_POLICY: EXTERNAL_FAILURE_FAIL_SAFE,
-                **entry.data,
-            },
-            minor_version=4,
-        )
-    if entry.minor_version < 5:
-        hass.config_entries.async_update_entry(
-            entry,
-            data={CONF_AUTOMATION_ENABLED: True, **entry.data},
-            minor_version=5,
-        )
-    if entry.minor_version < 6:
-        hass.config_entries.async_update_entry(entry, minor_version=6)
-    if entry.minor_version < 7:
-        for subentry in entry.get_subentries_of_type("zone"):
-            hass.config_entries.async_update_subentry(
-                entry,
-                subentry,
-                data={**subentry.data, CONF_AUTOMATION_ENABLED: False},
-            )
-        hass.config_entries.async_update_entry(
-            entry,
-            data={
-                **entry.data,
+            zone_data: dict[str, object] = {
+                "name": subentry.data.get("name", subentry.title),
+                CONF_CONTROL_TYPE: CONTROL_TYPE_TIME,
+                CONF_OPERATION_ENABLED: False,
                 CONF_AUTOMATION_ENABLED: False,
-                CONF_HARDWARE_SHUTOFF_ACKNOWLEDGED: False,
-            },
-            minor_version=7,
+                CONF_WEEKLY_SCHEDULE: empty_schedule,
+                CONF_NEEDS_RECONFIGURATION: True,
+            }
+            if isinstance(subentry.data.get(CONF_ZONE_VALVE), str):
+                zone_data[CONF_ZONE_VALVE] = subentry.data[CONF_ZONE_VALVE]
+            hass.config_entries.async_update_subentry(entry, subentry, data=zone_data)
+        hass.config_entries.async_update_entry(
+            entry,
+            data=migrated_data,
+            version=2,
+            minor_version=0,
         )
-    return True
+        return True
+    return entry.version == 2
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -> bool:
     """Unload one irrigation installation."""
-    await entry.runtime_data.manager.async_shutdown()
+    runtime_data = getattr(entry, "runtime_data", None)
+    if runtime_data is not None:
+        await runtime_data.manager.async_shutdown()
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)

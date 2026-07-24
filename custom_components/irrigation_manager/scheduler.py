@@ -3,7 +3,7 @@
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from enum import StrEnum
 
 from .models import IrrigationExecutionState, ManualIrrigationRequest
@@ -229,8 +229,12 @@ def _resolve_endpoint(
             hours=int(match.group("hours") or 0), minutes=int(match.group("minutes") or 0)
         )
         return (resolved + sign * offset).astimezone(UTC)
-    local = datetime.combine(day, time.fromisoformat(value), tzinfo=reference.tzinfo)
-    return local.astimezone(UTC)
+    return resolve_local_wall_time(day, time.fromisoformat(value), reference.tzinfo)
+
+
+def resolve_local_wall_time(day: date, value: time, timezone: tzinfo | None) -> datetime:
+    """Resolve a wall time using fold=0 and normalize DST gaps forward through UTC."""
+    return datetime.combine(day, value, tzinfo=timezone).replace(fold=0).astimezone(UTC)
 
 
 def decide_zone_schedule(
@@ -396,10 +400,10 @@ def select_manual_request(
             or datetime.fromisoformat(request.soak_until) <= now
         )
     ]
-    return min(ready, key=_request_priority, default=None)
+    return min(ready, key=request_priority, default=None)
 
 
-def _request_priority(request: ManualIrrigationRequest) -> tuple[object, ...]:
+def request_priority(request: ManualIrrigationRequest) -> tuple[object, ...]:
     """Keep manual FIFO ahead of lexicographically ordered automatic work."""
     if request.source == "manual":
         return (0, request.sequence, request.request_id)

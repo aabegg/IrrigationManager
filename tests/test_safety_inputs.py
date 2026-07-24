@@ -52,6 +52,7 @@ async def test_own_command_feedback_transition_does_not_trigger_false_lock(
     hass.services.async_register("switch", "turn_off", turn_off)
     entry = await plant.setup_entry(
         with_flow=False,
+        with_meter=False,
         installation_data={"actuator_transition_grace_seconds": 0.5},
         zone_data=[{"zone_valve_feedback": "binary_sensor.lawn_feedback"}],
     )
@@ -91,7 +92,7 @@ async def test_unavailable_separate_feedback_at_startup_closes_and_locks(
     ]
 
 
-async def test_feedback_loss_during_operation_stops_and_locks_zone(
+async def test_feedback_loss_during_operation_stops_and_locks_installation(
     hass: HomeAssistant,
 ) -> None:
     """Continuously supervise the separate feedback after command confirmation."""
@@ -131,11 +132,11 @@ async def test_feedback_loss_during_operation_stops_and_locks_zone(
     await _wait_until(lambda: not plant.open_valves)
 
     stored = await IrrigationStore(hass, entry.entry_id).async_load()
-    assert "qualification-zone-1" in stored.zone_safety_locks
-    assert stored.installation_safety_lock is None
+    assert "feedback unavailable" in (stored.installation_safety_lock or "")
+    assert stored.zone_safety_locks == {}
 
 
-async def test_zone_external_permit_change_stops_and_locks_only_zone(
+async def test_zone_external_permit_change_stops_and_locks_installation(
     hass: HomeAssistant,
 ) -> None:
     """Apply a zonal permit transition immediately to the owning active operation."""
@@ -159,8 +160,8 @@ async def test_zone_external_permit_change_stops_and_locks_only_zone(
     await _wait_until(lambda: not plant.open_valves)
 
     stored = await IrrigationStore(hass, entry.entry_id).async_load()
-    assert stored.installation_safety_lock is None
-    assert "qualification-zone-1" in stored.zone_safety_locks
+    assert "External safety interlock" in (stored.installation_safety_lock or "")
+    assert stored.zone_safety_locks == {}
 
 
 async def test_delayed_external_event_cannot_lock_or_cancel_the_next_operation(
@@ -225,10 +226,10 @@ async def test_delayed_external_event_cannot_lock_or_cancel_the_next_operation(
         manager._stored_state = replace(manager._stored_state, active_execution=None)
 
 
-async def test_strong_wind_blocks_automatic_and_configured_manual_irrigation(
+async def test_strong_wind_is_visible_and_blocks_configured_manual_irrigation(
     hass: HomeAssistant,
 ) -> None:
-    """Apply the zonal threshold to automatic work and the selected manual policy."""
+    """Expose the zonal threshold and apply the selected manual policy."""
     plant = FakeHaIrrigationPlant(hass, zone_flows_l_min={"switch.lawn": 10})
     hass.states.async_set(
         "sensor.lawn_wind",
@@ -249,8 +250,7 @@ async def test_strong_wind_blocks_automatic_and_configured_manual_irrigation(
     )
     zone = next(iter(entry.subentries.values()))
 
-    report = await entry.runtime_data.manager.async_plan_automatic(dry_run=True)
-    assert report["zones"][0]["reason"] == "safety_blocked"
+    assert entry.runtime_data.manager.snapshot().zone_wind_blocked[zone.unique_id] is True
     with pytest.raises(HomeAssistantError, match="Wind interlock"):
         await entry.runtime_data.manager.async_start_manual(
             zone_subentry_id=zone.subentry_id,
@@ -338,7 +338,7 @@ async def test_strong_wind_change_stops_relevant_manual_operation(
     await _wait_until(lambda: not plant.open_valves)
 
     stored = await IrrigationStore(hass, entry.entry_id).async_load()
-    assert stored.installation_safety_lock is None
+    assert stored.installation_safety_lock == "Wind interlock threshold reached"
     assert stored.zone_safety_locks == {}
     assert any(
         event.data["event_type"] == "weather_interlock_activated"

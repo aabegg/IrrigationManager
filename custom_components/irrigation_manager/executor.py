@@ -75,6 +75,7 @@ class ExecutionRequest:
     observe_flow: bool = False
     use_flow_consumption: bool = False
     flow_freshness_seconds: float = 30.0
+    require_meter_progress: bool = False
     on_flow_sample: Callable[[float], Awaitable[None]] | None = None
     on_actuator_command: Callable[[str, bool], Awaitable[None]] | None = None
     feedback_bypass_entities: tuple[str, ...] = ()
@@ -113,6 +114,7 @@ class _ExecutionProgress:
     accounted_at: float | None = None
     flow_accounted_at: float | None = None
     integrated_liters: float = 0.0
+    confirmed_meter_liters: float = 0.0
     last_flow_l_min: float | None = None
     flow_finalized: bool = False
 
@@ -351,12 +353,46 @@ class IrrigationExecutor:
                             start_liters=meter_start_liters,
                             current_liters=meter_end_liters,
                         )
+                        progress.confirmed_meter_liters = progress.delivered_liters
                     except ValueError as err:
                         violations.append(str(err))
                         progress.target_reached = False
                         safety_scope = "installation"
             elif progress.measurement_quality == "integrated":
                 progress.delivered_liters = progress.integrated_liters
+            metered_duration_seconds = max(
+                0.0, delivered_duration_seconds - opening_latency_seconds
+            )
+            if (
+                not stopped
+                and request.require_meter_progress
+                and progress.confirmed_meter_liters <= 0
+            ):
+                violations.append("No cumulative meter progress during irrigation")
+                progress.target_reached = False
+                safety_scope = safety_scope or "zone"
+            elif not stopped and request.require_meter_progress and metered_duration_seconds > 0:
+                average_flow_l_min = progress.confirmed_meter_liters * 60 / metered_duration_seconds
+                if (
+                    request.maximum_flow_l_min is not None
+                    and average_flow_l_min > request.maximum_flow_l_min
+                ):
+                    violations.append(
+                        f"Average metered flow {average_flow_l_min} L/min exceeds maximum "
+                        f"{request.maximum_flow_l_min} L/min"
+                    )
+                    progress.target_reached = False
+                    safety_scope = "installation"
+                elif (
+                    request.minimum_flow_l_min is not None
+                    and average_flow_l_min < request.minimum_flow_l_min
+                ):
+                    violations.append(
+                        f"Average metered flow {average_flow_l_min} L/min is below minimum "
+                        f"{request.minimum_flow_l_min} L/min"
+                    )
+                    progress.target_reached = False
+                    safety_scope = safety_scope or "zone"
             if execution_error is not None:
                 violations.append(str(execution_error))
 
@@ -530,6 +566,7 @@ class IrrigationExecutor:
                                 start_liters=meter_start_liters,
                                 current_liters=current_liters,
                             )
+                            progress.confirmed_meter_liters = progress.delivered_liters
                         except ValueError as err:
                             violations.append(str(err))
                             progress.target_reached = False

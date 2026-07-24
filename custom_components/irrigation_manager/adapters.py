@@ -130,7 +130,6 @@ class HomeAssistantMeter:
         self,
         hass: HomeAssistant,
         entity_id: str | None,
-        max_age_seconds: float | None = None,
         *,
         liters_per_count: float | None = None,
         continuity: CumulativeMeter | None = None,
@@ -138,7 +137,6 @@ class HomeAssistantMeter:
         """Initialize the meter adapter; a missing source reads zero."""
         self._hass = hass
         self._entity_id = entity_id
-        self._max_age_seconds = max_age_seconds
         self._liters_per_count = liters_per_count
         self._continuity = continuity
 
@@ -187,11 +185,6 @@ class HomeAssistantMeter:
         state = self._hass.states.get(self._entity_id)
         if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
             raise HomeAssistantError(f"Water meter {self._entity_id} is not available")
-        if (
-            self._max_age_seconds is not None
-            and (datetime.now(UTC) - state.last_reported).total_seconds() > self._max_age_seconds
-        ):
-            raise HomeAssistantError(f"Water meter {self._entity_id} is stale")
         try:
             value = float(state.state)
         except ValueError as err:
@@ -211,11 +204,10 @@ class HomeAssistantMeter:
 class HomeAssistantFlow:
     """Normalize an instantaneous HA flow sensor to liters per minute."""
 
-    def __init__(self, hass: HomeAssistant, entity_id: str, max_age_seconds: float) -> None:
+    def __init__(self, hass: HomeAssistant, entity_id: str) -> None:
         """Initialize the flow adapter."""
         self._hass = hass
         self._entity_id = entity_id
-        self._max_age_seconds = max_age_seconds
 
     async def read_l_min(self) -> float:
         """Return the current flow converted to liters per minute."""
@@ -225,9 +217,6 @@ class HomeAssistantFlow:
         """Normalize one immutable HA event sample to liters per minute."""
         if state is None or state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE}:
             raise HomeAssistantError(f"Flow sensor {self._entity_id} is not available")
-        age_seconds = (datetime.now(UTC) - state.last_reported).total_seconds()
-        if age_seconds > self._max_age_seconds:
-            raise HomeAssistantError(f"Flow sensor {self._entity_id} is stale")
         unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
         if unit not in VolumeFlowRateConverter.VALID_UNITS:
             raise HomeAssistantError(f"Flow sensor {self._entity_id} has unsupported unit {unit!r}")

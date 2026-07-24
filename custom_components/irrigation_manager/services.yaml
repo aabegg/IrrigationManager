@@ -14,7 +14,7 @@ start_manual:
       selector:
         number:
           min: 0.001
-          max: 14400
+          max: 604800
           step: 1
           unit_of_measurement: s
           mode: box
@@ -32,7 +32,7 @@ start_manual:
       selector:
         number:
           min: 0.001
-          max: 14400
+          max: 604800
           step: 1
           unit_of_measurement: s
           mode: box
@@ -66,7 +66,7 @@ create_manual:
       selector:
         number:
           min: 0.001
-          max: 14400
+          max: 604800
           step: 1
           unit_of_measurement: s
           mode: box
@@ -84,7 +84,7 @@ create_manual:
       selector:
         number:
           min: 0.001
-          max: 14400
+          max: 604800
           step: 1
           unit_of_measurement: s
           mode: box
@@ -102,6 +102,97 @@ create_manual:
       required: false
       selector:
         datetime:
+start_manual_from_card:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id:
+      required: true
+      selector:
+        text:
+    duration:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          max: 604800
+          step: 1
+          unit_of_measurement: s
+          mode: box
+    amount:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          step: 0.001
+          unit_of_measurement: L
+          mode: box
+    hard_time_limit:
+      required: false
+      selector:
+        number:
+          min: 0.001
+          max: 604800
+          step: 1
+          unit_of_measurement: s
+          mode: box
+    conflict_policy:
+      required: true
+      selector:
+        select:
+          options:
+            - start_now
+            - stop_active
+            - priority_next
+list_card_orders:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+list_zone_history:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    zone_subentry_id:
+      required: true
+      selector:
+        text:
+    offset:
+      default: 0
+      selector:
+        number:
+          min: 0
+          step: 1
+          mode: box
+    limit:
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          mode: box
+    source:
+      required: false
+      selector:
+        select:
+          options:
+            - manual
+            - automatic
+            - maintenance
+            - calibration
+    result:
+      required: false
+      selector:
+        text:
 create_manual_plan:
   fields:
     config_entry_id:
@@ -164,7 +255,7 @@ edit_request:
       selector:
         number:
           min: 0.001
-          max: 14400
+          max: 604800
           unit_of_measurement: s
           mode: box
     amount:
@@ -179,7 +270,7 @@ edit_request:
       selector:
         number:
           min: 0.001
-          max: 14400
+          max: 604800
           unit_of_measurement: s
           mode: box
     start_at:
@@ -260,6 +351,43 @@ emergency_stop:
       selector:
         config_entry:
           integration: irrigation_manager
+set_installation_operation:
+  fields:
+    config_entry_id: &release_installation
+      required: true
+      selector:
+        config_entry:
+          integration: irrigation_manager
+    enabled: &release_enabled
+      required: true
+      selector:
+        boolean:
+set_installation_automation:
+  fields:
+    config_entry_id: *release_installation
+    enabled: *release_enabled
+    stop_active: &stop_active
+      required: false
+      default: false
+      selector:
+        boolean:
+set_zone_operation:
+  fields:
+    config_entry_id: *release_installation
+    zone_subentry_id: &release_zone
+      required: true
+      selector:
+        text:
+    enabled: *release_enabled
+set_zone_automation:
+  fields:
+    config_entry_id: *release_installation
+    zone_subentry_id: *release_zone
+    enabled: *release_enabled
+    stop_active: *stop_active
+reset_safety_lock:
+  fields:
+    config_entry_id: *release_installation
 reset_emergency_stop:
   fields:
     config_entry_id:

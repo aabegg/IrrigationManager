@@ -166,6 +166,7 @@ async def test_changed_meter_identity_or_conversion_rebases_without_consumption(
             "liters_per_count": configured_factor,
         },
         unique_id=f"meter-rebase-{stored_factor}-{configured_factor}-{stored_source}",
+        version=2,
     )
     entry.add_to_hass(hass)
     await IrrigationStore(hass, entry.entry_id).async_save(
@@ -443,11 +444,21 @@ async def test_setup_creates_installation_and_zone_water_sensors(
 ) -> None:
     """Expose cumulative water sensors with stable registry identities."""
     prepare_closed_switches(hass, "switch.relais_11")
+    hass.states.async_set(
+        "sensor.garden_water",
+        "0",
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolume.LITERS},
+    )
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Gartenbewässerung",
-        data={"name": "Gartenbewässerung"},
+        data={
+            "name": "Gartenbewässerung",
+            "meter_type": "cumulative",
+            "meter_entity": "sensor.garden_water",
+        },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -497,11 +508,21 @@ async def test_setup_creates_installation_and_zone_water_sensors(
             "sensor", DOMAIN, "installation-1_pending_requests"
         ),
         "next": registry.async_get_entity_id("sensor", DOMAIN, "installation-1_next_zone"),
+        "next_start": registry.async_get_entity_id("sensor", DOMAIN, "installation-1_next_start"),
         "today_consumption": registry.async_get_entity_id(
             "sensor", DOMAIN, "installation-1_water_today"
         ),
         "month_consumption": registry.async_get_entity_id(
             "sensor", DOMAIN, "installation-1_water_month"
+        ),
+        "runtime_today": registry.async_get_entity_id(
+            "sensor", DOMAIN, "installation-1_runtime_today"
+        ),
+        "runtime_month": registry.async_get_entity_id(
+            "sensor", DOMAIN, "installation-1_runtime_month"
+        ),
+        "physical_meter": registry.async_get_entity_id(
+            "sensor", DOMAIN, "installation-1_physical_meter"
         ),
         "model_quality": registry.async_get_entity_id(
             "sensor", DOMAIN, "installation-1_weather_model_quality"
@@ -525,6 +546,15 @@ async def test_setup_creates_installation_and_zone_water_sensors(
         "sensor", DOMAIN, "zone-1_water_deficit"
     )
     assert zone_state.attributes["installation_card_entities"]["status"] == status_entity_id
+    zone_status_entity_id = registry.async_get_entity_id("sensor", DOMAIN, "zone-1_zone_status")
+    zone_status_state = hass.states.get(zone_status_entity_id)
+    assert zone_status_state.attributes["card_entities"]["anchor"] == zone_status_entity_id
+    assert zone_status_state.attributes["card_entities"]["water_today"] == (
+        registry.async_get_entity_id("sensor", DOMAIN, "zone-1_water_today")
+    )
+    assert zone_status_state.attributes["card_entities"]["runtime_today"] == (
+        registry.async_get_entity_id("sensor", DOMAIN, "zone-1_runtime_today")
+    )
 
     renamed_deficit = "sensor.rasen_fehlmenge"
     original_deficit = zone_state.attributes["card_entities"]["deficit"]
@@ -591,8 +621,10 @@ async def test_manual_timed_action_controls_valves_and_attributes_water(
             "name": "Gartenbewässerung",
             "main_valve": "switch.main",
             "water_meter": "sensor.water_meter",
+            "operation_enabled": True,
         },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -693,8 +725,9 @@ async def test_manual_volume_action_aborts_preflight_without_meter(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Gartenbewässerung",
-        data={"name": "Gartenbewässerung"},
+        data={"name": "Gartenbewässerung", "operation_enabled": True},
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -751,9 +784,12 @@ async def test_manual_volume_action_uses_marked_estimated_fallback(
         title="Gartenbewässerung",
         data={
             "name": "Gartenbewässerung",
-            "water_meter": "sensor.unavailable_water_meter",
+            "meter_type": "cumulative",
+            "meter_entity": "sensor.unavailable_water_meter",
+            "operation_enabled": True,
         },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -804,8 +840,15 @@ async def test_estimated_fallback_progress_is_persisted_at_every_tick(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Gartenbewässerung",
-        data={"name": "Gartenbewässerung"},
+        data={
+            "name": "Gartenbewässerung",
+            "meter_type": "cumulative",
+            "meter_entity": "sensor.water_meter",
+            "operation_enabled": True,
+            "automation_enabled": False,
+        },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -886,9 +929,13 @@ async def test_stop_actions_close_active_valves_and_account_partial_water(
         data={
             "name": "Gartenbewässerung",
             "main_valve": "switch.main",
-            "water_meter": "sensor.water_meter",
+            "meter_type": "cumulative",
+            "meter_entity": "sensor.water_meter",
+            "operation_enabled": True,
+            "automation_enabled": False,
         },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -896,7 +943,10 @@ async def test_stop_actions_close_active_valves_and_account_partial_water(
             {
                 "name": "Rasen",
                 "zone_valve": "switch.zone_lawn",
-                "default_duration": 600,
+                "control_type": "time",
+                "operation_enabled": True,
+                "automation_enabled": False,
+                "weekly_schedule": [],
             }
         ),
         subentry_id="subentry-1",
@@ -967,8 +1017,15 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Gartenbewässerung",
-        data={"name": "Gartenbewässerung"},
+        data={
+            "name": "Gartenbewässerung",
+            "meter_type": "cumulative",
+            "meter_entity": "sensor.water_meter",
+            "operation_enabled": True,
+            "automation_enabled": False,
+        },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -976,7 +1033,10 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
             {
                 "name": "Rasen",
                 "zone_valve": "switch.zone_lawn",
-                "default_duration": 600,
+                "control_type": "time",
+                "operation_enabled": True,
+                "automation_enabled": False,
+                "weekly_schedule": [],
             }
         ),
         subentry_id="subentry-1",
@@ -1026,26 +1086,38 @@ async def test_assign_water_moves_unassigned_consumption_to_zone(
 
 
 @pytest.mark.parametrize(
-    ("flow_l_min", "error_text", "zone_locked", "installation_locked"),
+    ("flow_l_min", "error_text"),
     [
-        (5, "below minimum", True, False),
-        (25, "exceeds maximum", False, True),
+        (5, "below minimum"),
+        (25, "exceeds maximum"),
     ],
 )
 async def test_flow_fault_stops_and_applies_correct_safety_scope(
     hass: HomeAssistant,
     flow_l_min: float,
     error_text: str,
-    zone_locked: bool,
-    installation_locked: bool,
 ) -> None:
-    """Persist a zone lock for low flow and installation lock for high flow."""
+    """Normalize every runtime flow fault to the canonical installation lock."""
 
     async def turn_on(call) -> None:
-        hass.states.async_set(call.data["entity_id"], STATE_ON)
+        entity_id = call.data["entity_id"]
+        hass.states.async_set(entity_id, STATE_ON)
+        if entity_id == "switch.zone_lawn":
+            hass.states.async_set(
+                "sensor.flow",
+                str(flow_l_min),
+                {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolumeFlowRate.LITERS_PER_MINUTE},
+            )
 
     async def turn_off(call) -> None:
-        hass.states.async_set(call.data["entity_id"], STATE_OFF)
+        entity_id = call.data["entity_id"]
+        hass.states.async_set(entity_id, STATE_OFF)
+        if entity_id == "switch.zone_lawn":
+            hass.states.async_set(
+                "sensor.flow",
+                "0",
+                {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolumeFlowRate.LITERS_PER_MINUTE},
+            )
 
     hass.services.async_register("switch", "turn_on", turn_on)
     hass.services.async_register("switch", "turn_off", turn_off)
@@ -1053,7 +1125,7 @@ async def test_flow_fault_stops_and_applies_correct_safety_scope(
     hass.states.async_set("switch.zone_lawn", STATE_OFF)
     hass.states.async_set(
         "sensor.flow",
-        str(flow_l_min),
+        "0",
         {ATTR_UNIT_OF_MEASUREMENT: (UnitOfVolumeFlowRate.LITERS_PER_MINUTE)},
     )
     entry = MockConfigEntry(
@@ -1063,8 +1135,12 @@ async def test_flow_fault_stops_and_applies_correct_safety_scope(
             "name": "Gartenbewässerung",
             "main_valve": "switch.main",
             "flow_sensor": "sensor.flow",
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": False,
         },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -1072,7 +1148,10 @@ async def test_flow_fault_stops_and_applies_correct_safety_scope(
             {
                 "name": "Rasen",
                 "zone_valve": "switch.zone_lawn",
-                "default_duration": 600,
+                "control_type": "time",
+                "operation_enabled": True,
+                "automation_enabled": False,
+                "weekly_schedule": [],
                 "min_flow": 10,
                 "max_flow": 20,
                 "flow_grace_seconds": 0,
@@ -1100,44 +1179,29 @@ async def test_flow_fault_stops_and_applies_correct_safety_scope(
     await hass.async_block_till_done()
 
     registry = er.async_get(hass)
-    zone_lock_entity_id = registry.async_get_entity_id(
-        "binary_sensor", DOMAIN, "zone-1_safety_lock"
-    )
     emergency_entity_id = registry.async_get_entity_id(
         "binary_sensor", DOMAIN, "installation-1_emergency_stop"
     )
     installation_lock_entity_id = registry.async_get_entity_id(
         "binary_sensor", DOMAIN, "installation-1_safety_lock"
     )
-    assert zone_lock_entity_id is not None
     assert emergency_entity_id is not None
     assert installation_lock_entity_id is not None
-    assert hass.states.get(zone_lock_entity_id).state == (STATE_ON if zone_locked else STATE_OFF)
-    assert hass.states.get(installation_lock_entity_id).state == (
-        STATE_ON if installation_locked else STATE_OFF
-    )
+    assert registry.async_get_entity_id("binary_sensor", DOMAIN, "zone-1_safety_lock") is None
+    assert hass.states.get(installation_lock_entity_id).state == STATE_ON
     assert hass.states.get(emergency_entity_id).state == STATE_OFF
 
-    if installation_locked:
-        hass.states.async_set(
-            "sensor.flow",
-            "0",
-            {ATTR_UNIT_OF_MEASUREMENT: (UnitOfVolumeFlowRate.LITERS_PER_MINUTE)},
-        )
+    hass.states.async_set(
+        "sensor.flow",
+        "0",
+        {ATTR_UNIT_OF_MEASUREMENT: (UnitOfVolumeFlowRate.LITERS_PER_MINUTE)},
+    )
     await hass.services.async_call(
         DOMAIN,
-        ("reset_zone_safety" if zone_locked else "reset_installation_safety"),
-        (
-            {
-                "config_entry_id": entry.entry_id,
-                "zone_subentry_id": subentry.subentry_id,
-            }
-            if zone_locked
-            else {"config_entry_id": entry.entry_id}
-        ),
+        "reset_safety_lock",
+        {"config_entry_id": entry.entry_id},
         blocking=True,
     )
-    assert hass.states.get(zone_lock_entity_id).state == STATE_OFF
     assert hass.states.get(installation_lock_entity_id).state == STATE_OFF
     assert hass.states.get(emergency_entity_id).state == STATE_OFF
 
@@ -1148,8 +1212,14 @@ async def test_emergency_stop_blocks_manual_watering(hass: HomeAssistant) -> Non
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Gartenbewässerung",
-        data={"name": "Gartenbewässerung"},
+        data={
+            "name": "Gartenbewässerung",
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": False,
+        },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -1157,7 +1227,10 @@ async def test_emergency_stop_blocks_manual_watering(hass: HomeAssistant) -> Non
             {
                 "name": "Rasen",
                 "zone_valve": "switch.zone_lawn",
-                "default_duration": 600,
+                "control_type": "time",
+                "operation_enabled": True,
+                "automation_enabled": False,
+                "weekly_schedule": [],
             }
         ),
         subentry_id="subentry-1",
@@ -1537,12 +1610,16 @@ async def test_persistent_idle_flow_closes_valves_and_sets_installation_lock(
         data={
             "name": "Gartenbewässerung",
             "main_valve": "switch.main",
-            "water_meter": "sensor.water_meter",
+            "meter_type": "cumulative",
+            "meter_entity": "sensor.water_meter",
             "flow_sensor": "sensor.flow",
             "leak_flow_threshold": 0.5,
             "leak_duration_seconds": 0.01,
+            "operation_enabled": True,
+            "automation_enabled": False,
         },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -1550,7 +1627,10 @@ async def test_persistent_idle_flow_closes_valves_and_sets_installation_lock(
             {
                 "name": "Rasen",
                 "zone_valve": "switch.zone_lawn",
-                "default_duration": 600,
+                "control_type": "time",
+                "operation_enabled": True,
+                "automation_enabled": False,
+                "weekly_schedule": [],
             }
         ),
         subentry_id="subentry-1",
@@ -1679,7 +1759,7 @@ async def test_short_idle_flow_artifact_is_ignored_and_unload_cancels_monitoring
 async def test_idle_leak_integrates_flow_when_no_cumulative_meter_exists(
     hass: HomeAssistant,
 ) -> None:
-    """Publish visibly integrated unassigned consumption without a meter."""
+    """Book integrated leak water internally while omitting no-meter water entities."""
 
     async def turn_off(call) -> None:
         hass.states.async_set(call.data["entity_id"], STATE_OFF)
@@ -1699,8 +1779,12 @@ async def test_idle_leak_integrates_flow_when_no_cumulative_meter_exists(
             "main_valve": "switch.main",
             "flow_sensor": "sensor.flow",
             "leak_duration_seconds": 0.01,
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": False,
         },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -1718,11 +1802,10 @@ async def test_idle_leak_integrates_flow_when_no_cumulative_meter_exists(
     unassigned_entity_id = registry.async_get_entity_id(
         "sensor", DOMAIN, "installation-1_unassigned_water_total"
     )
-    assert unassigned_entity_id is not None
-    unassigned_state = hass.states.get(unassigned_entity_id)
-    assert float(unassigned_state.state) == pytest.approx(0.01, rel=0.5)
-    assert unassigned_state.attributes["measurement_origin"] == "flow_sensor"
-    assert unassigned_state.attributes["measurement_quality"] == "integrated"
+    assert unassigned_entity_id is None
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.installation_safety_lock is not None
+    assert stored.unassigned_total_liters == pytest.approx(0.01, rel=0.5)
 
 
 async def test_active_flow_and_short_post_watering_runoff_do_not_lock(
@@ -1758,8 +1841,12 @@ async def test_active_flow_and_short_post_watering_runoff_do_not_lock(
             "name": "Gartenbewässerung",
             "flow_sensor": "sensor.flow",
             "leak_duration_seconds": 0.03,
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": False,
         },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -1767,7 +1854,10 @@ async def test_active_flow_and_short_post_watering_runoff_do_not_lock(
             {
                 "name": "Rasen",
                 "zone_valve": "switch.zone_lawn",
-                "default_duration": 600,
+                "control_type": "time",
+                "operation_enabled": True,
+                "automation_enabled": False,
+                "weekly_schedule": [],
             }
         ),
         subentry_id="subentry-1",
@@ -1831,8 +1921,12 @@ async def test_unload_awaits_an_already_confirmed_leak_application(
             "main_valve": "switch.main",
             "flow_sensor": "sensor.flow",
             "leak_duration_seconds": 0.01,
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": False,
         },
         unique_id="installation-1",
+        version=2,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -1861,12 +1955,12 @@ async def test_unload_awaits_an_already_confirmed_leak_application(
     assert completed_state.unassigned_measurement_quality == "integrated"
 
 
-@pytest.mark.parametrize("invalid_state", [STATE_UNAVAILABLE, "not-a-number", "-1", None])
+@pytest.mark.parametrize("invalid_state", [STATE_UNAVAILABLE, "not-a-number", "-1"])
 async def test_invalid_flow_breaks_continuous_leak_observation(
     hass: HomeAssistant,
-    invalid_state: str | None,
+    invalid_state: str,
 ) -> None:
-    """Never bridge unavailable, malformed, implausible, or stale flow samples."""
+    """Never bridge unavailable, malformed, or implausible flow samples."""
 
     async def turn_off(call) -> None:
         hass.states.async_set(call.data["entity_id"], STATE_OFF)
@@ -1885,7 +1979,6 @@ async def test_invalid_flow_breaks_continuous_leak_observation(
             "name": "Gartenbewässerung",
             "main_valve": "switch.main",
             "flow_sensor": "sensor.flow",
-            "flow_max_age_seconds": 0.005 if invalid_state is None else 30,
             "leak_duration_seconds": 0.03,
         },
         unique_id="installation-1",
@@ -1900,15 +1993,12 @@ async def test_invalid_flow_breaks_continuous_leak_observation(
         {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolumeFlowRate.LITERS_PER_MINUTE},
     )
     await asyncio.sleep(0.01)
-    if invalid_state is not None:
-        hass.states.async_set(
-            "sensor.flow",
-            invalid_state,
-            {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolumeFlowRate.LITERS_PER_MINUTE},
-        )
-        await asyncio.sleep(0.005)
-    else:
-        await asyncio.sleep(0.03)
+    hass.states.async_set(
+        "sensor.flow",
+        invalid_state,
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfVolumeFlowRate.LITERS_PER_MINUTE},
+    )
+    await asyncio.sleep(0.005)
     hass.states.async_set(
         "sensor.flow",
         "60",

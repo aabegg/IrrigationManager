@@ -1,5 +1,7 @@
 # UI und Config Flow
 
+> **Überholt für Version 2, soweit widersprüchlich:** Die verbindliche minimale Konfigurationsführung steht in `docs/17_Neukonzept.md`. Version-2-Anlagen und -Zonen werden über ihre Home-Assistant-Einstellungen neu konfiguriert; Betriebs-/Automatikfreigaben, Not-Aus, Sperrenreset und automatische Neuplanung benötigen keine Developer Tools.
+
 ## Leitlinien
 
 - keine YAML-Pflicht
@@ -160,12 +162,14 @@ native Konfigurationsschnittstelle.
 1. Zone und Testdauer auswählen
 2. Sicherheitsprüfung und ausdrückliche Bestätigung
 3. Haupt- und Zonenventil kontrolliert schalten
-4. Durchfluss, Volumen, Latenz und Nachlauf messen
+4. Volumen, Laufzeit, Latenz und Nachlauf messen; einen direkten Durchflusssensor optional einbeziehen
 5. Normalbereich und Vorabschaltung vorschlagen
 6. Wasser als reale Bewässerung verbuchen
 7. Werte prüfen und explizit übernehmen oder verwerfen
 
 Für einen stabilen stationären Durchfluss sind 30 bis 60 Sekunden typischerweise sinnvoll.
+Ein kumulativer Wasserzähler genügt für die Kalibrierung; ein zusätzlicher
+Durchflusssensor verbessert die zeitliche Auflösung.
 Längere Messungen sind bis knapp unter die konfigurierte harte Testdauer möglich. Solange die
 Messung läuft, muss die Aufsicht im Dialog spätestens alle 20 Sekunden erneuert werden; bleibt
 die Bestätigung aus, schließt die Dead-Man-Sicherung alle Ventile.

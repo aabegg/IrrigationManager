@@ -15,8 +15,12 @@ const overviewFields = [
   ["dose_entity", "Current dose"],
   ["pending_entity", "Open requests"],
   ["next_entity", "Next irrigation"],
+  ["next_start_entity", "Expected start"],
   ["today_consumption_entity", "Today's consumption"],
   ["month_consumption_entity", "Monthly consumption"],
+  ["runtime_today_entity", "Runtime today"],
+  ["runtime_month_entity", "Runtime this month"],
+  ["physical_meter_entity", "Corrected meter total"],
   ["model_quality_entity", "Model quality"],
   ["winter_entity", "Winter lock"],
   ["maintenance_entity", "Maintenance mode"],
@@ -46,6 +50,11 @@ const zoneFields = [
   ["actual_flow_entity", "Actual flow"],
   ["flow_deviation_entity", "Flow deviation"],
   ["calculation_entity", "Calculation"],
+  ["water_today_entity", "Measured water today"],
+  ["water_month_entity", "Measured water this month"],
+  ["runtime_today_entity", "Runtime today"],
+  ["runtime_month_entity", "Runtime this month"],
+  ["next_irrigation_entity", "Next irrigation"],
 ] as const;
 
 const overviewEntityFields = overviewFields.map(([key]) => key);
@@ -77,7 +86,7 @@ const germanLabels: Record<string, string> = {
 
 const overviewMetrics = ["active", "pending", "next", "today", "month", "quality", "maintenance"];
 const overviewActions = ["stop", "emergency", "suspend", "resume"];
-const zoneMetrics = ["status", "balance", "next", "total", "recent", "quality", "calculation", "flow", "history"];
+const zoneMetrics = ["status", "today", "month", "next", "balance", "total", "recent", "quality", "calculation", "flow", "history"];
 const zoneActions = ["create", "start", "pause", "resume", "stop", "stop_skip", "suspend", "resume_auto", "archive", "restore"];
 
 abstract class BaseEditor<T extends CardConfig> extends LitElement {

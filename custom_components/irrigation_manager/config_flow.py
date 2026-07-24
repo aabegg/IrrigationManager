@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 from collections.abc import Mapping, Sequence
 from datetime import date, time
 from typing import Any, cast, override
@@ -52,6 +53,7 @@ from .const import (
     CONF_AUTOMATIC_MAX_DURATION,
     CONF_AUTOMATION_ENABLED,
     CONF_CALIBRATION_SETTLE_SECONDS,
+    CONF_CONTROL_TYPE,
     CONF_CROP_FACTOR,
     CONF_CUSTOM_PROFILES,
     CONF_DEFAULT_DURATION,
@@ -63,7 +65,6 @@ from .const import (
     CONF_EXTERNAL_MAX_AGE_SECONDS,
     CONF_EXTERNAL_PERMIT,
     CONF_FLOW_GRACE_SECONDS,
-    CONF_FLOW_MAX_AGE_SECONDS,
     CONF_FLOW_SENSOR,
     CONF_FORECAST_DEFERRAL_HOURS,
     CONF_FORECAST_RAIN_PROBABILITY,
@@ -86,6 +87,7 @@ from .const import (
     CONF_LEAK_FLOW_THRESHOLD,
     CONF_LEAK_MONITORING,
     CONF_LITERS_PER_COUNT,
+    CONF_LITERS_PER_PULSE,
     CONF_LOCAL_WIND_HEIGHT_M,
     CONF_MAIN_VALVE,
     CONF_MAIN_VALVE_FEEDBACK,
@@ -102,15 +104,17 @@ from .const import (
     CONF_MAXIMUM_DEFICIT_MM,
     CONF_MAXIMUM_INTERVAL_DAYS,
     CONF_MAXIMUM_TARGET_LITERS,
+    CONF_METER_ENTITY,
     CONF_METER_FAILURE_STRATEGY,
-    CONF_METER_MAX_AGE_SECONDS,
     CONF_METER_RESOLUTION_LITERS,
+    CONF_METER_TYPE,
     CONF_MIN_FLOW,
     CONF_MINIMUM_EFFECTIVE_LITERS,
     CONF_MINIMUM_INTERVAL_DAYS,
     CONF_MINIMUM_TRIGGER_LITERS,
     CONF_NOTIFY_ENTITIES,
     CONF_OPEN_METEO_ENABLED,
+    CONF_OPERATION_ENABLED,
     CONF_PAUSE_TIMEOUT_SECONDS,
     CONF_PHENOLOGY_STAGE_SCHEDULE,
     CONF_PLANT_PROFILE,
@@ -136,6 +140,7 @@ from .const import (
     CONF_SUBAREAS,
     CONF_SUNSHINE_DURATION_SENSORS,
     CONF_TEMPERATURE_SENSORS,
+    CONF_VOLUME_MAX_RUNTIME,
     CONF_WATER_METER,
     CONF_WATER_TARIFF_PER_M3,
     CONF_WATERING_MODE,
@@ -149,6 +154,7 @@ from .const import (
     CONF_WEATHER_OBSERVATION_MAX_AGE_HOURS,
     CONF_WEATHER_PREVIEW_INTERVAL_HOURS,
     CONF_WEATHER_WIND_HEIGHT_M,
+    CONF_WEEKLY_SCHEDULE,
     CONF_WIND_INTERLOCK_ENTITY,
     CONF_WIND_INTERLOCK_THRESHOLD,
     CONF_WIND_MANUAL_POLICY,
@@ -159,6 +165,8 @@ from .const import (
     CONF_ZONE_VALVE,
     CONF_ZONE_VALVE_FEEDBACK,
     CONF_ZONE_WEEKLY_BUDGET_LITERS,
+    CONTROL_TYPE_TIME,
+    CONTROL_TYPE_VOLUME,
     DOMAIN,
     ET0_PRIORITY_CALCULATED,
     ET0_PRIORITY_DIRECT,
@@ -166,6 +174,9 @@ from .const import (
     EXTERNAL_FAILURE_FAIL_SAFE,
     METER_FAILURE_ABORT,
     METER_FAILURE_ESTIMATED_TIME_FALLBACK,
+    METER_TYPE_CUMULATIVE,
+    METER_TYPE_NONE,
+    METER_TYPE_PULSE,
     PROFILE_CATALOG_VERSION,
     SOIL_MOISTURE_ROLE_CORRECTION,
     SOIL_MOISTURE_ROLE_INHIBIT,
@@ -174,6 +185,7 @@ from .const import (
     WATERING_MODE_DEMAND,
     WATERING_MODE_MINIMUM,
     WEATHER_FAILURE_FAIL_SAFE,
+    WEEKDAYS,
     WIND_MANUAL_ALLOW,
     WIND_MANUAL_BLOCK,
 )
@@ -192,7 +204,66 @@ from .scheduler import parse_window_rule
 from .weather import calculate_seasonal_value
 
 ATTR_ZONE_SUBENTRY_ID = "zone_subentry_id"
-_IMPORT_CREATE_LOCK = asyncio.Lock()
+_ACTUATOR_OWNERSHIP_LOCK = asyncio.Lock()
+
+
+def _owned_endpoints(
+    installation: Mapping[str, object], zones: Sequence[Mapping[str, object]]
+) -> set[str]:
+    """Collect every actuator and feedback endpoint owned by one installation."""
+    endpoints = {
+        entity_id
+        for key in (CONF_MAIN_VALVE, CONF_MAIN_VALVE_FEEDBACK)
+        if isinstance((entity_id := installation.get(key)), str)
+    }
+    endpoints.update(
+        entity_id
+        for zone in zones
+        for key in (CONF_ZONE_VALVE, CONF_ZONE_VALVE_FEEDBACK)
+        if isinstance((entity_id := zone.get(key)), str)
+    )
+    return endpoints
+
+
+def _has_duplicate_endpoints(
+    installation: Mapping[str, object], zones: Sequence[Mapping[str, object]]
+) -> bool:
+    """Return whether one candidate assigns an endpoint more than once."""
+    values = [
+        entity_id
+        for data in (installation, *zones)
+        for key in (
+            (CONF_MAIN_VALVE, CONF_MAIN_VALVE_FEEDBACK)
+            if data is installation
+            else (CONF_ZONE_VALVE, CONF_ZONE_VALVE_FEEDBACK)
+        )
+        if isinstance((entity_id := data.get(key)), str)
+    ]
+    return len(values) != len(set(values))
+
+
+def _ownership_conflicts(
+    hass: Any,
+    candidate: set[str],
+    *,
+    excluding_entry_id: str | None = None,
+    excluding_subentry_id: str | None = None,
+    exclude_installation: bool = False,
+) -> bool:
+    """Check candidate endpoints against every persisted integration entry."""
+    existing: set[str] = set()
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.entry_id != excluding_entry_id or not exclude_installation:
+            existing.update(_owned_endpoints(entry.data, ()))
+        for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
+            if (
+                entry.entry_id == excluding_entry_id
+                and subentry.subentry_id == excluding_subentry_id
+            ):
+                continue
+            existing.update(_owned_endpoints({}, (subentry.data,)))
+    return not candidate.isdisjoint(existing)
+
 
 INSTALLATION_SCHEMA = vol.Schema(
     {
@@ -219,15 +290,6 @@ INSTALLATION_SCHEMA = vol.Schema(
                 unit_of_measurement=UnitOfVolume.LITERS,
             )
         ),
-        vol.Optional(CONF_METER_MAX_AGE_SECONDS, default=300): NumberSelector(
-            NumberSelectorConfig(
-                min=1,
-                max=86_400,
-                step=1,
-                mode=NumberSelectorMode.BOX,
-                unit_of_measurement=UnitOfTime.SECONDS,
-            )
-        ),
         vol.Optional(CONF_FLOW_SENSOR): EntitySelector(
             EntitySelectorConfig(domain=Platform.SENSOR)
         ),
@@ -242,15 +304,6 @@ INSTALLATION_SCHEMA = vol.Schema(
             )
         ),
         vol.Optional(CONF_LEAK_DURATION_SECONDS, default=30): NumberSelector(
-            NumberSelectorConfig(
-                min=1,
-                max=3600,
-                step=1,
-                mode=NumberSelectorMode.BOX,
-                unit_of_measurement=UnitOfTime.SECONDS,
-            )
-        ),
-        vol.Optional(CONF_FLOW_MAX_AGE_SECONDS, default=30): NumberSelector(
             NumberSelectorConfig(
                 min=1,
                 max=3600,
@@ -935,9 +988,6 @@ def _installation_purpose_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_NAME): TextSelector(),
-            vol.Required("purpose", default="private_garden"): _choice(
-                ["private_garden", "landscape", "food_garden", "mixed"], "installation_purpose"
-            ),
         }
     )
 
@@ -948,11 +998,6 @@ def _installation_hardware_schema() -> vol.Schema:
             vol.Optional(CONF_MAIN_VALVE): EntitySelector(
                 EntitySelectorConfig(domain=[Platform.SWITCH, Platform.VALVE])
             ),
-            vol.Optional(CONF_MAIN_VALVE_FEEDBACK): EntitySelector(
-                EntitySelectorConfig(
-                    domain=[Platform.BINARY_SENSOR, Platform.SWITCH, Platform.VALVE]
-                )
-            ),
         }
     )
 
@@ -960,25 +1005,142 @@ def _installation_hardware_schema() -> vol.Schema:
 def _installation_meter_schema() -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required("meter_kind", default="none"): _choice(
-                ["cumulative", "raw", "none"], "meter_kind"
+            vol.Required(CONF_METER_TYPE, default=METER_TYPE_NONE): _choice(
+                [METER_TYPE_NONE, METER_TYPE_CUMULATIVE, METER_TYPE_PULSE], CONF_METER_TYPE
             ),
-            vol.Optional(CONF_WATER_METER): EntitySelector(
+            vol.Optional(CONF_METER_ENTITY): EntitySelector(
                 EntitySelectorConfig(domain=Platform.SENSOR)
             ),
-            vol.Optional(CONF_RAW_METER): EntitySelector(
-                EntitySelectorConfig(domain=Platform.SENSOR)
+            vol.Optional("pulse_factor_mode", default="liters_per_pulse"): _choice(
+                ["liters_per_pulse", "pulses_per_liter"], "pulse_factor_mode"
             ),
-            vol.Optional(CONF_LITERS_PER_COUNT): NumberSelector(
+            vol.Optional("pulse_factor"): NumberSelector(
                 NumberSelectorConfig(
                     min=0.001, max=1_000_000, step=0.001, mode=NumberSelectorMode.BOX
                 )
             ),
-            vol.Optional(CONF_FLOW_SENSOR): EntitySelector(
-                EntitySelectorConfig(domain=Platform.SENSOR)
-            ),
         }
     )
+
+
+def _v2_installation_schema() -> vol.Schema:
+    schema = {
+        vol.Required(CONF_NAME): TextSelector(),
+        vol.Optional(CONF_MAIN_VALVE): EntitySelector(
+            EntitySelectorConfig(domain=[Platform.SWITCH, Platform.VALVE])
+        ),
+    }
+    schema.update(_installation_meter_schema().schema)
+    return vol.Schema(schema)
+
+
+def _minimal_zone_schema(has_meter: bool) -> vol.Schema:
+    schema: dict[object, object] = {
+        vol.Required(CONF_NAME): TextSelector(),
+        vol.Required(CONF_ZONE_VALVE): EntitySelector(
+            EntitySelectorConfig(domain=[Platform.SWITCH, Platform.VALVE])
+        ),
+        vol.Required(CONF_CONTROL_TYPE, default=CONTROL_TYPE_TIME): _choice(
+            [CONTROL_TYPE_TIME, CONTROL_TYPE_VOLUME] if has_meter else [CONTROL_TYPE_TIME],
+            CONF_CONTROL_TYPE,
+        ),
+    }
+    if has_meter:
+        schema[vol.Optional(CONF_VOLUME_MAX_RUNTIME)] = NumberSelector(
+            NumberSelectorConfig(
+                min=1,
+                max=604_800,
+                step=1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=UnitOfTime.SECONDS,
+            )
+        )
+    return vol.Schema(schema)
+
+
+def _weekly_schedule_schema() -> vol.Schema:
+    schema: dict[object, object] = {}
+    for weekday in WEEKDAYS:
+        schema[vol.Optional(f"{weekday}_start")] = TimeSelector()
+        schema[vol.Optional(f"{weekday}_end")] = TimeSelector()
+        schema[vol.Optional(f"{weekday}_target")] = NumberSelector(
+            NumberSelectorConfig(min=0.001, max=1_000_000, step=1, mode=NumberSelectorMode.BOX)
+        )
+    return vol.Schema(schema)
+
+
+def _weekly_schedule_form_values(schedule: object) -> dict[str, object]:
+    """Flatten canonical weekday rows back into Home Assistant form fields."""
+    values: dict[str, object] = {}
+    if not isinstance(schedule, list):
+        return values
+    for row in schedule:
+        if not isinstance(row, Mapping) or row.get("weekday") not in WEEKDAYS:
+            continue
+        weekday = str(row["weekday"])
+        for field in ("start", "end", "target"):
+            if row.get(field) is not None:
+                values[f"{weekday}_{field}"] = row[field]
+    return values
+
+
+def _canonical_weekly_schedule(
+    user_input: Mapping[str, Any], *, control_type: str, volume_max_runtime: float | None
+) -> tuple[list[dict[str, object]], str | None]:
+    """Normalize and validate exactly seven fixed weekday slots."""
+    schedule: list[dict[str, object]] = []
+    intervals: list[tuple[float, float]] = []
+    week_seconds = 7 * 86_400
+    for weekday_index, weekday in enumerate(WEEKDAYS):
+        start_value = user_input.get(f"{weekday}_start")
+        end_value = user_input.get(f"{weekday}_end")
+        target_value = user_input.get(f"{weekday}_target")
+        present = (
+            start_value not in (None, ""),
+            end_value not in (None, ""),
+            target_value is not None,
+        )
+        if any(present) and not all(present):
+            return [], "schedule_row_incomplete"
+        if not any(present):
+            schedule.append({"weekday": weekday, "start": None, "end": None, "target": None})
+            continue
+        try:
+            start = time.fromisoformat(str(start_value))
+            end = time.fromisoformat(str(end_value))
+            if not isinstance(target_value, int | float):
+                raise ValueError
+            target = float(target_value)
+        except TypeError, ValueError:
+            return [], "schedule_row_invalid"
+        if target <= 0 or not math.isfinite(target):
+            return [], "schedule_target_invalid"
+        start_seconds = (
+            weekday_index * 86_400 + start.hour * 3600 + start.minute * 60 + start.second
+        )
+        end_seconds = weekday_index * 86_400 + end.hour * 3600 + end.minute * 60 + end.second
+        if end_seconds <= start_seconds:
+            end_seconds += 86_400
+        required_seconds = target if control_type == CONTROL_TYPE_TIME else volume_max_runtime
+        if required_seconds is None or required_seconds > end_seconds - start_seconds:
+            return [], "schedule_target_does_not_fit"
+        intervals.append((start_seconds, end_seconds))
+        schedule.append(
+            {
+                "weekday": weekday,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "target": target,
+            }
+        )
+    cyclic = [*intervals, *((start + week_seconds, end + week_seconds) for start, end in intervals)]
+    for index, (interval_start, interval_end) in enumerate(intervals):
+        for other_index, (other_start, other_end) in enumerate(cyclic):
+            if index == other_index:
+                continue
+            if max(interval_start, other_start) < min(interval_end, other_end):
+                return [], "schedule_overlap"
+    return schedule, None
 
 
 def _installation_weather_schema() -> vol.Schema:
@@ -1204,8 +1366,8 @@ def _plain_profile_preview(
 class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create and reconfigure irrigation installations."""
 
-    VERSION = 1
-    MINOR_VERSION = 7
+    VERSION = 2
+    MINOR_VERSION = 0
 
     def __init__(self) -> None:
         """Initialize transient portable-import data."""
@@ -1216,6 +1378,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         self._import_profile_confirmation_required = False
         self._import_profile_confirmation_zone_indexes: set[int] = set()
         self._guided_installation: dict[str, Any] = {}
+        self._first_zone: dict[str, Any] = {}
         self._guided_installation_preview = ""
 
     @override
@@ -1228,43 +1391,26 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     @override
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Choose whether to create or import an irrigation installation."""
-        return self.async_show_menu(
-            step_id="user", menu_options=["create", "expert_create", "import"]
-        )
+        return self.async_show_menu(step_id="user", menu_options=["create", "import"])
 
     async def async_step_create(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Start a progressive plain-language installation setup."""
         if user_input is not None:
-            self._guided_installation = {CONF_NAME: user_input[CONF_NAME]}
+            self._guided_installation = {
+                CONF_NAME: user_input[CONF_NAME],
+                CONF_OPERATION_ENABLED: True,
+                CONF_AUTOMATION_ENABLED: True,
+            }
             return await self.async_step_installation_hardware()
 
         return self.async_show_form(step_id="create", data_schema=_installation_purpose_schema())
-
-    async def async_step_expert_create(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Retain direct access to the complete stored installation model."""
-        if user_input is not None:
-            if error := _validate_installation_input(user_input):
-                return self.async_show_form(
-                    step_id="expert_create", data_schema=INSTALLATION_SCHEMA, errors={"base": error}
-                )
-            await self.async_set_unique_id(uuid4().hex)
-            return self.async_create_entry(title=user_input[CONF_NAME], data=user_input)
-        return self.async_show_form(step_id="expert_create", data_schema=INSTALLATION_SCHEMA)
 
     async def async_step_installation_hardware(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Select the optional shared shutoff and independent feedback."""
         if user_input is not None:
-            if user_input.get(CONF_MAIN_VALVE_FEEDBACK) and not user_input.get(CONF_MAIN_VALVE):
-                return self.async_show_form(
-                    step_id="installation_hardware",
-                    data_schema=_installation_hardware_schema(),
-                    errors={"base": "main_feedback_requires_main_valve"},
-                )
-            self._guided_installation.update(user_input)
+            self._guided_installation[CONF_MAIN_VALVE] = user_input.get(CONF_MAIN_VALVE)
             return await self.async_step_installation_meter()
         return self.async_show_form(
             step_id="installation_hardware", data_schema=_installation_hardware_schema()
@@ -1275,45 +1421,111 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Collect only fields relevant to the selected meter capability."""
         if user_input is not None:
-            kind = str(user_input.pop("meter_kind"))
-            cumulative = user_input.get(CONF_WATER_METER)
-            raw = user_input.get(CONF_RAW_METER)
-            factor = user_input.get(CONF_LITERS_PER_COUNT)
-            if (kind == "cumulative" and not cumulative) or (kind == "raw" and not raw):
+            kind = str(user_input[CONF_METER_TYPE])
+            entity = user_input.get(CONF_METER_ENTITY)
+            factor = user_input.get("pulse_factor")
+            if kind != METER_TYPE_NONE and not entity:
                 return self.async_show_form(
                     step_id="installation_meter",
                     data_schema=self.add_suggested_values_to_schema(
-                        _installation_meter_schema(), {**user_input, "meter_kind": kind}
+                        _installation_meter_schema(), user_input
                     ),
                     errors={"base": "selected_meter_required"},
                 )
-            if kind == "raw" and not factor:
+            if kind == METER_TYPE_PULSE and not factor:
                 return self.async_show_form(
                     step_id="installation_meter",
                     data_schema=self.add_suggested_values_to_schema(
-                        _installation_meter_schema(), {**user_input, "meter_kind": kind}
+                        _installation_meter_schema(), user_input
                     ),
                     errors={"base": "raw_meter_requires_factor"},
                 )
-            for key in (CONF_WATER_METER, CONF_RAW_METER, CONF_LITERS_PER_COUNT):
-                self._guided_installation.pop(key, None)
-            if kind != "none":
-                self._guided_installation.update(
-                    {
-                        key: value
-                        for key, value in user_input.items()
-                        if value not in (None, "", [])
-                        and (key != CONF_WATER_METER or kind == "cumulative")
-                        and (key not in (CONF_RAW_METER, CONF_LITERS_PER_COUNT) or kind == "raw")
-                    }
+            self._guided_installation[CONF_METER_TYPE] = kind
+            if kind != METER_TYPE_NONE:
+                self._guided_installation[CONF_METER_ENTITY] = entity
+            if kind == METER_TYPE_PULSE:
+                numeric_factor = float(cast(float, factor))
+                self._guided_installation[CONF_LITERS_PER_PULSE] = (
+                    numeric_factor
+                    if user_input.get("pulse_factor_mode") == "liters_per_pulse"
+                    else 1 / numeric_factor
                 )
-            elif user_input.get(CONF_FLOW_SENSOR):
-                self._guided_installation[CONF_FLOW_SENSOR] = user_input[CONF_FLOW_SENSOR]
-            self._guided_installation_preview = self._meter_capability_preview(kind, user_input)
-            return await self.async_step_installation_weather()
+            return await self.async_step_installation_zone()
         return self.async_show_form(
             step_id="installation_meter", data_schema=_installation_meter_schema()
         )
+
+    async def async_step_installation_zone(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect the first minimal irrigation zone."""
+        has_meter = self._guided_installation.get(CONF_METER_TYPE) != METER_TYPE_NONE
+        schema = _minimal_zone_schema(has_meter)
+        if user_input is not None:
+            control_type = str(user_input[CONF_CONTROL_TYPE])
+            max_runtime = user_input.get(CONF_VOLUME_MAX_RUNTIME)
+            if control_type == CONTROL_TYPE_VOLUME and not has_meter:
+                return self.async_show_form(
+                    step_id="installation_zone",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "volume_requires_meter"},
+                )
+            if control_type == CONTROL_TYPE_VOLUME and max_runtime is None:
+                return self.async_show_form(
+                    step_id="installation_zone",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "volume_max_runtime_required"},
+                )
+            self._first_zone = {
+                CONF_NAME: user_input[CONF_NAME],
+                CONF_ZONE_VALVE: user_input[CONF_ZONE_VALVE],
+                CONF_CONTROL_TYPE: control_type,
+                CONF_OPERATION_ENABLED: True,
+                CONF_AUTOMATION_ENABLED: True,
+            }
+            if max_runtime is not None:
+                self._first_zone[CONF_VOLUME_MAX_RUNTIME] = float(max_runtime)
+            return await self.async_step_installation_schedule()
+        return self.async_show_form(step_id="installation_zone", data_schema=schema)
+
+    async def async_step_installation_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect and atomically create the optional seven-row weekly schedule."""
+        schema = _weekly_schedule_schema()
+        if user_input is None:
+            return self.async_show_form(step_id="installation_schedule", data_schema=schema)
+        schedule, error = _canonical_weekly_schedule(
+            user_input,
+            control_type=str(self._first_zone[CONF_CONTROL_TYPE]),
+            volume_max_runtime=cast(float | None, self._first_zone.get(CONF_VOLUME_MAX_RUNTIME)),
+        )
+        if error is not None:
+            return self.async_show_form(
+                step_id="installation_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+            )
+        self._first_zone[CONF_WEEKLY_SCHEDULE] = schedule
+        candidate = _owned_endpoints(self._guided_installation, (self._first_zone,))
+        async with _ACTUATOR_OWNERSHIP_LOCK:
+            if _has_duplicate_endpoints(
+                self._guided_installation, (self._first_zone,)
+            ) or _ownership_conflicts(self.hass, candidate):
+                return self.async_abort(reason="actuator_already_owned")
+            await self.async_set_unique_id(uuid4().hex)
+            return self.async_create_entry(
+                title=str(self._guided_installation[CONF_NAME]),
+                data=self._guided_installation,
+                subentries=[
+                    ConfigSubentryData(
+                        data=self._first_zone,
+                        subentry_type=SUBENTRY_TYPE_ZONE,
+                        title=str(self._first_zone[CONF_NAME]),
+                        unique_id=uuid4().hex,
+                    )
+                ],
+            )
 
     def _meter_capability_preview(self, kind: str, data: Mapping[str, Any]) -> str:
         entity_id = data.get(CONF_WATER_METER) or data.get(CONF_RAW_METER)
@@ -1540,7 +1752,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input.get("confirm_create") is not True:
             return self.async_abort(reason="import_cancelled")
         zones = self._pending_import_zones
-        async with _IMPORT_CREATE_LOCK:
+        async with _ACTUATOR_OWNERSHIP_LOCK:
             if self._import_ownership_conflicts(installation, zones):
                 return self.async_abort(reason="actuator_already_owned")
             await self.async_set_unique_id(uuid4().hex)
@@ -1681,17 +1893,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         zones: list[dict[str, Any]],
     ) -> bool:
         """Return whether any existing installation already owns an imported endpoint."""
-        candidate = self._import_owned_entities(installation, zones)
-        existing: set[str] = set()
-        for entry in self.hass.config_entries.async_entries(DOMAIN):
-            existing.update(self._import_owned_entities(entry.data, []))
-            existing.update(
-                entity_id
-                for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
-                for key in (CONF_ZONE_VALVE, CONF_ZONE_VALVE_FEEDBACK)
-                if isinstance((entity_id := subentry.data.get(key)), str)
-            )
-        return not candidate.isdisjoint(existing)
+        return _ownership_conflicts(self.hass, self._import_owned_entities(installation, zones))
 
     @staticmethod
     def _import_owned_entities(
@@ -1699,18 +1901,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         zones: list[dict[str, Any]],
     ) -> set[str]:
         """Collect actuators and feedback entities exclusively owned by one import."""
-        owned = {
-            entity_id
-            for key in (CONF_MAIN_VALVE, CONF_MAIN_VALVE_FEEDBACK)
-            if isinstance((entity_id := installation.get(key)), str)
-        }
-        owned.update(
-            entity_id
-            for zone in zones
-            for key in (CONF_ZONE_VALVE, CONF_ZONE_VALVE_FEEDBACK)
-            if isinstance((entity_id := zone.get(key)), str)
-        )
-        return owned
+        return _owned_endpoints(installation, zones)
 
     @classmethod
     @callback
@@ -1737,9 +1928,14 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self._calibration_previous_proposal_id: str | None = None
         self._calibration_proposal: dict[str, object] | None = None
         self._calibration_supervision_renewed = False
+        self._pending_release_input: dict[str, bool] | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Choose guided setup or the complete expert form."""
+        if self._get_entry().version >= 2:
+            self._guided_zone = {}
+            self._pending_reconfigure = False
+            return await self.async_step_minimal()
         if user_input is not None:
             if user_input["setup_mode"] == "expert":
                 return await self.async_step_expert()
@@ -1803,10 +1999,221 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Choose zone configuration or a supervised calibration."""
+        if self._get_entry().version >= 2:
+            options = ["reconfigure_minimal", "releases"]
+            if self._get_entry().data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
+                options.append("calibration")
+            return self.async_show_menu(step_id="reconfigure", menu_options=options)
         return self.async_show_menu(
             step_id="reconfigure",
             menu_options=["reconfigure_guided", "reconfigure_expert", "calibration"],
         )
+
+    async def async_step_releases(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Update both durable releases for this zone."""
+        manager = self._manager()
+        zone = self._get_reconfigure_subentry()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        zone_id = zone.unique_id or zone.subentry_id
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_OPERATION_ENABLED): BooleanSelector(),
+                vol.Required(CONF_AUTOMATION_ENABLED): BooleanSelector(),
+            }
+        )
+        if user_input is None:
+            snapshot = manager.snapshot()
+            return self.async_show_form(
+                step_id="releases",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema,
+                    {
+                        CONF_OPERATION_ENABLED: snapshot.zone_operation_enabled[zone_id],
+                        CONF_AUTOMATION_ENABLED: snapshot.zone_automation_enabled[zone_id],
+                    },
+                ),
+            )
+        self._pending_release_input = {
+            CONF_OPERATION_ENABLED: bool(user_input[CONF_OPERATION_ENABLED]),
+            CONF_AUTOMATION_ENABLED: bool(user_input[CONF_AUTOMATION_ENABLED]),
+        }
+        if not self._pending_release_input[
+            CONF_AUTOMATION_ENABLED
+        ] and manager.automatic_execution_active(zone_subentry_id=zone.subentry_id):
+            return await self.async_step_automation_disable()
+        return await self._apply_releases(stop_active=False)
+
+    async def async_step_automation_disable(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Ask how to handle this zone's active automatic execution."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="automation_disable",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("active_execution"): SelectSelector(
+                            SelectSelectorConfig(options=["stop", "finish"])
+                        )
+                    }
+                ),
+            )
+        return await self._apply_releases(stop_active=user_input["active_execution"] == "stop")
+
+    async def _apply_releases(self, *, stop_active: bool) -> SubentryFlowResult:
+        """Apply the pending zone release action."""
+        manager = self._manager()
+        pending = self._pending_release_input
+        zone = self._get_reconfigure_subentry()
+        if manager is None or pending is None:
+            return self.async_abort(reason="release_change_not_pending")
+        self._pending_release_input = None
+        await manager.async_set_zone_operation(
+            zone_subentry_id=zone.subentry_id,
+            enabled=pending[CONF_OPERATION_ENABLED],
+        )
+        await manager.async_set_zone_automation(
+            zone_subentry_id=zone.subentry_id,
+            enabled=pending[CONF_AUTOMATION_ENABLED],
+            stop_active=stop_active,
+        )
+        return self.async_abort(reason="releases_updated")
+
+    async def async_step_minimal(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Create one authoritative minimal v2 zone."""
+        entry = self._get_entry()
+        has_meter = entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE
+        schema = _minimal_zone_schema(has_meter)
+        if user_input is not None:
+            if self._valve_is_configured(str(user_input[CONF_ZONE_VALVE])):
+                return self.async_abort(reason="actuator_already_owned")
+            control_type = str(user_input[CONF_CONTROL_TYPE])
+            max_runtime = user_input.get(CONF_VOLUME_MAX_RUNTIME)
+            if control_type == CONTROL_TYPE_VOLUME and max_runtime is None:
+                return self.async_show_form(
+                    step_id="minimal",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "volume_max_runtime_required"},
+                )
+            self._guided_zone = {
+                CONF_NAME: user_input[CONF_NAME],
+                CONF_ZONE_VALVE: user_input[CONF_ZONE_VALVE],
+                CONF_CONTROL_TYPE: control_type,
+                CONF_OPERATION_ENABLED: True,
+                CONF_AUTOMATION_ENABLED: True,
+            }
+            if max_runtime is not None:
+                self._guided_zone[CONF_VOLUME_MAX_RUNTIME] = float(max_runtime)
+            return await self.async_step_minimal_schedule()
+        return self.async_show_form(step_id="minimal", data_schema=schema)
+
+    async def async_step_minimal_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Validate and save the seven canonical weekday slots for a new zone."""
+        schema = _weekly_schedule_schema()
+        if user_input is None:
+            return self.async_show_form(step_id="minimal_schedule", data_schema=schema)
+        schedule, error = _canonical_weekly_schedule(
+            user_input,
+            control_type=str(self._guided_zone[CONF_CONTROL_TYPE]),
+            volume_max_runtime=cast(float | None, self._guided_zone.get(CONF_VOLUME_MAX_RUNTIME)),
+        )
+        if error:
+            return self.async_show_form(
+                step_id="minimal_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+            )
+        self._guided_zone[CONF_WEEKLY_SCHEDULE] = schedule
+        async with _ACTUATOR_OWNERSHIP_LOCK:
+            if self._valve_is_configured(str(self._guided_zone[CONF_ZONE_VALVE])):
+                return self.async_abort(reason="actuator_already_owned")
+            return self.async_create_entry(
+                title=str(self._guided_zone[CONF_NAME]),
+                data=self._guided_zone,
+                unique_id=uuid4().hex,
+            )
+
+    async def async_step_reconfigure_minimal(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Edit the minimal v2 zone without reviving legacy demand fields."""
+        entry = self._get_entry()
+        subentry = self._get_reconfigure_subentry()
+        has_meter = entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE
+        schema = _minimal_zone_schema(has_meter)
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_minimal",
+                data_schema=self.add_suggested_values_to_schema(schema, subentry.data),
+            )
+        if self._valve_is_configured(
+            str(user_input[CONF_ZONE_VALVE]), excluding_subentry_id=subentry.subentry_id
+        ):
+            return self.async_abort(reason="already_configured")
+        control_type = str(user_input[CONF_CONTROL_TYPE])
+        max_runtime = user_input.get(CONF_VOLUME_MAX_RUNTIME)
+        if control_type == CONTROL_TYPE_VOLUME and max_runtime is None:
+            return self.async_show_form(
+                step_id="reconfigure_minimal",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "volume_max_runtime_required"},
+            )
+        self._guided_zone = {
+            CONF_NAME: user_input[CONF_NAME],
+            CONF_ZONE_VALVE: user_input[CONF_ZONE_VALVE],
+            CONF_CONTROL_TYPE: control_type,
+            CONF_OPERATION_ENABLED: subentry.data.get(CONF_OPERATION_ENABLED, True),
+            CONF_AUTOMATION_ENABLED: subentry.data.get(CONF_AUTOMATION_ENABLED, True),
+        }
+        if max_runtime is not None:
+            self._guided_zone[CONF_VOLUME_MAX_RUNTIME] = float(max_runtime)
+        self._pending_reconfigure = True
+        return await self.async_step_reconfigure_minimal_schedule()
+
+    async def async_step_reconfigure_minimal_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Update all seven weekday slots in one validated subentry write."""
+        subentry = self._get_reconfigure_subentry()
+        schema = _weekly_schedule_schema()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_minimal_schedule",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema, _weekly_schedule_form_values(subentry.data.get(CONF_WEEKLY_SCHEDULE))
+                ),
+            )
+        schedule, error = _canonical_weekly_schedule(
+            user_input,
+            control_type=str(self._guided_zone[CONF_CONTROL_TYPE]),
+            volume_max_runtime=cast(float | None, self._guided_zone.get(CONF_VOLUME_MAX_RUNTIME)),
+        )
+        if error:
+            return self.async_show_form(
+                step_id="reconfigure_minimal_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+            )
+        self._guided_zone[CONF_WEEKLY_SCHEDULE] = schedule
+        async with _ACTUATOR_OWNERSHIP_LOCK:
+            if self._valve_is_configured(
+                str(self._guided_zone[CONF_ZONE_VALVE]),
+                excluding_subentry_id=subentry.subentry_id,
+            ):
+                return self.async_abort(reason="actuator_already_owned")
+            return self.async_update_and_abort(
+                self._get_entry(),
+                subentry,
+                title=str(self._guided_zone[CONF_NAME]),
+                data=self._guided_zone,
+            )
 
     async def async_step_reconfigure_guided(
         self, user_input: dict[str, Any] | None = None
@@ -2513,11 +2920,14 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
     def _valve_is_configured(
         self, valve_entity_id: str, excluding_subentry_id: str | None = None
     ) -> bool:
-        """Return whether another zone already owns the logical valve."""
-        return any(
-            subentry.subentry_id != excluding_subentry_id
-            and subentry.data.get(CONF_ZONE_VALVE) == valve_entity_id
-            for subentry in self._get_entry().subentries.values()
+        """Return whether any installation already owns the logical valve."""
+        entry = self._get_entry()
+        return _ownership_conflicts(
+            self.hass,
+            {valve_entity_id},
+            excluding_entry_id=entry.entry_id,
+            excluding_subentry_id=excluding_subentry_id,
+            exclude_installation=False,
         )
 
 
@@ -2535,12 +2945,231 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         self._import_profiles_confirmed = False
         self._pending_zone_input: dict[str, Any] | None = None
         self._zone_profile_preview = ""
+        self._action_result = ""
+        self._pending_release_input: dict[str, bool] | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Offer progressive guidance without removing expert access."""
+        if self.config_entry.version >= 2:
+            return self.async_show_menu(step_id="init", menu_options=["v2_installation", "actions"])
         return self.async_show_menu(
             step_id="init",
             menu_options=["guided", "expert", "import_config"],
+        )
+
+    async def async_step_v2_installation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit optional installation modules and guard volume-zone dependencies."""
+        schema = _v2_installation_schema()
+        if user_input is None:
+            suggested = dict(self.config_entry.data)
+            if self.config_entry.data.get(CONF_METER_TYPE) == METER_TYPE_PULSE:
+                suggested["pulse_factor_mode"] = "liters_per_pulse"
+                suggested["pulse_factor"] = self.config_entry.data.get(CONF_LITERS_PER_PULSE)
+            return self.async_show_form(
+                step_id="v2_installation",
+                data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            )
+        meter_type = str(user_input[CONF_METER_TYPE])
+        if meter_type == METER_TYPE_NONE and any(
+            zone.data.get(CONF_CONTROL_TYPE) == CONTROL_TYPE_VOLUME
+            for zone in self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+        ):
+            return self.async_show_form(
+                step_id="v2_installation",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "meter_required_by_volume_zones"},
+            )
+        entity = user_input.get(CONF_METER_ENTITY)
+        factor = user_input.get("pulse_factor")
+        if meter_type != METER_TYPE_NONE and not entity:
+            error = "selected_meter_required"
+        elif meter_type == METER_TYPE_PULSE and factor is None:
+            error = "raw_meter_requires_factor"
+        else:
+            error = None
+        if error:
+            return self.async_show_form(
+                step_id="v2_installation",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+            )
+        data: dict[str, object] = {
+            CONF_NAME: user_input[CONF_NAME],
+            CONF_MAIN_VALVE: user_input.get(CONF_MAIN_VALVE),
+            CONF_METER_TYPE: meter_type,
+            CONF_OPERATION_ENABLED: self.config_entry.data.get(CONF_OPERATION_ENABLED, True),
+            CONF_AUTOMATION_ENABLED: self.config_entry.data.get(CONF_AUTOMATION_ENABLED, True),
+        }
+        if meter_type != METER_TYPE_NONE:
+            data[CONF_METER_ENTITY] = entity
+        if meter_type == METER_TYPE_PULSE:
+            numeric_factor = float(cast(float, factor))
+            data[CONF_LITERS_PER_PULSE] = (
+                numeric_factor
+                if user_input.get("pulse_factor_mode") == "liters_per_pulse"
+                else 1 / numeric_factor
+            )
+        candidate = _owned_endpoints(data, ())
+        async with _ACTUATOR_OWNERSHIP_LOCK:
+            if _ownership_conflicts(
+                self.hass,
+                candidate,
+                excluding_entry_id=self.config_entry.entry_id,
+                exclude_installation=True,
+            ):
+                return self.async_abort(reason="actuator_already_owned")
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                title=str(user_input[CONF_NAME]),
+                data=data,
+            )
+        return self.async_create_entry(data={})
+
+    def _manager(self) -> IrrigationManager | None:
+        """Return the loaded manager for operational settings actions."""
+        manager = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        return manager if isinstance(manager, IrrigationManager) else None
+
+    async def async_step_actions(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Offer runtime controls that should not require Developer Tools."""
+        return self.async_show_menu(
+            step_id="actions",
+            menu_options=[
+                "installation_releases",
+                "emergency_stop",
+                "reset_safety",
+                "replan",
+            ],
+        )
+
+    async def async_step_installation_releases(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Update both durable installation releases from one settings form."""
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_OPERATION_ENABLED): BooleanSelector(),
+                vol.Required(CONF_AUTOMATION_ENABLED): BooleanSelector(),
+            }
+        )
+        if user_input is None:
+            snapshot = manager.snapshot()
+            return self.async_show_form(
+                step_id="installation_releases",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema,
+                    {
+                        CONF_OPERATION_ENABLED: snapshot.operation_enabled,
+                        CONF_AUTOMATION_ENABLED: snapshot.automation_enabled,
+                    },
+                ),
+            )
+        self._pending_release_input = {
+            CONF_OPERATION_ENABLED: bool(user_input[CONF_OPERATION_ENABLED]),
+            CONF_AUTOMATION_ENABLED: bool(user_input[CONF_AUTOMATION_ENABLED]),
+        }
+        if (
+            not self._pending_release_input[CONF_AUTOMATION_ENABLED]
+            and manager.automatic_execution_active()
+        ):
+            return await self.async_step_installation_automation_disable()
+        return await self._apply_installation_releases(stop_active=False)
+
+    async def async_step_installation_automation_disable(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask how to handle an active automatic installation execution."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="installation_automation_disable",
+                data_schema=self._active_automatic_schema(),
+            )
+        return await self._apply_installation_releases(
+            stop_active=user_input["active_execution"] == "stop"
+        )
+
+    async def _apply_installation_releases(self, *, stop_active: bool) -> ConfigFlowResult:
+        """Apply the pending installation release action."""
+        manager = self._manager()
+        pending = self._pending_release_input
+        if manager is None or pending is None:
+            return self.async_abort(reason="release_change_not_pending")
+        self._pending_release_input = None
+        operation = await manager.async_set_installation_operation(
+            enabled=pending[CONF_OPERATION_ENABLED]
+        )
+        automation = await manager.async_set_installation_automation(
+            enabled=pending[CONF_AUTOMATION_ENABLED], stop_active=stop_active
+        )
+        return await self._show_action_result({**operation, **automation})
+
+    @staticmethod
+    def _active_automatic_schema() -> vol.Schema:
+        """Return the explicit stop-or-finish choice for automatic execution disable."""
+        return vol.Schema(
+            {
+                vol.Required("active_execution"): SelectSelector(
+                    SelectSelectorConfig(options=["stop", "finish"])
+                )
+            }
+        )
+
+    async def async_step_emergency_stop(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Execute Not-Aus immediately when selected from settings."""
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        await manager.async_emergency_stop()
+        return await self._show_action_result({"emergency_stop": True})
+
+    async def async_step_reset_safety(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Require an explicit inspection confirmation before clearing safety state."""
+        schema = vol.Schema({vol.Required("confirm_reset", default=False): BooleanSelector()})
+        if user_input is None or user_input.get("confirm_reset") is not True:
+            return self.async_show_form(
+                step_id="reset_safety",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input or {}),
+                errors={"base": "reset_confirmation_required"} if user_input else None,
+            )
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        await manager.async_reset_safety_lock()
+        return await self._show_action_result({"safety_lock": "cleared"})
+
+    async def async_step_replan(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Run automatic weekly planning and show its result in settings."""
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        return await self._show_action_result(await manager.async_plan_automatic())
+
+    async def _show_action_result(self, result: Mapping[str, object]) -> ConfigFlowResult:
+        """Store a readable action result and render the common result step."""
+        self._action_result = json.dumps(result, ensure_ascii=True, sort_keys=True)
+        return await self.async_step_action_result()
+
+    async def async_step_action_result(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the completed settings action result."""
+        if user_input is not None:
+            return self.async_create_entry(data={})
+        return self.async_show_form(
+            step_id="action_result",
+            data_schema=vol.Schema({}),
+            description_placeholders={"result": self._action_result},
         )
 
     async def async_step_guided(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

@@ -71,13 +71,6 @@ async def async_setup_entry(
         zone_id = subentry.unique_id or subentry.subentry_id
         async_add_entities(
             [
-                ZoneSafetyLockBinarySensor(
-                    coordinator=entry.runtime_data.coordinator,
-                    entry=entry,
-                    installation_id=installation_id,
-                    zone_id=zone_id,
-                    zone_name=subentry.title,
-                ),
                 ZoneAutomationNeededBinarySensor(
                     coordinator=entry.runtime_data.coordinator,
                     entry=entry,

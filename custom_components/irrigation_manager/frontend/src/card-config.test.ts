@@ -8,6 +8,7 @@ import {
   inferConfigurationMode,
   resolveOverviewConfig,
   resolveZoneConfig,
+  statusIcon,
 } from "./helpers";
 import type { HassEntity, HomeAssistant, OverviewCardConfig, ZoneCardConfig } from "./types";
 
@@ -33,6 +34,33 @@ function hass(...states: HassEntity[]): HomeAssistant {
 }
 
 describe("simple card entity resolution", () => {
+  it("uses minimal default card content and release-specific status icons", async () => {
+    const installation = hass(
+      state("sensor.garden_status", "Garden", {
+        config_entry_id: "garden",
+        card_entities: { status: "sensor.garden_status" },
+      }),
+    );
+    const Overview = customElements.get("irrigation-manager-overview-card")!;
+    const overview = new Overview() as HTMLElement & {
+      hass: HomeAssistant;
+      setConfig(config: OverviewCardConfig): void;
+      updateComplete: Promise<boolean>;
+      shadowRoot: ShadowRoot;
+    };
+    overview.hass = installation;
+    overview.setConfig({ type: "custom:irrigation-manager-overview-card", installation: "garden" });
+    document.body.append(overview);
+    await overview.updateComplete;
+
+    expect(overview.shadowRoot.querySelector("[data-testid=emergency-stop]")).toBeTruthy();
+    expect(overview.shadowRoot.textContent).not.toContain("Modellqualität");
+    expect(overview.shadowRoot.textContent).not.toContain("Automatik aussetzen");
+    expect(statusIcon("disabled")).not.toBe("mdi:information-outline");
+    expect(statusIcon("automatic_disabled")).not.toBe("mdi:information-outline");
+    expect(statusIcon("installation_disabled")).not.toBe("mdi:information-outline");
+  });
+
   it("resolves overview roles and lets explicit expert overrides win", () => {
     const home = hass(
       state("sensor.garden_status", "Garten Status", {
@@ -177,6 +205,32 @@ describe("simple card entity resolution", () => {
     expect(anchorChoices(home, "zone").map((choice) => choice.value)).toEqual([
       "front:hedge",
       "back:lawn",
+    ]);
+  });
+
+  it("lists only the canonical status anchor for a metered zone", () => {
+    const home = hass(
+      state("sensor.lawn_water", "Rasen Wasser", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        card_entities: {
+          anchor: "sensor.lawn_status",
+          zone: "sensor.lawn_water",
+        },
+      }),
+      state("sensor.lawn_status", "Rasen", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        card_name: "Rasen",
+        card_entities: {
+          anchor: "sensor.lawn_status",
+          zone: "sensor.lawn_water",
+        },
+      }),
+    );
+
+    expect(anchorChoices(home, "zone")).toEqual([
+      { value: "garden:lawn", label: "Rasen" },
     ]);
   });
 

@@ -58,8 +58,9 @@ async def _setup_installation(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden irrigation",
-        data={"name": "Garden irrigation"},
+        data={"name": "Garden irrigation", "operation_enabled": True},
         unique_id="installation-requests",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentries: list[ConfigSubentry] = []
@@ -130,7 +131,7 @@ async def test_split_request_persists_one_execution_across_soak_doses(
 async def test_options_update_during_watering_reloads_only_after_complete_idle(
     hass: HomeAssistant,
 ) -> None:
-    """Persist expert edits immediately without replacing an active runtime snapshot."""
+    """Persist v2 zone edits immediately without replacing an active runtime snapshot."""
     entry, zones, operations = await _setup_installation(
         hass,
         zone_specs=(("Lawn", "switch.lawn", 60, 0),),
@@ -150,31 +151,25 @@ async def test_options_update_during_watering_reloads_only_after_complete_idle(
     )
     await _wait_until(lambda: ("on", "switch.lawn") in operations)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "expert"}
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zones[0].subentry_id},
     )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "zone"}
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_minimal"}
     )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"zone_subentry_id": zones[0].subentry_id}
-    )
-    result = await hass.config_entries.options.async_configure(
+    result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
             "name": "New lawn",
             "zone_valve": "switch.new_lawn",
-            "default_duration": 30,
-            "max_dose_duration": 30,
-            "area_m2": 20,
-            "application_efficiency": 0.6,
-            "maximum_deficit_mm": 25,
-            "minimum_effective_liters": 7,
+            "control_type": "time",
         },
     )
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
 
-    assert result["type"].value == "create_entry"
+    assert result["type"].value == "abort"
+    assert result["reason"] == "reconfigure_successful"
     assert entry.subentries[zones[0].subentry_id].data["zone_valve"] == "switch.new_lawn"
     assert entry.runtime_data.manager is old_manager
     assert old_manager._zone_valves() == ["switch.lawn"]
@@ -205,10 +200,8 @@ async def test_options_update_during_watering_reloads_only_after_complete_idle(
     assert request.status == "cancelled"
     assert request.zone_valve == "switch.lawn"
     assert new_manager._zone_valves() == ["switch.new_lawn"]
-    assert new_manager._zone_configs[0].data["area_m2"] == 20
-    assert new_manager._zone_configs[0].data["application_efficiency"] == 0.6
-    assert new_manager._zone_configs[0].data["maximum_deficit_mm"] == 25
-    assert new_manager._zone_configs[0].data["minimum_effective_liters"] == 7
+    assert new_manager._zone_configs[0].data["control_type"] == "time"
+    assert len(new_manager._zone_configs[0].data["weekly_schedule"]) == 7
     assert ("off", "switch.lawn") in operations
     assert ("on", "switch.new_lawn") not in operations
 
@@ -354,8 +347,9 @@ async def test_restart_interrupts_active_dose_and_replans_unexpired_remainder(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden irrigation",
-        data={"name": "Garden irrigation"},
+        data={"name": "Garden irrigation", "operation_enabled": True},
         unique_id="installation-restart",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -458,8 +452,9 @@ async def test_restart_recovery_that_satisfies_remainder_completes_without_new_d
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden irrigation",
-        data={"name": "Garden irrigation"},
+        data={"name": "Garden irrigation", "operation_enabled": True},
         unique_id="installation-recovery-complete",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -553,8 +548,9 @@ async def test_expired_persisted_request_never_opens_its_zone(hass: HomeAssistan
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden irrigation",
-        data={"name": "Garden irrigation"},
+        data={"name": "Garden irrigation", "operation_enabled": True},
         unique_id="installation-expiry",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
@@ -632,8 +628,15 @@ async def test_execution_hard_runtime_is_consumed_across_split_volume_doses(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden irrigation",
-        data={"name": "Garden irrigation", "water_meter": "sensor.water_meter"},
+        data={
+            "name": "Garden irrigation",
+            "operation_enabled": True,
+            "meter_type": "cumulative",
+            "meter_entity": "sensor.water_meter",
+            "water_meter": "sensor.water_meter",
+        },
         unique_id="installation-runtime-budget",
+        version=2,
     )
     entry.add_to_hass(hass)
     subentry = ConfigSubentry(
