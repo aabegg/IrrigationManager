@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0-rc9 - 2026-07-25
+
+### Changed
+
+- Present installation and automatic-irrigation state independently with direct activate
+  and deactivate actions for both installations and zones.
+- Add complete zone labels, field descriptions, and native Next-step behavior.
+- Group weekly schedules into translated weekday sections with labeled start, end, and
+  time- or volume-target fields.
+
+### Fixed
+
+- Replace generic activation error dialogs with actionable reconfiguration explanations.
+- Keep activation actions visible while reconfiguration is required so users can discover
+  why the action is currently blocked.
+
 ## 0.1.0-rc8 - 2026-07-25
 
 ### Changed

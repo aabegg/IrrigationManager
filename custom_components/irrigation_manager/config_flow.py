@@ -19,6 +19,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_NAME, Platform, UnitOfTime, UnitOfVolume
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -60,6 +61,13 @@ from .const import (
 from .manager import IrrigationManager
 
 _ACTUATOR_OWNERSHIP_LOCK = asyncio.Lock()
+
+
+def _localized_enabled(language: str, enabled: bool) -> str:
+    """Return the user-facing state of one independent release."""
+    if language == "de":
+        return "Aktiviert" if enabled else "Deaktiviert"
+    return "Enabled" if enabled else "Disabled"
 
 
 def _owned_endpoints(
@@ -193,17 +201,28 @@ def _minimal_zone_schema(has_meter: bool) -> vol.Schema:
     return vol.Schema(schema)
 
 
-def _weekly_schedule_schema() -> vol.Schema:
+def _weekly_schedule_schema(control_type: str) -> vol.Schema:
     schema: dict[object, object] = {}
     for weekday in WEEKDAYS:
-        schema[vol.Optional(f"{weekday}_start")] = TimeSelector()
-        schema[vol.Optional(f"{weekday}_end")] = TimeSelector()
-        schema[vol.Optional(f"{weekday}_target")] = NumberSelector(
-            NumberSelectorConfig(
-                min=0.001,
-                max=1_000_000,
-                step=1,
-                mode=NumberSelectorMode.BOX,
+        schema[vol.Optional(weekday)] = section(
+            vol.Schema(
+                {
+                    vol.Optional("start"): TimeSelector(),
+                    vol.Optional("end"): TimeSelector(),
+                    vol.Optional("target"): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0.001,
+                            max=1_000_000,
+                            step=1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement=(
+                                UnitOfTime.SECONDS
+                                if control_type == CONTROL_TYPE_TIME
+                                else UnitOfVolume.LITERS
+                            ),
+                        )
+                    ),
+                }
             )
         )
     return vol.Schema(schema)
@@ -218,9 +237,11 @@ def _weekly_schedule_form_values(schedule: object) -> dict[str, object]:
         if not isinstance(row, Mapping) or row.get("weekday") not in WEEKDAYS:
             continue
         weekday = str(row["weekday"])
-        for field in ("start", "end", "target"):
-            if row.get(field) is not None:
-                values[f"{weekday}_{field}"] = row[field]
+        day_values = {
+            field: row[field] for field in ("start", "end", "target") if row.get(field) is not None
+        }
+        if day_values:
+            values[weekday] = day_values
     return values
 
 
@@ -232,9 +253,12 @@ def _canonical_weekly_schedule(
     intervals: list[tuple[float, float]] = []
     week_seconds = 7 * 86_400
     for weekday_index, weekday in enumerate(WEEKDAYS):
-        start_value = user_input.get(f"{weekday}_start")
-        end_value = user_input.get(f"{weekday}_end")
-        target_value = user_input.get(f"{weekday}_target")
+        row_input = user_input.get(weekday, {})
+        if not isinstance(row_input, Mapping):
+            return [], "schedule_row_invalid"
+        start_value = row_input.get("start")
+        end_value = row_input.get("end")
+        target_value = row_input.get("target")
         present = (
             start_value not in (None, ""),
             end_value not in (None, ""),
@@ -338,7 +362,9 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_AUTOMATION_ENABLED: True,
             }
             return await self.async_step_installation_hardware()
-        return self.async_show_form(step_id="create", data_schema=_installation_basics_schema())
+        return self.async_show_form(
+            step_id="create", data_schema=_installation_basics_schema(), last_step=False
+        )
 
     async def async_step_installation_hardware(
         self, user_input: dict[str, Any] | None = None
@@ -348,7 +374,9 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             self._installation[CONF_MAIN_VALVE] = user_input.get(CONF_MAIN_VALVE)
             return await self.async_step_installation_meter()
         return self.async_show_form(
-            step_id="installation_hardware", data_schema=_installation_main_valve_schema()
+            step_id="installation_hardware",
+            data_schema=_installation_main_valve_schema(),
+            last_step=False,
         )
 
     async def async_step_installation_meter(
@@ -362,7 +390,9 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._installation[CONF_METER_TYPE] = METER_TYPE_NONE
                 return await self.async_step_installation_zone()
             return await self.async_step_installation_meter_details()
-        return self.async_show_form(step_id="installation_meter", data_schema=schema)
+        return self.async_show_form(
+            step_id="installation_meter", data_schema=schema, last_step=False
+        )
 
     async def async_step_installation_meter_details(
         self, user_input: dict[str, Any] | None = None
@@ -376,10 +406,13 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                     step_id="installation_meter_details",
                     data_schema=self.add_suggested_values_to_schema(schema, user_input),
                     errors={"base": error},
+                    last_step=False,
                 )
             self._installation.update(meter)
             return await self.async_step_installation_zone()
-        return self.async_show_form(step_id="installation_meter_details", data_schema=schema)
+        return self.async_show_form(
+            step_id="installation_meter_details", data_schema=schema, last_step=False
+        )
 
     async def async_step_installation_zone(
         self, user_input: dict[str, Any] | None = None
@@ -395,6 +428,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                     step_id="installation_zone",
                     data_schema=self.add_suggested_values_to_schema(schema, user_input),
                     errors={"base": "volume_max_runtime_required"},
+                    last_step=False,
                 )
             self._first_zone = {
                 CONF_NAME: user_input[CONF_NAME],
@@ -406,15 +440,19 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             if max_runtime is not None:
                 self._first_zone[CONF_VOLUME_MAX_RUNTIME] = float(max_runtime)
             return await self.async_step_installation_schedule()
-        return self.async_show_form(step_id="installation_zone", data_schema=schema)
+        return self.async_show_form(
+            step_id="installation_zone", data_schema=schema, last_step=False
+        )
 
     async def async_step_installation_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Create the installation and first zone after the seven-day schedule."""
-        schema = _weekly_schedule_schema()
+        schema = _weekly_schedule_schema(str(self._first_zone[CONF_CONTROL_TYPE]))
         if user_input is None:
-            return self.async_show_form(step_id="installation_schedule", data_schema=schema)
+            return self.async_show_form(
+                step_id="installation_schedule", data_schema=schema, last_step=True
+            )
         schedule, error = _canonical_weekly_schedule(
             user_input,
             control_type=str(self._first_zone[CONF_CONTROL_TYPE]),
@@ -425,6 +463,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 step_id="installation_schedule",
                 data_schema=self.add_suggested_values_to_schema(schema, user_input),
                 errors={"base": error},
+                last_step=True,
             )
         self._first_zone[CONF_WEEKLY_SCHEDULE] = schedule
         candidate = _owned_endpoints(self._installation, (self._first_zone,))
@@ -467,7 +506,6 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self._calibration_previous_proposal_id: str | None = None
         self._calibration_proposal: dict[str, object] | None = None
         self._calibration_supervision_renewed = False
-        self._pending_release_input: dict[str, bool] | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Start the minimal zone form directly."""
@@ -490,6 +528,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                     step_id="minimal",
                     data_schema=self.add_suggested_values_to_schema(schema, user_input),
                     errors={"base": "volume_max_runtime_required"},
+                    last_step=False,
                 )
             self._zone = {
                 CONF_NAME: user_input[CONF_NAME],
@@ -501,15 +540,17 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             if max_runtime is not None:
                 self._zone[CONF_VOLUME_MAX_RUNTIME] = float(max_runtime)
             return await self.async_step_minimal_schedule()
-        return self.async_show_form(step_id="minimal", data_schema=schema)
+        return self.async_show_form(step_id="minimal", data_schema=schema, last_step=False)
 
     async def async_step_minimal_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Validate and save all seven weekday rows for a new zone."""
-        schema = _weekly_schedule_schema()
+        schema = _weekly_schedule_schema(str(self._zone[CONF_CONTROL_TYPE]))
         if user_input is None:
-            return self.async_show_form(step_id="minimal_schedule", data_schema=schema)
+            return self.async_show_form(
+                step_id="minimal_schedule", data_schema=schema, last_step=True
+            )
         schedule, error = _canonical_weekly_schedule(
             user_input,
             control_type=str(self._zone[CONF_CONTROL_TYPE]),
@@ -520,6 +561,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 step_id="minimal_schedule",
                 data_schema=self.add_suggested_values_to_schema(schema, user_input),
                 errors={"base": error},
+                last_step=True,
             )
         self._zone[CONF_WEEKLY_SCHEDULE] = schedule
         async with _ACTUATOR_OWNERSHIP_LOCK:
@@ -550,6 +592,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             return self.async_show_form(
                 step_id="reconfigure_minimal",
                 data_schema=self.add_suggested_values_to_schema(schema, subentry.data),
+                last_step=False,
             )
         if self._valve_is_configured(
             str(user_input[CONF_ZONE_VALVE]), excluding_subentry_id=subentry.subentry_id
@@ -562,6 +605,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 step_id="reconfigure_minimal",
                 data_schema=self.add_suggested_values_to_schema(schema, user_input),
                 errors={"base": "volume_max_runtime_required"},
+                last_step=False,
             )
         self._zone = dict(subentry.data)
         self._zone.update(
@@ -582,13 +626,14 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Replace a zone's complete seven-day schedule."""
         subentry = self._get_reconfigure_subentry()
-        schema = _weekly_schedule_schema()
+        schema = _weekly_schedule_schema(str(self._zone[CONF_CONTROL_TYPE]))
         if user_input is None:
             return self.async_show_form(
                 step_id="reconfigure_minimal_schedule",
                 data_schema=self.add_suggested_values_to_schema(
                     schema, _weekly_schedule_form_values(subentry.data.get(CONF_WEEKLY_SCHEDULE))
                 ),
+                last_step=True,
             )
         schedule, error = _canonical_weekly_schedule(
             user_input,
@@ -600,6 +645,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 step_id="reconfigure_minimal_schedule",
                 data_schema=self.add_suggested_values_to_schema(schema, user_input),
                 errors={"base": error},
+                last_step=True,
             )
         self._zone[CONF_WEEKLY_SCHEDULE] = schedule
         self._zone.pop(CONF_NEEDS_RECONFIGURATION, None)
@@ -618,66 +664,112 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
     async def async_step_releases(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Update the zone's operation and automatic releases."""
+        """Expose zone actions appropriate to the current release state."""
         manager = self._manager()
         zone = self._get_reconfigure_subentry()
         if manager is None:
             return self.async_abort(reason="installation_not_loaded")
         zone_id = zone.unique_id or zone.subentry_id
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_OPERATION_ENABLED): BooleanSelector(),
-                vol.Required(CONF_AUTOMATION_ENABLED): BooleanSelector(),
-            }
-        )
-        if user_input is None:
-            snapshot = manager.snapshot()
-            return self.async_show_form(
-                step_id="releases",
-                data_schema=self.add_suggested_values_to_schema(
-                    schema,
-                    {
-                        CONF_OPERATION_ENABLED: snapshot.zone_operation_enabled[zone_id],
-                        CONF_AUTOMATION_ENABLED: snapshot.zone_automation_enabled[zone_id],
-                    },
+        snapshot = manager.snapshot()
+        operation_enabled = snapshot.zone_operation_enabled[zone_id]
+        automation_enabled = snapshot.zone_automation_enabled[zone_id]
+        return self.async_show_menu(
+            step_id="releases",
+            menu_options=[
+                "deactivate_zone" if operation_enabled else "activate_zone",
+                ("disable_zone_automatic" if automation_enabled else "enable_zone_automatic"),
+            ],
+            description_placeholders={
+                "zone_status": _localized_enabled(self.hass.config.language, operation_enabled),
+                "automatic_status": _localized_enabled(
+                    self.hass.config.language, automation_enabled
                 ),
-            )
-        self._pending_release_input = {
-            CONF_OPERATION_ENABLED: bool(user_input[CONF_OPERATION_ENABLED]),
-            CONF_AUTOMATION_ENABLED: bool(user_input[CONF_AUTOMATION_ENABLED]),
-        }
-        if not self._pending_release_input[
-            CONF_AUTOMATION_ENABLED
-        ] and manager.automatic_execution_active(zone_subentry_id=zone.subentry_id):
-            return await self.async_step_automation_disable()
-        return await self._apply_releases(stop_active=False)
+            },
+        )
 
-    async def async_step_automation_disable(
+    async def async_step_activate_zone(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Ask whether an active automatic execution should stop or finish."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="automation_disable", data_schema=_active_automatic_schema()
-            )
-        return await self._apply_releases(stop_active=user_input["active_execution"] == "stop")
-
-    async def _apply_releases(self, *, stop_active: bool) -> SubentryFlowResult:
+        """Activate the zone without changing its automatic release."""
         manager = self._manager()
-        pending = self._pending_release_input
         zone = self._get_reconfigure_subentry()
-        if manager is None or pending is None:
-            return self.async_abort(reason="release_change_not_pending")
-        self._pending_release_input = None
-        await manager.async_set_zone_operation(
-            zone_subentry_id=zone.subentry_id, enabled=pending[CONF_OPERATION_ENABLED]
-        )
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        if self._zone_requires_reconfiguration():
+            return self.async_abort(reason="reconfiguration_required")
+        try:
+            await manager.async_set_zone_operation(zone_subentry_id=zone.subentry_id, enabled=True)
+        except HomeAssistantError as err:
+            return self._abort_zone_action_error(err)
+        return self.async_abort(reason="zone_activated")
+
+    async def async_step_deactivate_zone(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Deactivate the zone without changing its automatic release."""
+        manager = self._manager()
+        zone = self._get_reconfigure_subentry()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        await manager.async_set_zone_operation(zone_subentry_id=zone.subentry_id, enabled=False)
+        return self.async_abort(reason="zone_deactivated")
+
+    async def async_step_enable_zone_automatic(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Enable automatic irrigation for the zone."""
+        manager = self._manager()
+        zone = self._get_reconfigure_subentry()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        if self._zone_requires_reconfiguration():
+            return self.async_abort(reason="reconfiguration_required")
+        try:
+            await manager.async_set_zone_automation(
+                zone_subentry_id=zone.subentry_id, enabled=True, stop_active=False
+            )
+        except HomeAssistantError as err:
+            return self._abort_zone_action_error(err)
+        return self.async_abort(reason="zone_automatic_enabled")
+
+    async def async_step_disable_zone_automatic(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Disable automatic irrigation and optionally stop its active execution."""
+        manager = self._manager()
+        zone = self._get_reconfigure_subentry()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        if user_input is None and manager.automatic_execution_active(
+            zone_subentry_id=zone.subentry_id
+        ):
+            return self.async_show_form(
+                step_id="disable_zone_automatic",
+                data_schema=_active_automatic_schema(),
+                last_step=True,
+            )
+        stop_active = bool(user_input and user_input["active_execution"] == "stop")
         await manager.async_set_zone_automation(
             zone_subentry_id=zone.subentry_id,
-            enabled=pending[CONF_AUTOMATION_ENABLED],
+            enabled=False,
             stop_active=stop_active,
         )
-        return self.async_abort(reason="releases_updated")
+        return self.async_abort(
+            reason=("zone_automatic_disabled_stopped" if stop_active else "zone_automatic_disabled")
+        )
+
+    def _abort_zone_action_error(self, error: HomeAssistantError) -> SubentryFlowResult:
+        """Turn zone manager failures into visible, actionable flow results."""
+        return self.async_abort(
+            reason="action_failed", description_placeholders={"error": str(error)}
+        )
+
+    def _zone_requires_reconfiguration(self) -> bool:
+        """Return whether installation or this zone still blocks activation."""
+        return (
+            self._get_entry().data.get(CONF_NEEDS_RECONFIGURATION) is True
+            or self._get_reconfigure_subentry().data.get(CONF_NEEDS_RECONFIGURATION) is True
+        )
 
     def _manager(self) -> IrrigationManager | None:
         runtime = self.hass.data.get(DOMAIN, {}).get(self._get_entry().entry_id)
@@ -885,15 +977,14 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         locked = (
             snapshot is not None and getattr(snapshot, "installation_safety_lock", None) is not None
         )
-        needs_reconfiguration = self.config_entry.data.get(CONF_NEEDS_RECONFIGURATION) is True
         options = ["configuration"]
         if operation_enabled:
             options.append("deactivate_installation")
-        elif not needs_reconfiguration:
+        else:
             options.append("activate_installation")
         if automation_enabled:
             options.append("disable_automatic")
-        elif not needs_reconfiguration:
+        else:
             options.append("enable_automatic")
         options.extend(["replan", "reset_safety" if locked else "emergency_stop"])
         if self.config_entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
@@ -902,17 +993,13 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             step_id="init",
             menu_options=options,
             description_placeholders={
-                "installation_status": self._localized_status(
-                    "needs_reconfiguration"
-                    if needs_reconfiguration
-                    else (
-                        getattr(snapshot, "status", "unavailable")
-                        if snapshot is not None
-                        else "unavailable"
-                    )
+                "installation_status": (
+                    self._localized_status("safety_lock")
+                    if locked
+                    else _localized_enabled(self.hass.config.language, operation_enabled)
                 ),
-                "automatic_status": self._localized_status(
-                    "automatic_enabled" if automation_enabled else "automatic_not_enabled"
+                "automatic_status": _localized_enabled(
+                    self.hass.config.language, automation_enabled
                 ),
             },
         )
@@ -1025,6 +1112,13 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         manager = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
         return cast(IrrigationManager, manager) if manager is not None else None
 
+    def _requires_reconfiguration(self) -> bool:
+        """Return whether installation or zone configuration still blocks activation."""
+        return self.config_entry.data.get(CONF_NEEDS_RECONFIGURATION) is True or any(
+            zone.data.get(CONF_NEEDS_RECONFIGURATION) is True
+            for zone in self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+        )
+
     def _localized_status(self, status: str) -> str:
         """Return a compact localized status for menu placeholders."""
         translations = {
@@ -1062,17 +1156,18 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         """Render a localized human action result without exposing technical data."""
         messages = {
             "de": {
-                "activated": "Die Betriebsfreigabe der Bewässerungsanlage wurde erteilt.",
+                "activated": "Die Bewässerungsanlage wurde aktiviert.",
                 "deactivated": (
-                    "Die Betriebsfreigabe der Bewässerungsanlage wurde entzogen; "
+                    "Die Bewässerungsanlage wurde deaktiviert; "
                     "der aktive Bewässerungsvorgang wurde beendet."
                 ),
                 "automatic_enabled": (
-                    "Die Automatikfreigabe wurde erteilt und die Bewässerungsplanung neu berechnet."
+                    "Die automatische Bewässerung wurde aktiviert und die "
+                    "Bewässerungsplanung neu berechnet."
                 ),
-                "automatic_disabled": "Die Automatikfreigabe wurde entzogen.",
+                "automatic_disabled": "Die automatische Bewässerung wurde deaktiviert.",
                 "automatic_disabled_stopped": (
-                    "Die Automatikfreigabe wurde entzogen und der aktive automatische "
+                    "Die automatische Bewässerung wurde deaktiviert und der aktive automatische "
                     "Bewässerungsvorgang gestoppt."
                 ),
                 "emergency": "Not-Aus wurde ausgelöst. Die Anlage ist jetzt sicherheitsgesperrt.",
@@ -1113,7 +1208,12 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         manager = self._manager()
         if manager is None:
             return self.async_abort(reason="installation_not_loaded")
-        await manager.async_set_installation_operation(enabled=True)
+        if self._requires_reconfiguration():
+            return self.async_abort(reason="reconfiguration_required")
+        try:
+            await manager.async_set_installation_operation(enabled=True)
+        except HomeAssistantError as err:
+            return self._abort_action_error(err)
         return await self._show_action_result(self._localized_result("activated"))
 
     async def async_step_deactivate_installation(
@@ -1133,8 +1233,19 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         manager = self._manager()
         if manager is None:
             return self.async_abort(reason="installation_not_loaded")
-        await manager.async_set_installation_automation(enabled=True, stop_active=False)
+        if self._requires_reconfiguration():
+            return self.async_abort(reason="reconfiguration_required")
+        try:
+            await manager.async_set_installation_automation(enabled=True, stop_active=False)
+        except HomeAssistantError as err:
+            return self._abort_action_error(err)
         return await self._show_action_result(self._localized_result("automatic_enabled"))
+
+    def _abort_action_error(self, error: HomeAssistantError) -> ConfigFlowResult:
+        """Turn manager action failures into visible, actionable flow results."""
+        return self.async_abort(
+            reason="action_failed", description_placeholders={"error": str(error)}
+        )
 
     async def async_step_disable_automatic(
         self, user_input: dict[str, Any] | None = None

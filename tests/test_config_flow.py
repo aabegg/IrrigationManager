@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from homeassistant.config_entries import SOURCE_USER, ConfigSubentry
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, section
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.irrigation_manager.const import DOMAIN
+from custom_components.irrigation_manager.const import DOMAIN, WEEKDAYS
 
 
 async def _create_v2_entry(hass: HomeAssistant, *, meter_type: str = "none") -> MockConfigEntry:
@@ -71,9 +71,7 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
-                "monday_start": "22:00:00",
-                "monday_end": "00:30:00",
-                "monday_target": 600,
+                "monday": {"start": "22:00:00", "end": "00:30:00", "target": 600},
             },
         )
 
@@ -128,7 +126,7 @@ async def test_creation_validates_pulse_factor_and_complete_schedule_rows(
         },
     )
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"monday_start": "04:00:00", "monday_target": 10}
+        result["flow_id"], {"monday": {"start": "04:00:00", "target": 10}}
     )
     assert result["errors"] == {"base": "schedule_row_incomplete"}
 
@@ -158,6 +156,7 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
         (entry.entry_id, "zone"), context={"source": SOURCE_USER}
     )
     assert result["step_id"] == "minimal"
+    assert result["last_step"] is False
     with patch("custom_components.irrigation_manager.config_flow.uuid4") as uuid4:
         uuid4.return_value.hex = "zone-1"
         result = await hass.config_entries.subentries.async_configure(
@@ -170,12 +169,19 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
             },
         )
         assert result["step_id"] == "minimal_schedule"
+        assert result["last_step"] is True
+        assert [str(key) for key in result["data_schema"].schema] == list(WEEKDAYS)
+        for day_schema in result["data_schema"].schema.values():
+            assert isinstance(day_schema, section)
+            assert {str(key) for key in day_schema.schema.schema} == {
+                "start",
+                "end",
+                "target",
+            }
         result = await hass.config_entries.subentries.async_configure(
             result["flow_id"],
             {
-                "friday_start": "05:00:00",
-                "friday_end": "06:00:00",
-                "friday_target": 25,
+                "friday": {"start": "05:00:00", "end": "06:00:00", "target": 25},
             },
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -245,10 +251,10 @@ async def test_installation_configuration_is_atomic_multistep_wizard(
     assert "needs_reconfiguration" not in entry.data
 
 
-async def test_configuration_is_prominent_and_blocks_activation_during_reconfiguration(
+async def test_configuration_is_prominent_during_required_reconfiguration(
     hass: HomeAssistant,
 ) -> None:
-    """Keep activation unavailable until the complete wizard clears the migration flag."""
+    """Keep configuration first while activation remains available with an explanation."""
     entry = await _create_v2_entry(hass)
     hass.config_entries.async_update_entry(
         entry,
@@ -261,8 +267,8 @@ async def test_configuration_is_prominent_and_blocks_activation_during_reconfigu
     )
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["menu_options"][0] == "configuration"
-    assert "activate_installation" not in result["menu_options"]
-    assert "enable_automatic" not in result["menu_options"]
+    assert "activate_installation" in result["menu_options"]
+    assert "enable_automatic" in result["menu_options"]
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "configuration"}
     )
@@ -364,6 +370,55 @@ async def test_zone_reconfigure_preserves_calibration_and_removes_only_invalid_v
     assert "volume_max_runtime" not in updated
 
 
+async def test_zone_release_menu_tracks_independent_zone_states(
+    hass: HomeAssistant,
+) -> None:
+    """Expose the same state-dependent actions for zones as for the installation."""
+    entry = await _create_v2_entry(hass)
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "weekly_schedule": [],
+        },
+        subentry_id="zone-1",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+    manager = Mock()
+    manager.snapshot.return_value = SimpleNamespace(
+        zone_operation_enabled={"zone-1": False},
+        zone_automation_enabled={"zone-1": True},
+    )
+    manager.async_set_zone_operation = AsyncMock(return_value={})
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
+    assert result["menu_options"] == ["activate_zone", "disable_zone_automatic"]
+    assert result["description_placeholders"] == {
+        "zone_status": "Disabled",
+        "automatic_status": "Enabled",
+    }
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "activate_zone"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "zone_activated"
+    manager.async_set_zone_operation.assert_awaited_once_with(
+        zone_subentry_id=zone.subentry_id, enabled=True
+    )
+
+
 async def test_installation_actions_and_physical_meter_correction_use_manager(
     hass: HomeAssistant,
 ) -> None:
@@ -432,7 +487,7 @@ async def test_init_menu_tracks_release_and_safety_state(hass: HomeAssistant) ->
     ]
     assert result["description_placeholders"] == {
         "installation_status": "Safety lock",
-        "automatic_status": "Automatic irrigation disabled",
+        "automatic_status": "Disabled",
     }
 
 
@@ -505,6 +560,38 @@ async def test_activation_and_lock_reset_call_only_the_selected_manager_action(
     assert "reset" in result["description_placeholders"]["result"]
 
 
+async def test_installation_activation_explains_required_reconfiguration(
+    hass: HomeAssistant,
+) -> None:
+    """Explain the stable configuration condition before calling the manager."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"name": "Lawn", "needs_reconfiguration": True},
+            subentry_id="zone-1",
+            subentry_type="zone",
+            title="Lawn",
+            unique_id="zone-1",
+        ),
+    )
+    manager = Mock()
+    manager.snapshot.return_value = _snapshot(operation_enabled=False, automation_enabled=False)
+    manager.async_set_installation_operation = AsyncMock(return_value={})
+    manager.async_set_installation_automation = AsyncMock(return_value={})
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+
+    for action in ("activate_installation", "enable_automatic"):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": action}
+        )
+        assert result["type"] is FlowResultType.ABORT
+        assert result["reason"] == "reconfiguration_required"
+    manager.async_set_installation_operation.assert_not_awaited()
+    manager.async_set_installation_automation.assert_not_awaited()
+
+
 async def test_action_results_and_status_are_german_when_ha_is_german(
     hass: HomeAssistant,
 ) -> None:
@@ -520,8 +607,8 @@ async def test_action_results_and_status_are_german_when_ha_is_german(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["description_placeholders"] == {
-        "installation_status": "Anlage deaktiviert",
-        "automatic_status": "erteilt",
+        "installation_status": "Deaktiviert",
+        "automatic_status": "Aktiviert",
     }
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "replan"}

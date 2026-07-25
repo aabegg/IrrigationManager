@@ -149,9 +149,7 @@ async def test_minimal_wizard_creates_installation_and_first_zone(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
-                "monday_start": "22:00:00",
-                "monday_end": "00:30:00",
-                "monday_target": 1800,
+                "monday": {"start": "22:00:00", "end": "00:30:00", "target": 1800},
             },
         )
 
@@ -209,7 +207,7 @@ async def test_weekly_schedule_rejects_partial_and_overlapping_rows(
         result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
 
     partial = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"monday_start": "04:00:00", "monday_target": 600}
+        result["flow_id"], {"monday": {"start": "04:00:00", "target": 600}}
     )
     assert partial["step_id"] == "installation_schedule"
     assert partial["errors"] == {"base": "schedule_row_incomplete"}
@@ -217,12 +215,8 @@ async def test_weekly_schedule_rejects_partial_and_overlapping_rows(
     overlap = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {
-            "monday_start": "23:00:00",
-            "monday_end": "02:00:00",
-            "monday_target": 1800,
-            "tuesday_start": "01:00:00",
-            "tuesday_end": "03:00:00",
-            "tuesday_target": 600,
+            "monday": {"start": "23:00:00", "end": "02:00:00", "target": 1800},
+            "tuesday": {"start": "01:00:00", "end": "03:00:00", "target": 600},
         },
     )
     assert overlap["step_id"] == "installation_schedule"
@@ -442,9 +436,7 @@ async def test_zone_edit_reloads_then_replans_pending_work_from_new_config(
         result = await hass.config_entries.subentries.async_configure(
             result["flow_id"],
             {
-                "wednesday_start": "06:00:00",
-                "wednesday_end": "07:00:00",
-                "wednesday_target": 300,
+                "wednesday": {"start": "06:00:00", "end": "07:00:00", "target": 300},
             },
         )
         assert result["type"] is FlowResultType.ABORT
@@ -782,7 +774,7 @@ async def test_v2_config_edits_do_not_overwrite_disabled_durable_releases(
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        {"monday_start": "06:00:00", "monday_end": "07:00:00", "monday_target": 300},
+        {"monday": {"start": "06:00:00", "end": "07:00:00", "target": 300}},
     )
     assert result["type"] is FlowResultType.ABORT
     await hass.async_block_till_done()
@@ -1193,6 +1185,8 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
     options = await hass.config_entries.options.async_init(entry.entry_id)
     assert options["menu_options"] == [
         "configuration",
+        "activate_installation",
+        "enable_automatic",
         "replan",
         "emergency_stop",
     ]
@@ -1231,16 +1225,14 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
         },
     )
     invalid = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {"monday_start": "04:00:00", "monday_target": 600}
+        result["flow_id"], {"monday": {"start": "04:00:00", "target": 600}}
     )
     assert invalid["errors"] == {"base": "schedule_row_incomplete"}
     assert entry.subentries[zone.subentry_id].data["needs_reconfiguration"] is True
     completed = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
-            "monday_start": "04:00:00",
-            "monday_end": "05:00:00",
-            "monday_target": 600,
+            "monday": {"start": "04:00:00", "end": "05:00:00", "target": 600},
         },
     )
     assert completed["type"] is FlowResultType.ABORT
@@ -1343,10 +1335,8 @@ async def test_automation_disable_actions_ask_how_to_handle_active_execution(
                 result["flow_id"], {"next_step_id": "releases"}
             )
             configure = hass.config_entries.subentries.async_configure
-            expected_step = "automation_disable"
-            result = await configure(
-                result["flow_id"], {"operation_enabled": True, "automation_enabled": False}
-            )
+            result = await configure(result["flow_id"], {"next_step_id": "disable_zone_automatic"})
+            expected_step = "disable_zone_automatic"
         assert result["step_id"] == expected_step
         result = await configure(result["flow_id"], {"active_execution": choice})
 
@@ -1355,7 +1345,9 @@ async def test_automation_disable_actions_ask_how_to_handle_active_execution(
         update.assert_awaited_once_with(enabled=False, stop_active=expected_stop)
     else:
         assert result["type"] is FlowResultType.ABORT
-        assert result["reason"] == "releases_updated"
+        assert result["reason"] == (
+            "zone_automatic_disabled_stopped" if expected_stop else "zone_automatic_disabled"
+        )
         update.assert_awaited_once_with(
             zone_subentry_id=zone.subentry_id,
             enabled=False,
@@ -1384,13 +1376,13 @@ async def test_automation_disable_does_not_ask_without_relevant_active_execution
             result["flow_id"], {"next_step_id": "releases"}
         )
         result = await hass.config_entries.subentries.async_configure(
-            result["flow_id"], {"operation_enabled": True, "automation_enabled": False}
+            result["flow_id"], {"next_step_id": "disable_zone_automatic"}
         )
         assert result["type"] is FlowResultType.ABORT
 
     assert result.get("step_id") not in {
         "disable_automatic",
-        "automation_disable",
+        "disable_zone_automatic",
     }
 
 
