@@ -29,6 +29,17 @@ async def _create_v2_entry(hass: HomeAssistant, *, meter_type: str = "none") -> 
     return entry
 
 
+def _snapshot(**overrides: object) -> SimpleNamespace:
+    values = {
+        "operation_enabled": True,
+        "automation_enabled": True,
+        "installation_safety_lock": None,
+        "status": "idle",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
     hass: HomeAssistant,
     mock_setup_entry: None,
@@ -177,64 +188,98 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
     assert result["menu_options"] == ["reconfigure_minimal", "releases", "calibration"]
 
 
-async def test_installation_options_are_direct_v2_sections(hass: HomeAssistant) -> None:
-    """Expose direct installation modules and runtime actions without v1 menus."""
+async def test_installation_configuration_is_atomic_multistep_wizard(
+    hass: HomeAssistant,
+) -> None:
+    """Collect every installation setting before one final persisted update."""
     entry = await _create_v2_entry(hass, meter_type="cumulative")
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["menu_options"] == [
-        "basics",
-        "main_valve",
-        "meter",
-        "installation_releases",
+        "configuration",
+        "deactivate_installation",
+        "disable_automatic",
         "replan",
         "emergency_stop",
-        "reset_safety",
         "physical_meter_correction",
     ]
+    assert set(result["description_placeholders"]) == {
+        "installation_status",
+        "automatic_status",
+    }
 
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "basics"}
+        result["flow_id"], {"next_step_id": "configuration"}
     )
+    assert result["step_id"] == "configuration"
+    assert result["last_step"] is False
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"name": "Back garden"}
     )
+    assert result["step_id"] == "configuration_main_valve"
+    assert result["last_step"] is False
+    assert entry.title == "Garden"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"main_valve": "switch.main"}
+    )
+    assert result["step_id"] == "configuration_meter"
+    assert result["last_step"] is False
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"meter_type": "pulse"}
+    )
+    assert result["step_id"] == "configuration_meter_details"
+    assert result["last_step"] is True
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "meter_entity": "sensor.pulses",
+            "pulse_factor_mode": "pulses_per_liter",
+            "pulse_factor": 4,
+        },
+    )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.title == "Back garden"
+    assert entry.data["main_valve"] == "switch.main"
+    assert entry.data["meter_type"] == "pulse"
+    assert entry.data["meter_entity"] == "sensor.pulses"
+    assert entry.data["liters_per_pulse"] == 0.25
     assert "needs_reconfiguration" not in entry.data
 
 
-async def test_only_complete_installation_reconfiguration_clears_migration_flag(
+async def test_configuration_is_prominent_and_blocks_activation_during_reconfiguration(
     hass: HomeAssistant,
 ) -> None:
-    """Keep the aggregate migration lock through every individual settings section."""
+    """Keep activation unavailable until the complete wizard clears the migration flag."""
     entry = await _create_v2_entry(hass)
     hass.config_entries.async_update_entry(
-        entry, data={**entry.data, "needs_reconfiguration": True}
+        entry,
+        data={
+            **entry.data,
+            "operation_enabled": False,
+            "automation_enabled": False,
+            "needs_reconfiguration": True,
+        },
     )
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["menu_options"][0] == "installation_reconfiguration"
+    assert result["menu_options"][0] == "configuration"
+    assert "activate_installation" not in result["menu_options"]
+    assert "enable_automatic" not in result["menu_options"]
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "basics"}
+        result["flow_id"], {"next_step_id": "configuration"}
     )
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"name": "Still locked"}
+        result["flow_id"], {"name": "Reconfigured"}
     )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     assert entry.data["needs_reconfiguration"] is True
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "installation_reconfiguration"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"name": "Reconfigured", "meter_type": "none"}
+        result["flow_id"], {"meter_type": "none"}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert "needs_reconfiguration" not in entry.data
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert "installation_reconfiguration" not in result["menu_options"]
-    assert "v2_installation" not in result["menu_options"]
+    assert "activate_installation" in result["menu_options"]
+    assert "enable_automatic" in result["menu_options"]
 
 
 async def test_meter_cannot_be_removed_from_volume_controlled_installation(
@@ -260,11 +305,16 @@ async def test_meter_cannot_be_removed_from_volume_controlled_installation(
     )
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "meter"}
+        result["flow_id"], {"next_step_id": "configuration"}
     )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"name": "Garden"}
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"meter_type": "none"}
     )
+    assert result["last_step"] is False
     assert result["errors"] == {"base": "meter_required_by_volume_zones"}
 
 
@@ -317,31 +367,30 @@ async def test_zone_reconfigure_preserves_calibration_and_removes_only_invalid_v
 async def test_installation_actions_and_physical_meter_correction_use_manager(
     hass: HomeAssistant,
 ) -> None:
-    """Keep documented runtime actions available from installation settings."""
+    """Run one manager command per action and expose only human-readable results."""
     entry = await _create_v2_entry(hass, meter_type="cumulative")
     manager = Mock()
-    manager.snapshot.return_value = SimpleNamespace(operation_enabled=True, automation_enabled=True)
+    manager.snapshot.return_value = _snapshot()
     manager.automatic_execution_active.return_value = False
-    manager.async_set_installation_operation = AsyncMock(return_value={"operation_enabled": True})
+    manager.async_set_installation_operation = AsyncMock(return_value={"operation_enabled": False})
     manager.async_set_installation_automation = AsyncMock(
         return_value={"automation_enabled": False}
     )
     manager.async_correct_physical_meter = AsyncMock(
-        return_value={"physical_total_liters": 1234.5, "correction_liters": 4.5}
+        return_value={"new_total_liters": 1234.5, "difference_liters": 4.5}
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "installation_releases"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"operation_enabled": True, "automation_enabled": False}
+        result["flow_id"], {"next_step_id": "disable_automatic"}
     )
     assert result["step_id"] == "action_result"
+    assert "automation_enabled" not in result["description_placeholders"]["result"]
     manager.async_set_installation_automation.assert_awaited_once_with(
         enabled=False, stop_active=False
     )
+    manager.async_set_installation_operation.assert_not_awaited()
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
@@ -354,4 +403,129 @@ async def test_installation_actions_and_physical_meter_correction_use_manager(
     manager.async_correct_physical_meter.assert_awaited_once_with(
         physical_total_liters=1234.5,
         reason="Physical reading",
+    )
+    assert result["description_placeholders"]["result"] == (
+        "Meter total corrected to 1234.5 L (change 4.5 L)."
+    )
+
+
+async def test_init_menu_tracks_release_and_safety_state(hass: HomeAssistant) -> None:
+    """Offer only actions that can change the current runtime state."""
+    entry = await _create_v2_entry(hass)
+    manager = Mock()
+    manager.snapshot.return_value = _snapshot(
+        operation_enabled=False,
+        automation_enabled=False,
+        installation_safety_lock="Leak detected",
+        status="safety_lock",
+    )
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert result["menu_options"] == [
+        "configuration",
+        "activate_installation",
+        "enable_automatic",
+        "replan",
+        "reset_safety",
+    ]
+    assert result["description_placeholders"] == {
+        "installation_status": "Safety lock",
+        "automatic_status": "Automatic irrigation disabled",
+    }
+
+
+async def test_replan_and_safety_actions_return_localized_summaries(
+    hass: HomeAssistant,
+) -> None:
+    """Summarize action outcomes without JSON or internal response keys."""
+    entry = await _create_v2_entry(hass)
+    manager = Mock()
+    manager.snapshot.return_value = _snapshot()
+    manager.async_plan_automatic = AsyncMock(
+        return_value={"created": 3, "replaced": 2, "removed": 1, "horizon_days": 14}
+    )
+    manager.async_emergency_stop = AsyncMock()
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "replan"}
+    )
+    assert result["description_placeholders"]["result"] == (
+        "Replanning completed: 3 created, 2 replaced, 1 removed."
+    )
+    manager.async_plan_automatic.assert_awaited_once_with()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "emergency_stop"}
+    )
+    assert "safety locked" in result["description_placeholders"]["result"]
+    manager.async_emergency_stop.assert_awaited_once_with()
+
+
+async def test_activation_and_lock_reset_call_only_the_selected_manager_action(
+    hass: HomeAssistant,
+) -> None:
+    """Keep activation, automatic release, and safety reset as separate actions."""
+    entry = await _create_v2_entry(hass)
+    manager = Mock()
+    manager.snapshot.return_value = _snapshot(operation_enabled=False, automation_enabled=False)
+    manager.async_set_installation_operation = AsyncMock(return_value={})
+    manager.async_set_installation_automation = AsyncMock(return_value={})
+    manager.async_reset_safety_lock = AsyncMock()
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "activate_installation"}
+    )
+    manager.async_set_installation_operation.assert_awaited_once_with(enabled=True)
+    manager.async_set_installation_automation.assert_not_awaited()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "enable_automatic"}
+    )
+    manager.async_set_installation_automation.assert_awaited_once_with(
+        enabled=True, stop_active=False
+    )
+
+    manager.snapshot.return_value = _snapshot(installation_safety_lock="Leak")
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "reset_safety"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"confirm_reset": True}
+    )
+    manager.async_reset_safety_lock.assert_awaited_once_with()
+    assert "reset" in result["description_placeholders"]["result"]
+
+
+async def test_action_results_and_status_are_german_when_ha_is_german(
+    hass: HomeAssistant,
+) -> None:
+    """Localize backend-provided placeholders instead of exposing response keys."""
+    hass.config.language = "de"
+    entry = await _create_v2_entry(hass)
+    manager = Mock()
+    manager.snapshot.return_value = _snapshot(status="disabled", operation_enabled=False)
+    manager.async_plan_automatic = AsyncMock(
+        return_value={"created": 2, "replaced": 1, "removed": 3}
+    )
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["description_placeholders"] == {
+        "installation_status": "Anlage deaktiviert",
+        "automatic_status": "erteilt",
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "replan"}
+    )
+    assert result["description_placeholders"]["result"] == (
+        "Bewässerungsplanung neu berechnet: 2 erstellt, 1 ersetzt, 3 entfernt."
     )

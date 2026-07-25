@@ -754,8 +754,12 @@ async def test_v2_config_edits_do_not_overwrite_disabled_durable_releases(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "meter"}
+        result["flow_id"], {"next_step_id": "configuration"}
     )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"name": "Garden"}
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     assert "automation_enabled" not in {str(key) for key in result["data_schema"].schema}
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"meter_type": "none"}
@@ -1121,14 +1125,18 @@ async def test_options_block_meter_removal_while_volume_zone_exists(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "meter"}
+        result["flow_id"], {"next_step_id": "configuration"}
     )
-    assert result["step_id"] == "meter"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"name": "Garden"}
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    assert result["step_id"] == "configuration_meter"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"meter_type": "none"}
     )
 
-    assert result["step_id"] == "meter"
+    assert result["step_id"] == "configuration_meter"
     assert result["errors"] == {"base": "meter_required_by_volume_zones"}
     await hass.async_block_till_done()
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -1184,26 +1192,23 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
 
     options = await hass.config_entries.options.async_init(entry.entry_id)
     assert options["menu_options"] == [
-        "installation_reconfiguration",
-        "basics",
-        "main_valve",
-        "meter",
-        "installation_releases",
+        "configuration",
         "replan",
         "emergency_stop",
-        "reset_safety",
     ]
     options = await hass.config_entries.options.async_configure(
-        options["flow_id"], {"next_step_id": "installation_reconfiguration"}
+        options["flow_id"], {"next_step_id": "configuration"}
     )
     installation_fields = {str(key) for key in options["data_schema"].schema}
     assert {"operation_enabled", "automation_enabled"}.isdisjoint(installation_fields)
     options = await hass.config_entries.options.async_configure(
         options["flow_id"],
-        {
-            "name": "Migrated garden",
-            "meter_type": "none",
-        },
+        {"name": "Migrated garden"},
+    )
+    options = await hass.config_entries.options.async_configure(options["flow_id"], {})
+    assert entry.data["needs_reconfiguration"] is True
+    options = await hass.config_entries.options.async_configure(
+        options["flow_id"], {"meter_type": "none"}
     )
     assert options["type"] is FlowResultType.CREATE_ENTRY
     assert "needs_reconfiguration" not in entry.data
@@ -1251,13 +1256,19 @@ async def test_v2_settings_actions_control_releases_emergency_reset_and_replan(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "installation_releases"}
+        result["flow_id"], {"next_step_id": "deactivate_installation"}
     )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"operation_enabled": False, "automation_enabled": False}
+    assert result["description_placeholders"]["result"] == (
+        "The irrigation installation was deactivated and active irrigation was stopped."
     )
-    assert '"operation_enabled": false' in result["description_placeholders"]["result"]
     assert manager.snapshot().operation_enabled is False
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "disable_automatic"}
+    )
+    assert result["description_placeholders"]["result"] == ("Automatic irrigation was disabled.")
+    assert manager.snapshot().automation_enabled is False
 
     await manager.async_set_installation_operation(enabled=True)
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -1286,7 +1297,7 @@ async def test_v2_settings_actions_control_releases_emergency_reset_and_replan(
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "replan"}
     )
-    assert '"horizon_days": 14' in result["description_placeholders"]["result"]
+    assert result["description_placeholders"]["result"].startswith("Replanning completed:")
 
 
 @pytest.mark.parametrize(
@@ -1319,10 +1330,10 @@ async def test_automation_disable_actions_ask_how_to_handle_active_execution(
         if scope == "installation":
             result = await hass.config_entries.options.async_init(entry.entry_id)
             result = await hass.config_entries.options.async_configure(
-                result["flow_id"], {"next_step_id": "installation_releases"}
+                result["flow_id"], {"next_step_id": "disable_automatic"}
             )
             configure = hass.config_entries.options.async_configure
-            expected_step = "installation_automation_disable"
+            expected_step = "disable_automatic"
         else:
             result = await hass.config_entries.subentries.async_init(
                 (entry.entry_id, "zone"),
@@ -1333,9 +1344,9 @@ async def test_automation_disable_actions_ask_how_to_handle_active_execution(
             )
             configure = hass.config_entries.subentries.async_configure
             expected_step = "automation_disable"
-        result = await configure(
-            result["flow_id"], {"operation_enabled": True, "automation_enabled": False}
-        )
+            result = await configure(
+                result["flow_id"], {"operation_enabled": True, "automation_enabled": False}
+            )
         assert result["step_id"] == expected_step
         result = await configure(result["flow_id"], {"active_execution": choice})
 
@@ -1361,10 +1372,7 @@ async def test_automation_disable_does_not_ask_without_relevant_active_execution
     if scope == "installation":
         result = await hass.config_entries.options.async_init(entry.entry_id)
         result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"next_step_id": "installation_releases"}
-        )
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"operation_enabled": True, "automation_enabled": False}
+            result["flow_id"], {"next_step_id": "disable_automatic"}
         )
         assert result["step_id"] == "action_result"
     else:
@@ -1381,7 +1389,7 @@ async def test_automation_disable_does_not_ask_without_relevant_active_execution
         assert result["type"] is FlowResultType.ABORT
 
     assert result.get("step_id") not in {
-        "installation_automation_disable",
+        "disable_automatic",
         "automation_disable",
     }
 

@@ -57,6 +57,7 @@ export const editorStyles = css`
   section { display: grid; gap: 10px; }
   h3 { margin: 0; font-size: 1rem; }
   label.selector { display: grid; gap: 5px; color: var(--secondary-text-color); }
+  .error { color: var(--error-color); font-size: 0.875rem; }
   label.selector small { line-height: 1.35; }
   .checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 6px 12px; }
   .check { display: flex; align-items: center; gap: 8px; min-height: 34px; }

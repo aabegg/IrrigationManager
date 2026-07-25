@@ -1,6 +1,6 @@
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 
-import { anchorChoices, fireConfigChanged } from "./helpers";
+import { anchorEntityIds, DOMAIN, fireConfigChanged, isAnchor } from "./helpers";
 import { localize } from "./localize";
 import { editorStyles } from "./styles";
 import type { HomeAssistant, OverviewCardConfig, ZoneCardConfig } from "./types";
@@ -22,16 +22,24 @@ abstract class BaseEditor<T extends CardConfig> extends LitElement {
   }
 
   protected updateValue(key: keyof T, value: unknown): void {
-    const next = { ...this._config, [key]: value || undefined };
-    if (!value) delete next[key];
+    const next = { ...this._config, [key]: value };
+    if (value === undefined || value === "") delete next[key];
     this._config = next;
     fireConfigChanged(this, next);
+  }
+
+  private valueChanged(event: CustomEvent<{ value: unknown }>): void {
+    const value = event.detail?.value;
+    this.updateValue("entity", typeof value === "string" ? value : undefined);
   }
 
   protected anchorSelector(
     kind: "installation" | "zone",
   ): TemplateResult {
-    const choices = anchorChoices(this.hass, kind);
+    const selected = this._config.entity
+      ? this.hass.states[this._config.entity]
+      : undefined;
+    const invalid = Boolean(this._config.entity && !isAnchor(selected, kind));
     return html`
       <label class="selector">
         <span>${localize(this.hass, kind)}</span>
@@ -39,10 +47,24 @@ abstract class BaseEditor<T extends CardConfig> extends LitElement {
           data-testid="anchor-selector"
           .hass=${this.hass}
           .value=${this._config.entity ?? ""}
-          .selector=${{ entity: { include_entities: choices.map((choice) => choice.value) } }}
-          @value-changed=${(event: CustomEvent<{ value?: string }>) =>
-            this.updateValue("entity", event.detail.value)}
+          .selector=${{
+            entity: {
+              include_entities: anchorEntityIds(this.hass, kind),
+              filter: {
+                integration: DOMAIN,
+                domain: "sensor",
+                device_class: "enum",
+              },
+            },
+          }}
+          @value-changed=${this.valueChanged}
         ></ha-selector>
+        ${invalid
+          ? html`<span class="error" role="alert">${localize(
+              this.hass,
+              kind === "installation" ? "invalid_installation_anchor" : "invalid_zone_anchor",
+            )}</span>`
+          : nothing}
       </label>
     `;
   }

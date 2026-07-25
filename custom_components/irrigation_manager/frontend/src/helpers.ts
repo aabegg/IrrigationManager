@@ -83,9 +83,13 @@ export function resolveZoneConfig(
   return resolved;
 }
 
-function isAnchor(state: HassEntity, kind: "installation" | "zone"): boolean {
+export function isAnchor(
+  state: HassEntity | undefined,
+  kind: "installation" | "zone",
+): state is HassEntity {
+  if (!state || !state.entity_id.startsWith("sensor.")) return false;
   const configEntryId = state.attributes.config_entry_id;
-  if (typeof configEntryId !== "string") return false;
+  if (typeof configEntryId !== "string" || !configEntryId) return false;
   if (kind === "installation") {
     if (typeof state.attributes.zone_subentry_id === "string") return false;
     return entityMapAttribute(state, "card_entities").status === state.entity_id
@@ -93,27 +97,20 @@ function isAnchor(state: HassEntity, kind: "installation" | "zone"): boolean {
       : false;
   }
   const zoneSubentryId = state.attributes.zone_subentry_id;
-  if (typeof zoneSubentryId !== "string") return false;
+  if (typeof zoneSubentryId !== "string" || !zoneSubentryId) return false;
   const roles = entityMapAttribute(state, "card_entities");
   return roles.anchor
     ? roles.anchor === state.entity_id
     : roles.zone === state.entity_id;
 }
 
-export function anchorChoices(
+export function anchorEntityIds(
   hass: HomeAssistant,
   kind: "installation" | "zone",
-): Array<{ value: string; label: string }> {
+): string[] {
   return Object.values(hass.states)
     .filter((state) => isAnchor(state, kind))
-    .map((state) => ({
-      value: state.entity_id,
-      label:
-        (typeof state.attributes.card_name === "string" && state.attributes.card_name) ||
-        state.attributes.friendly_name ||
-        state.entity_id,
-    }))
-    .sort((left, right) => left.label.localeCompare(right.label, hass.language));
+    .map((state) => state.entity_id);
 }
 
 export function entity(hass: HomeAssistant, entityId?: string): HassEntity | undefined {

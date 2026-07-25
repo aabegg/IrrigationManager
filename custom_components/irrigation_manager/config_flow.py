@@ -1,7 +1,6 @@
 """Version 2 config and zone subentry flows for Irrigation Manager."""
 
 import asyncio
-import json
 import math
 from collections.abc import Mapping, Sequence
 from datetime import time
@@ -167,14 +166,6 @@ def _meter_details_schema(meter_type: str) -> vol.Schema:
                 ),
             }
         )
-    return vol.Schema(schema)
-
-
-def _installation_reconfiguration_schema() -> vol.Schema:
-    """Return the complete migrated-installation reconfiguration form."""
-    schema = dict(_installation_basics_schema().schema)
-    schema.update(_installation_main_valve_schema().schema)
-    schema.update(_meter_type_schema().schema)
     return vol.Schema(schema)
 
 
@@ -874,195 +865,154 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
     def __init__(self) -> None:
         """Initialize action state."""
         self._action_result = ""
-        self._pending_release_input: dict[str, bool] | None = None
         self._meter_type = METER_TYPE_NONE
         self._pending_installation: dict[str, object] = {}
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Expose v2 installation sections directly."""
-        options = [
-            "basics",
-            "main_valve",
-            "meter",
-            "installation_releases",
-            "replan",
-            "emergency_stop",
-            "reset_safety",
-        ]
-        if self.config_entry.data.get(CONF_NEEDS_RECONFIGURATION) is True:
-            options.insert(0, "installation_reconfiguration")
+        """Expose configuration and actions appropriate to the current state."""
+        manager = self._manager()
+        snapshot = manager.snapshot() if manager is not None else None
+        operation_enabled = (
+            snapshot.operation_enabled
+            if snapshot is not None
+            else bool(self.config_entry.data.get(CONF_OPERATION_ENABLED, True))
+        )
+        automation_enabled = (
+            snapshot.automation_enabled
+            if snapshot is not None
+            else bool(self.config_entry.data.get(CONF_AUTOMATION_ENABLED, True))
+        )
+        locked = (
+            snapshot is not None and getattr(snapshot, "installation_safety_lock", None) is not None
+        )
+        needs_reconfiguration = self.config_entry.data.get(CONF_NEEDS_RECONFIGURATION) is True
+        options = ["configuration"]
+        if operation_enabled:
+            options.append("deactivate_installation")
+        elif not needs_reconfiguration:
+            options.append("activate_installation")
+        if automation_enabled:
+            options.append("disable_automatic")
+        elif not needs_reconfiguration:
+            options.append("enable_automatic")
+        options.extend(["replan", "reset_safety" if locked else "emergency_stop"])
         if self.config_entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
             options.append("physical_meter_correction")
-        return self.async_show_menu(step_id="init", menu_options=options)
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=options,
+            description_placeholders={
+                "installation_status": self._localized_status(
+                    "needs_reconfiguration"
+                    if needs_reconfiguration
+                    else (
+                        getattr(snapshot, "status", "unavailable")
+                        if snapshot is not None
+                        else "unavailable"
+                    )
+                ),
+                "automatic_status": self._localized_status(
+                    "automatic_enabled" if automation_enabled else "automatic_not_enabled"
+                ),
+            },
+        )
 
-    async def async_step_basics(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Edit the installation name."""
+    async def async_step_configuration(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Start the atomic installation configuration wizard with its name."""
         schema = _installation_basics_schema()
         if user_input is None:
+            self._pending_installation = dict(self.config_entry.data)
             return self.async_show_form(
-                step_id="basics",
-                data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.data),
+                step_id="configuration",
+                data_schema=self.add_suggested_values_to_schema(schema, self._pending_installation),
+                last_step=False,
             )
-        return self._update_installation(
-            {CONF_NAME: user_input[CONF_NAME]}, title=str(user_input[CONF_NAME])
-        )
+        self._pending_installation[CONF_NAME] = user_input[CONF_NAME]
+        return await self.async_step_configuration_main_valve()
 
-    async def async_step_main_valve(
+    async def async_step_configuration_main_valve(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit the optional main valve independently."""
+        """Explain and collect the optional shared main valve."""
         schema = _installation_main_valve_schema()
-        if user_input is None:
-            return self.async_show_form(
-                step_id="main_valve",
-                data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.data),
-            )
-        data = {CONF_MAIN_VALVE: user_input.get(CONF_MAIN_VALVE)}
-        candidate = _owned_endpoints(data, ())
-        async with _ACTUATOR_OWNERSHIP_LOCK:
-            if _ownership_conflicts(
-                self.hass,
-                candidate,
-                excluding_entry_id=self.config_entry.entry_id,
-                exclude_installation=True,
-            ):
-                return self.async_abort(reason="actuator_already_owned")
-            return self._update_installation(data)
-
-    async def async_step_meter(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Edit the optional water meter independently."""
-        schema = _meter_type_schema()
-        if user_input is None:
-            return self.async_show_form(
-                step_id="meter",
-                data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.data),
-            )
-        self._meter_type = str(user_input[CONF_METER_TYPE])
-        if self._meter_type == METER_TYPE_NONE and self._has_volume_zones():
-            return self.async_show_form(
-                step_id="meter",
-                data_schema=self.add_suggested_values_to_schema(schema, user_input),
-                errors={"base": "meter_required_by_volume_zones"},
-            )
-        if self._meter_type == METER_TYPE_NONE:
-            return self._update_installation(
-                {CONF_METER_TYPE: METER_TYPE_NONE}, remove_meter_fields=True
-            )
-        return await self.async_step_meter_details()
-
-    async def async_step_meter_details(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Edit only fields relevant to the selected water meter."""
-        schema = _meter_details_schema(self._meter_type)
-        if user_input is None:
-            suggested = dict(self.config_entry.data)
-            if self._meter_type == METER_TYPE_PULSE:
-                suggested["pulse_factor_mode"] = "liters_per_pulse"
-                suggested["pulse_factor"] = self.config_entry.data.get(CONF_LITERS_PER_PULSE)
-            return self.async_show_form(
-                step_id="meter_details",
-                data_schema=self.add_suggested_values_to_schema(schema, suggested),
-            )
-        meter, error = _meter_data({CONF_METER_TYPE: self._meter_type, **user_input})
-        if error is not None:
-            return self.async_show_form(
-                step_id="meter_details",
-                data_schema=self.add_suggested_values_to_schema(schema, user_input),
-                errors={"base": error},
-            )
-        return self._update_installation(meter, remove_meter_fields=True)
-
-    async def async_step_installation_reconfiguration(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Validate every aggregate installation field before clearing migration state."""
-        if self.config_entry.data.get(CONF_NEEDS_RECONFIGURATION) is not True:
-            return self.async_abort(reason="reconfiguration_not_required")
-        schema = _installation_reconfiguration_schema()
-        if user_input is None:
-            return self.async_show_form(
-                step_id="installation_reconfiguration",
-                data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.data),
-            )
-        if user_input[CONF_METER_TYPE] == METER_TYPE_NONE and self._has_volume_zones():
-            return self.async_show_form(
-                step_id="installation_reconfiguration",
-                data_schema=self.add_suggested_values_to_schema(schema, user_input),
-                errors={"base": "meter_required_by_volume_zones"},
-            )
-        self._meter_type = str(user_input[CONF_METER_TYPE])
-        self._pending_installation = {
-            CONF_NAME: user_input[CONF_NAME],
-            CONF_MAIN_VALVE: user_input.get(CONF_MAIN_VALVE),
-        }
-        if self._meter_type == METER_TYPE_NONE:
-            return await self._finish_installation_reconfiguration(
-                {CONF_METER_TYPE: METER_TYPE_NONE}
-            )
-        return await self.async_step_installation_reconfiguration_meter()
-
-    async def async_step_installation_reconfiguration_meter(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Collect the selected meter's required fields during aggregate reconfiguration."""
-        schema = _meter_details_schema(self._meter_type)
-        if user_input is None:
-            suggested = dict(self.config_entry.data)
-            if self._meter_type == METER_TYPE_PULSE:
-                suggested["pulse_factor_mode"] = "liters_per_pulse"
-                suggested["pulse_factor"] = self.config_entry.data.get(CONF_LITERS_PER_PULSE)
-            return self.async_show_form(
-                step_id="installation_reconfiguration_meter",
-                data_schema=self.add_suggested_values_to_schema(schema, suggested),
-            )
-        meter, error = _meter_data({CONF_METER_TYPE: self._meter_type, **user_input})
-        if error is not None:
-            return self.async_show_form(
-                step_id="installation_reconfiguration_meter",
-                data_schema=self.add_suggested_values_to_schema(schema, user_input),
-                errors={"base": error},
-            )
-        return await self._finish_installation_reconfiguration(meter)
-
-    async def _finish_installation_reconfiguration(
-        self, meter: Mapping[str, object]
-    ) -> ConfigFlowResult:
-        data = {**self._pending_installation, **meter}
-        candidate = _owned_endpoints(data, ())
-        async with _ACTUATOR_OWNERSHIP_LOCK:
-            if _ownership_conflicts(
-                self.hass,
-                candidate,
-                excluding_entry_id=self.config_entry.entry_id,
-                exclude_installation=True,
-            ):
-                return self.async_abort(reason="actuator_already_owned")
-            return self._update_installation(
-                data,
-                title=str(data[CONF_NAME]),
-                remove_meter_fields=True,
-                clear_reconfiguration=True,
-            )
-
-    def _update_installation(
-        self,
-        changes: Mapping[str, object],
-        *,
-        title: str | None = None,
-        remove_meter_fields: bool = False,
-        clear_reconfiguration: bool = False,
-    ) -> ConfigFlowResult:
-        data = dict(self.config_entry.data)
-        if remove_meter_fields:
-            for key in (CONF_METER_ENTITY, CONF_LITERS_PER_PULSE):
-                data.pop(key, None)
-        data.update(changes)
-        if clear_reconfiguration:
-            data.pop(CONF_NEEDS_RECONFIGURATION, None)
-        self.hass.config_entries.async_update_entry(
-            self.config_entry, title=title or self.config_entry.title, data=data
+        if user_input is not None:
+            self._pending_installation[CONF_MAIN_VALVE] = user_input.get(CONF_MAIN_VALVE)
+            return await self.async_step_configuration_meter()
+        return self.async_show_form(
+            step_id="configuration_main_valve",
+            data_schema=self.add_suggested_values_to_schema(schema, self._pending_installation),
+            last_step=False,
         )
+
+    async def async_step_configuration_meter(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Explain and collect the water measurement type."""
+        schema = _meter_type_schema()
+        if user_input is not None:
+            self._meter_type = str(user_input[CONF_METER_TYPE])
+            if self._meter_type == METER_TYPE_NONE and self._has_volume_zones():
+                return self.async_show_form(
+                    step_id="configuration_meter",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "meter_required_by_volume_zones"},
+                    last_step=False,
+                )
+            self._pending_installation[CONF_METER_TYPE] = self._meter_type
+            if self._meter_type == METER_TYPE_NONE:
+                return await self._finish_configuration({CONF_METER_TYPE: METER_TYPE_NONE})
+            return await self.async_step_configuration_meter_details()
+        return self.async_show_form(
+            step_id="configuration_meter",
+            data_schema=self.add_suggested_values_to_schema(schema, self._pending_installation),
+            last_step=False,
+        )
+
+    async def async_step_configuration_meter_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect only fields relevant to the selected water meter."""
+        schema = _meter_details_schema(self._meter_type)
+        if user_input is None:
+            suggested = dict(self._pending_installation)
+            if self._meter_type == METER_TYPE_PULSE:
+                suggested["pulse_factor_mode"] = "liters_per_pulse"
+                suggested["pulse_factor"] = self._pending_installation.get(CONF_LITERS_PER_PULSE)
+            return self.async_show_form(
+                step_id="configuration_meter_details",
+                data_schema=self.add_suggested_values_to_schema(schema, suggested),
+                last_step=True,
+            )
+        meter, error = _meter_data({CONF_METER_TYPE: self._meter_type, **user_input})
+        if error is not None:
+            return self.async_show_form(
+                step_id="configuration_meter_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+                last_step=True,
+            )
+        return await self._finish_configuration(meter)
+
+    async def _finish_configuration(self, meter: Mapping[str, object]) -> ConfigFlowResult:
+        data = {**self._pending_installation, **meter}
+        for key in (CONF_METER_ENTITY, CONF_LITERS_PER_PULSE):
+            if data[CONF_METER_TYPE] == METER_TYPE_NONE or key not in meter:
+                data.pop(key, None)
+        data.pop(CONF_NEEDS_RECONFIGURATION, None)
+        candidate = _owned_endpoints(data, ())
+        async with _ACTUATOR_OWNERSHIP_LOCK:
+            if _ownership_conflicts(
+                self.hass,
+                candidate,
+                excluding_entry_id=self.config_entry.entry_id,
+                exclude_installation=True,
+            ):
+                return self.async_abort(reason="actuator_already_owned")
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, title=str(data[CONF_NAME]), data=data
+            )
         return self.async_create_entry(data={})
 
     def _has_volume_zones(self) -> bool:
@@ -1075,68 +1025,134 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         manager = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
         return cast(IrrigationManager, manager) if manager is not None else None
 
-    async def async_step_installation_releases(
+    def _localized_status(self, status: str) -> str:
+        """Return a compact localized status for menu placeholders."""
+        translations = {
+            "de": {
+                "idle": "Bereit",
+                "watering": "Bewässerung läuft",
+                "error": "Fehler",
+                "safety_lock": "Sicherheitssperre",
+                "emergency_stop": "Not-Aus",
+                "disabled": "Anlage deaktiviert",
+                "automatic_disabled": "Automatikfreigabe entzogen",
+                "needs_reconfiguration": "Neukonfiguration erforderlich",
+                "automatic_enabled": "erteilt",
+                "automatic_not_enabled": "entzogen",
+                "unavailable": "nicht verfügbar",
+            },
+            "en": {
+                "idle": "Ready",
+                "watering": "Irrigation active",
+                "error": "Error",
+                "safety_lock": "Safety lock",
+                "emergency_stop": "Emergency stop",
+                "disabled": "Installation deactivated",
+                "automatic_disabled": "Automatic irrigation disabled",
+                "needs_reconfiguration": "Reconfiguration required",
+                "automatic_enabled": "enabled",
+                "automatic_not_enabled": "Automatic irrigation disabled",
+                "unavailable": "unavailable",
+            },
+        }
+        language = "de" if self.hass.config.language == "de" else "en"
+        return translations[language].get(status, status.replace("_", " "))
+
+    def _localized_result(self, key: str, **values: object) -> str:
+        """Render a localized human action result without exposing technical data."""
+        messages = {
+            "de": {
+                "activated": "Die Betriebsfreigabe der Bewässerungsanlage wurde erteilt.",
+                "deactivated": (
+                    "Die Betriebsfreigabe der Bewässerungsanlage wurde entzogen; "
+                    "der aktive Bewässerungsvorgang wurde beendet."
+                ),
+                "automatic_enabled": (
+                    "Die Automatikfreigabe wurde erteilt und die Bewässerungsplanung neu berechnet."
+                ),
+                "automatic_disabled": "Die Automatikfreigabe wurde entzogen.",
+                "automatic_disabled_stopped": (
+                    "Die Automatikfreigabe wurde entzogen und der aktive automatische "
+                    "Bewässerungsvorgang gestoppt."
+                ),
+                "emergency": "Not-Aus wurde ausgelöst. Die Anlage ist jetzt sicherheitsgesperrt.",
+                "reset": "Die Sicherheitssperre wurde nach bestätigter Prüfung zurückgesetzt.",
+                "replan": (
+                    "Bewässerungsplanung neu berechnet: {created} erstellt, "
+                    "{replaced} ersetzt, {removed} entfernt."
+                ),
+                "meter": "Zählerstand korrigiert: {total} l (Änderung {difference} l).",
+            },
+            "en": {
+                "activated": "The irrigation installation was activated.",
+                "deactivated": (
+                    "The irrigation installation was deactivated and active irrigation was stopped."
+                ),
+                "automatic_enabled": "Automatic irrigation was enabled and replanned.",
+                "automatic_disabled": "Automatic irrigation was disabled.",
+                "automatic_disabled_stopped": (
+                    "Automatic irrigation was disabled and the active automatic execution was "
+                    "stopped."
+                ),
+                "emergency": "Emergency stop was activated. The installation is now safety locked.",
+                "reset": "The safety lock was reset after the inspection was confirmed.",
+                "replan": (
+                    "Replanning completed: {created} created, {replaced} replaced, "
+                    "{removed} removed."
+                ),
+                "meter": "Meter total corrected to {total} L (change {difference} L).",
+            },
+        }
+        language = "de" if self.hass.config.language == "de" else "en"
+        return messages[language][key].format(**values)
+
+    async def async_step_activate_installation(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Update both durable installation releases."""
+        """Activate installation operation."""
         manager = self._manager()
         if manager is None:
             return self.async_abort(reason="installation_not_loaded")
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_OPERATION_ENABLED): BooleanSelector(),
-                vol.Required(CONF_AUTOMATION_ENABLED): BooleanSelector(),
-            }
-        )
-        if user_input is None:
-            snapshot = manager.snapshot()
-            return self.async_show_form(
-                step_id="installation_releases",
-                data_schema=self.add_suggested_values_to_schema(
-                    schema,
-                    {
-                        CONF_OPERATION_ENABLED: snapshot.operation_enabled,
-                        CONF_AUTOMATION_ENABLED: snapshot.automation_enabled,
-                    },
-                ),
-            )
-        self._pending_release_input = {
-            CONF_OPERATION_ENABLED: bool(user_input[CONF_OPERATION_ENABLED]),
-            CONF_AUTOMATION_ENABLED: bool(user_input[CONF_AUTOMATION_ENABLED]),
-        }
-        if (
-            not self._pending_release_input[CONF_AUTOMATION_ENABLED]
-            and manager.automatic_execution_active()
-        ):
-            return await self.async_step_installation_automation_disable()
-        return await self._apply_installation_releases(stop_active=False)
+        await manager.async_set_installation_operation(enabled=True)
+        return await self._show_action_result(self._localized_result("activated"))
 
-    async def async_step_installation_automation_disable(
+    async def async_step_deactivate_installation(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Ask whether an active automatic execution should stop or finish."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="installation_automation_disable",
-                data_schema=_active_automatic_schema(),
-            )
-        return await self._apply_installation_releases(
-            stop_active=user_input["active_execution"] == "stop"
-        )
-
-    async def _apply_installation_releases(self, *, stop_active: bool) -> ConfigFlowResult:
+        """Deactivate installation operation."""
         manager = self._manager()
-        pending = self._pending_release_input
-        if manager is None or pending is None:
-            return self.async_abort(reason="release_change_not_pending")
-        self._pending_release_input = None
-        operation = await manager.async_set_installation_operation(
-            enabled=pending[CONF_OPERATION_ENABLED]
-        )
-        automation = await manager.async_set_installation_automation(
-            enabled=pending[CONF_AUTOMATION_ENABLED], stop_active=stop_active
-        )
-        return await self._show_action_result({**operation, **automation})
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        await manager.async_set_installation_operation(enabled=False)
+        return await self._show_action_result(self._localized_result("deactivated"))
+
+    async def async_step_enable_automatic(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Enable automatic irrigation."""
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        await manager.async_set_installation_automation(enabled=True, stop_active=False)
+        return await self._show_action_result(self._localized_result("automatic_enabled"))
+
+    async def async_step_disable_automatic(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Disable automatic irrigation, asking how to handle an active execution."""
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="installation_not_loaded")
+        if user_input is None and manager.automatic_execution_active():
+            return self.async_show_form(
+                step_id="disable_automatic",
+                data_schema=_active_automatic_schema(),
+                last_step=True,
+            )
+        stop_active = bool(user_input and user_input["active_execution"] == "stop")
+        await manager.async_set_installation_automation(enabled=False, stop_active=stop_active)
+        result_key = "automatic_disabled_stopped" if stop_active else "automatic_disabled"
+        return await self._show_action_result(self._localized_result(result_key))
 
     async def async_step_emergency_stop(
         self, user_input: dict[str, Any] | None = None
@@ -1146,7 +1162,7 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         if manager is None:
             return self.async_abort(reason="installation_not_loaded")
         await manager.async_emergency_stop()
-        return await self._show_action_result({"emergency_stop": True})
+        return await self._show_action_result(self._localized_result("emergency"))
 
     async def async_step_reset_safety(
         self, user_input: dict[str, Any] | None = None
@@ -1163,14 +1179,22 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         if manager is None:
             return self.async_abort(reason="installation_not_loaded")
         await manager.async_reset_safety_lock()
-        return await self._show_action_result({"safety_lock": "cleared"})
+        return await self._show_action_result(self._localized_result("reset"))
 
     async def async_step_replan(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Recalculate unstarted automatic irrigation orders."""
         manager = self._manager()
         if manager is None:
             return self.async_abort(reason="installation_not_loaded")
-        return await self._show_action_result(await manager.async_plan_automatic())
+        report = await manager.async_plan_automatic()
+        return await self._show_action_result(
+            self._localized_result(
+                "replan",
+                created=report.get("created", 0),
+                replaced=report.get("replaced", 0),
+                removed=report.get("removed", 0),
+            )
+        )
 
     async def async_step_physical_meter_correction(
         self, user_input: dict[str, Any] | None = None
@@ -1208,10 +1232,16 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                 data_schema=self.add_suggested_values_to_schema(schema, user_input),
                 errors={"base": "meter_correction_failed"},
             )
-        return await self._show_action_result(result)
+        return await self._show_action_result(
+            self._localized_result(
+                "meter",
+                total=result.get("new_total_liters", user_input["physical_total_liters"]),
+                difference=result.get("difference_liters", 0),
+            )
+        )
 
-    async def _show_action_result(self, result: Mapping[str, object]) -> ConfigFlowResult:
-        self._action_result = json.dumps(result, ensure_ascii=True, sort_keys=True)
+    async def _show_action_result(self, result: str) -> ConfigFlowResult:
+        self._action_result = result
         return await self.async_step_action_result()
 
     async def async_step_action_result(

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.0-rc8 - 2026-07-25
+
+### Changed
+
+- Replace separate installation settings with one atomic guided wizard for the name,
+  optional main valve, and conditional water-meter configuration.
+- Show installation actions according to the current operation, automatic-release, and
+  safety-lock state, with concise localized status and result messages.
+- Use native Home Assistant entity selectors in both card editors while limiting each
+  picker to valid installation or zone status anchors.
+
+### Fixed
+
+- Handle the selector's native value-change event and empty preview configurations so
+  installation and zone cards can be configured from the dashboard editor.
+- Explain invalid card anchors immediately instead of silently rendering incomplete data.
+- Require an explicit inspection confirmation with a visible warning before resetting an
+  installation safety lock.
+
 ## 0.1.0-rc7 - 2026-07-25
 
 ### Changed

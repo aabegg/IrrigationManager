@@ -55,16 +55,13 @@
   },
   "options": {
     "step": {
-      "init": {"title": "Einstellungen", "menu_options": {"installation_reconfiguration": "Erforderliche Neukonfiguration abschließen", "basics": "Anlagenname", "main_valve": "Hauptventil", "meter": "Wassermessung", "installation_releases": "Betriebsfreigaben", "replan": "Automatik neu planen", "emergency_stop": "Not-Aus", "reset_safety": "Sicherheitssperre zurücksetzen", "physical_meter_correction": "Zählerstand korrigieren"}},
-      "basics": {"title": "Anlagenname", "data": {"name": "Name"}},
-      "main_valve": {"title": "Optionales Hauptventil", "data": {"main_valve": "Hauptventil"}},
-      "meter": {"title": "Wassermessung", "description": "Wähle die Messart. Anschließend werden nur die dafür benötigten Felder abgefragt.", "data": {"meter_type": "Messart"}},
-      "meter_details": {"title": "Wasserzählerquelle", "description": "Wähle den Quellsensor. Rohe Impulszähler benötigen zusätzlich einen Umrechnungsfaktor, damit Zählimpulse in Liter umgerechnet werden können.", "data": {"meter_entity": "Zählerentität", "pulse_factor_mode": "Faktorformat", "pulse_factor": "Faktor"}},
-      "installation_reconfiguration": {"title": "Erforderliche Anlagen-Neukonfiguration", "description": "Prüfe die vollständige Anlage, bevor die Migrationssperre aufgehoben wird.", "data": {"name": "Name", "main_valve": "Hauptventil", "meter_type": "Messart"}},
-      "installation_reconfiguration_meter": {"title": "Wasserzählerquelle", "description": "Schließe die gewählte Zählerkonfiguration ab, bevor die Migrationssperre aufgehoben werden kann.", "data": {"meter_entity": "Zählerentität", "pulse_factor_mode": "Faktorformat", "pulse_factor": "Faktor"}},
-      "installation_releases": {"title": "Anlagenfreigaben", "data": {"operation_enabled": "Betriebsfreigabe", "automation_enabled": "Automatikfreigabe"}},
-      "installation_automation_disable": {"title": "Automatik sperren", "description": "Wähle, ob der aktive automatische Vorgang gestoppt oder abgeschlossen wird.", "data": {"active_execution": "Aktiver Vorgang"}},
-      "reset_safety": {"title": "Sicherheitssperre zurücksetzen", "data": {"confirm_reset": "Die Anlage wurde geprüft"}},
+      "init": {"title": "Einstellungen", "description": "Anlagenstatus: {installation_status}\nAutomatikfreigabe: {automatic_status}", "menu_options": {"configuration": "Anlage konfigurieren", "activate_installation": "Betriebsfreigabe erteilen", "deactivate_installation": "Betriebsfreigabe entziehen", "enable_automatic": "Automatikfreigabe erteilen", "disable_automatic": "Automatikfreigabe entziehen", "replan": "Bewässerungsplanung neu berechnen", "emergency_stop": "Not-Aus", "reset_safety": "Sicherheitssperre zurücksetzen", "physical_meter_correction": "Zählerstand korrigieren"}},
+      "configuration": {"title": "Anlage konfigurieren", "description": "Prüfe den Namen der Bewässerungsanlage. Alle Änderungen werden erst am Ende gemeinsam gespeichert.", "data": {"name": "Name"}},
+      "configuration_main_valve": {"title": "Optionales Hauptventil", "description": "Wähle das gemeinsame Hauptventil der Anlage. Lasse das Feld leer, wenn nur die einzelnen Zonenventile geschaltet werden.", "data": {"main_valve": "Hauptventil"}},
+      "configuration_meter": {"title": "Wassermessung", "description": "Wähle, ob Wasser nicht gemessen, über einen kumulativen Mengensensor oder über einen Impulszähler erfasst wird.", "data": {"meter_type": "Messart"}},
+      "configuration_meter_details": {"title": "Wasserzählerquelle", "description": "Wähle den Quellsensor. Impulszähler benötigen zusätzlich einen Umrechnungsfaktor in Liter.", "data": {"meter_entity": "Zählerentität", "pulse_factor_mode": "Faktorformat", "pulse_factor": "Faktor"}},
+      "disable_automatic": {"title": "Automatikfreigabe entziehen", "description": "Wähle, ob der aktive automatische Bewässerungsvorgang gestoppt oder abgeschlossen wird.", "data": {"active_execution": "Aktiver Bewässerungsvorgang"}},
+      "reset_safety": {"title": "Sicherheitssperre zurücksetzen", "description": "Setze die Sicherheitssperre erst zurück, nachdem die Bewässerungsanlage geprüft und die Ursache behoben wurde.", "data": {"confirm_reset": "Die Bewässerungsanlage wurde geprüft"}},
       "physical_meter_correction": {"title": "Zählerstand korrigieren", "description": "Die Korrektur verändert nur den abgeglichenen physischen Zählerstand. Der Verbrauchsverlauf bleibt unverändert. Der optionale Grund wird im Prüfverlauf gespeichert.", "data": {"physical_total_liters": "Physischer Zählerstand", "reason": "Grund"}},
       "action_result": {"title": "Aktion abgeschlossen", "description": "Ergebnis: {result}"}
     },

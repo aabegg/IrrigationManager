@@ -22,7 +22,7 @@ export interface HomeAssistant {
 }
 
 export interface OverviewCardConfig {
-  type: string;
+  type?: string;
   entity?: string;
 }
 
@@ -39,7 +39,7 @@ export interface ResolvedOverviewCardConfig extends OverviewCardConfig {
 }
 
 export interface ZoneCardConfig {
-  type: string;
+  type?: string;
   entity?: string;
 }
 

@@ -3,7 +3,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import "./index";
-import { anchorChoices, resolveOverviewConfig, resolveZoneConfig, statusIcon } from "./helpers";
+import { resolveOverviewConfig, resolveZoneConfig, statusIcon } from "./helpers";
 import type { HassEntity, HomeAssistant, OverviewCardConfig, ZoneCardConfig } from "./types";
 
 function state(
@@ -30,7 +30,7 @@ function hass(...states: HassEntity[]): HomeAssistant {
 beforeEach(() => document.body.replaceChildren());
 
 describe("card anchor resolution", () => {
-  it("resolves only the dashboard-contract installation roles", () => {
+  it("resolves the dashboard-contract installation roles from a live-shaped anchor", () => {
     const home = hass(
       state("sensor.garden_status", "Garten", {
         config_entry_id: "garden",
@@ -42,9 +42,6 @@ describe("card anchor resolution", () => {
           runtime_today: "sensor.garden_runtime_today",
           runtime_month: "sensor.garden_runtime_month",
           physical_meter: "sensor.garden_physical_meter",
-          winter: "binary_sensor.garden_winter",
-          maintenance: "binary_sensor.garden_maintenance",
-          model_quality: "sensor.garden_quality",
         },
       }),
     );
@@ -62,12 +59,9 @@ describe("card anchor resolution", () => {
       runtime_month_entity: "sensor.garden_runtime_month",
       physical_meter_entity: "sensor.garden_physical_meter",
     });
-    expect(resolved).not.toHaveProperty("winter_entity");
-    expect(resolved).not.toHaveProperty("maintenance_entity");
-    expect(resolved).not.toHaveProperty("model_quality_entity");
   });
 
-  it("resolves only the selected zone and excludes legacy zone fields", () => {
+  it("resolves the selected zone from a live-shaped anchor", () => {
     const home = hass(
       state("sensor.hedge_status", "Hecke", {
         config_entry_id: "front",
@@ -79,8 +73,6 @@ describe("card anchor resolution", () => {
           runtime_today: "sensor.hedge_runtime_today",
           runtime_month: "sensor.hedge_runtime_month",
           next_irrigation: "sensor.hedge_next",
-          deficit: "sensor.hedge_deficit",
-          safety_lock: "binary_sensor.hedge_lock",
         },
       }),
       state("sensor.lawn_status", "Rasen", {
@@ -102,12 +94,6 @@ describe("card anchor resolution", () => {
       runtime_month_entity: "sensor.hedge_runtime_month",
       next_irrigation_entity: "sensor.hedge_next",
     });
-    expect(resolved).not.toHaveProperty("deficit_entity");
-    expect(resolved).not.toHaveProperty("safety_lock_entity");
-    expect(anchorChoices(home, "zone")).toEqual([
-      { value: "sensor.hedge_status", label: "Hecke" },
-      { value: "sensor.lawn_status", label: "Rasen" },
-    ]);
   });
 
   it("keeps status icons for all effective release states", () => {
@@ -149,10 +135,17 @@ describe("card editors", () => {
 
     const selectors = editor.shadowRoot.querySelectorAll("ha-selector[data-testid=anchor-selector]");
     expect(selectors).toHaveLength(1);
-    expect((selectors[0] as HTMLElement & {
-      selector: { entity: { include_entities: string[] } };
-    }).selector.entity.include_entities)
-      .toContain(value);
+    const selector = (selectors[0] as HTMLElement & {
+      selector: { entity: Record<string, unknown> };
+    }).selector.entity;
+    expect(selector).toMatchObject({
+      include_entities: [value],
+      filter: {
+        integration: "irrigation_manager",
+        domain: "sensor",
+        device_class: "enum",
+      },
+    });
     expect(editor.shadowRoot.querySelector("[data-testid=configuration-mode]")).toBeNull();
     expect(editor.shadowRoot.querySelector("input[type=checkbox]")).toBeNull();
 
@@ -166,5 +159,29 @@ describe("card editors", () => {
       type: `custom:${tag.replace("-editor", "")}`,
       entity: value,
     });
+    await editor.updateComplete;
+    expect((selectors[0] as HTMLElement & { value: string }).value).toBe(value);
+    expect(editor.shadowRoot.querySelector("[role=alert]")).toBeNull();
+  });
+
+  it("renders an editor error immediately when the selected sensor is not its anchor", async () => {
+    const home = hass(state("sensor.garden_runtime_today", "Runtime", {}, "123"));
+    const Editor = customElements.get("irrigation-manager-overview-card-editor")!;
+    const editor = new Editor() as HTMLElement & {
+      hass: HomeAssistant;
+      setConfig(config: OverviewCardConfig): void;
+      updateComplete: Promise<boolean>;
+      shadowRoot: ShadowRoot;
+    };
+    editor.hass = home;
+    editor.setConfig({
+      type: "custom:irrigation-manager-overview-card",
+      entity: "sensor.garden_runtime_today",
+    });
+    document.body.append(editor);
+    await editor.updateComplete;
+
+    expect(editor.shadowRoot.querySelector("[role=alert]")?.textContent)
+      .toContain("Status-Entity der Bewässerungsanlage");
   });
 });

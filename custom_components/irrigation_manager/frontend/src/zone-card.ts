@@ -3,6 +3,7 @@ import { LitElement, html, nothing, type TemplateResult } from "lit";
 import {
   DOMAIN,
   entity,
+  isAnchor,
   numberAttribute,
   resolveZoneConfig,
   statusIcon,
@@ -174,6 +175,12 @@ export class IrrigationManagerZoneCard extends LitElement {
 
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
+    if (!this._config.entity) {
+      return html`<ha-card><div class="card"><div class="warning" role="alert"><ha-icon icon="mdi:water-outline"></ha-icon><span>${localize(this.hass, "select_zone")}</span></div></div></ha-card>`;
+    }
+    if (!isAnchor(entity(this.hass, this._config.entity), "zone")) {
+      return html`<ha-card><div class="card"><div class="warning danger" role="alert"><ha-icon icon="mdi:water-alert"></ha-icon><span>${localize(this.hass, "invalid_zone_anchor")}</span></div></div></ha-card>`;
+    }
     const config = resolveZoneConfig(this.hass, this._config);
     if (!config.zone_entity || !entity(this.hass, config.zone_entity)) {
       return html`<ha-card><div class="card"><div class="warning"><ha-icon icon="mdi:water-alert"></ha-icon><span>${localize(this.hass, "missing")}</span></div></div></ha-card>`;
