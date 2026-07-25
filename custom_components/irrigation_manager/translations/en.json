@@ -1,669 +1,78 @@
 {
   "services": {
-    "start_manual": {
-      "name": "Start manual irrigation",
-      "description": "Start one zone with exactly one duration or volume target.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "zone_subentry_id": {"name": "Irrigation zone"},
-        "duration": {"name": "Duration", "description": "Time target in seconds."},
-        "amount": {"name": "Amount", "description": "Volume target in liters."},
-        "hard_time_limit": {"name": "Hard time limit", "description": "Required safety timeout in seconds for a volume target."},
-        "expiry": {"name": "Expiry", "description": "Maximum time in seconds before an uncompleted request expires."},
-        "start_at": {"name": "Desired start", "description": "Optional one-time future start."}
-      }
-    },
-    "create_manual": {
-      "name": "Create manual irrigation request",
-      "description": "Persist and queue one manual irrigation request.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "zone_subentry_id": {"name": "Irrigation zone"},
-        "duration": {"name": "Duration"},
-        "amount": {"name": "Amount"},
-        "hard_time_limit": {"name": "Hard time limit"},
-        "expiry": {"name": "Expiry"},
-        "start_at": {"name": "Desired start"}
-      }
-    },
-    "start_manual_from_card": {"name": "Start manual irrigation from a card", "description": "Create one manual irrigation order and atomically resolve an active irrigation execution using the selected policy.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "zone_subentry_id": {"name": "Irrigation zone"}, "duration": {"name": "Duration"}, "amount": {"name": "Amount"}, "hard_time_limit": {"name": "Maximum duration"}, "conflict_policy": {"name": "Active execution policy"}}},
-    "list_card_orders": {"name": "List open irrigation orders for cards", "description": "Return only open irrigation orders with queue-adjusted expected starts."},
-    "list_zone_history": {"name": "List zone history for cards", "description": "Return a filtered, paginated irrigation execution history for exactly one irrigation zone.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "zone_subentry_id": {"name": "Irrigation zone"}, "offset": {"name": "Offset"}, "limit": {"name": "Page size"}, "source": {"name": "Source"}, "result": {"name": "Result"}}},
-    "create_manual_plan": {"name": "Create manual multi-zone plan", "description": "Atomically create an ordered set of future or immediate zone requests."},
-    "edit_request": {"name": "Edit irrigation request", "description": "Edit target, desired start, or expiry before execution."},
-    "reorder_requests": {"name": "Reorder irrigation requests", "description": "Set an explicit stable order for unstarted manual requests."},
-    "stop_and_skip": {"name": "Stop and skip once", "description": "Stop the selected execution and suppress its current automatic opportunity."},
-    "list_requests": {"name": "List irrigation requests", "description": "Return persisted manual irrigation requests."},
-    "cancel_request": {"name": "Cancel irrigation request", "description": "Cancel one selected request."},
-    "pause_request": {"name": "Pause irrigation request", "description": "Pause one selected request and preserve its remaining target."},
-    "resume_request": {"name": "Resume irrigation request", "description": "Resume one paused request."},
-    "plan_automatic": {
-      "name": "Plan automatic irrigation",
-      "description": "Deterministically plan the current watering opportunities, optionally without creating requests.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "dry_run": {"name": "Dry run"},
-        "at": {"name": "Planning time", "description": "Optional deterministic planning instant."}
-      }
-    },
-    "finalize_daily_weather": {
-      "name": "Finalize daily weather",
-      "description": "Apply one finalized ET0 and rain period to every zone exactly once.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "period_id": {"name": "Period ID", "description": "Stable date or accounting-period identifier."},
-        "reference_evapotranspiration": {"name": "Reference evapotranspiration"},
-        "rain": {"name": "Measured rain"}
-      }
-    },
-    "skip_automatic": {
-      "name": "Skip automatic watering once",
-      "description": "Suppress the current watering opportunity for one zone, including across restarts.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "zone_subentry_id": {"name": "Irrigation zone"},
-        "at": {"name": "Opportunity time"}
-      }
-    },
-    "clear_forecast_deferral": {
-      "name": "Cancel forecast deferral",
-      "description": "Cancel the persisted rain-forecast delay for one irrigation zone.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "zone_subentry_id": {"name": "Irrigation zone"}
-      }
-    },
-    "export_config": {
-      "name": "Export portable configuration",
-      "description": "Return the versioned installation and zone configuration without secrets."
-    },
-    "import_config": {"name": "Import portable configuration", "description": "Preview or explicitly overwrite this installation using a versioned export and explicit entity mappings."},
-    "correct_physical_meter": {"name": "Correct physical meter", "description": "Set the observed physical meter total without rewriting historical consumption."},
-    "export_history": {
-      "name": "Export irrigation history",
-      "description": "Return a bounded set of the newest irrigation executions as JSON or CSV.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "format": {"name": "Format"},
-        "limit": {"name": "Maximum records"}
-      }
-    },
-    "resolve_balance_reconciliation": {
-      "name": "Resolve balance reconciliation",
-      "description": "Apply current zone settings to an uncredited delivery or explicitly discard it.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "reconciliation_id": {"name": "Reconciliation ID"},
-        "resolution": {"name": "Resolution"}
-      }
-    },
-    "set_winter_lock": {"name": "Set winter lock", "description": "Confirm that the installation is drained, stop all irrigation, close all valves, and persist the winter lock."},
-    "clear_winter_lock": {"name": "Clear winter lock", "description": "Consciously release the winter lock after a closed-state preflight."},
-    "start_maintenance_test": {
-      "name": "Start supervised maintenance test",
-      "description": "Run exactly one time-bounded zone test with mandatory dead-man confirmation.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "zone_subentry_id": {"name": "Irrigation zone"},
-        "duration": {"name": "Hard test duration"},
-        "bypass_checks": {"name": "Bypassed checks", "description": "Only selected implemented sensor checks are bypassed. Valve feedback and exclusivity remain mandatory."},
-        "kind": {"name": "Test purpose"},
-        "water_attribution": {"name": "Water attribution", "description": "Attribute measured water to the selected zone or to unassigned consumption."}
-      }
-    },
-    "confirm_maintenance_test": {"name": "Confirm maintenance supervision", "description": "Refresh the dead-man deadline without extending the fixed test timeout."},
-    "stop_maintenance_test": {"name": "Stop maintenance test", "description": "Stop the active supervised test and close all valves."},
-    "start_calibration": {
-      "name": "Start flow calibration",
-      "description": "Run a supervised measured zone test and create a review-only flow proposal.",
-      "fields": {
-        "config_entry_id": {"name": "Irrigation installation"},
-        "zone_subentry_id": {"name": "Irrigation zone"},
-        "duration": {"name": "Hard test duration"}
-      }
-    },
-    "get_calibration_proposal": {"name": "Get calibration proposal", "description": "Return the latest measured proposal without applying it."},
-    "resolve_calibration": {"name": "Resolve calibration proposal", "description": "Explicitly accept or discard a pending calibration proposal."},
-    "list_profiles": {"name": "List irrigation profiles", "description": "Return versioned immutable built-ins and user-owned profile copies.", "fields": {"config_entry_id": {"name": "Irrigation installation"}}},
-    "preview_profile_impact": {"name": "Preview profile impact", "description": "Return every irrigation zone affected by a profile change.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "profile_id": {"name": "Profile ID"}}},
-    "copy_profile": {"name": "Copy irrigation profile", "description": "Create an editable user-owned copy without modifying its built-in source.", "fields": {"config_entry_id": {"name": "Irrigation installation"}, "source_profile_id": {"name": "Source profile ID"}, "new_profile_id": {"name": "New profile ID"}, "name": {"name": "Name"}, "config_hash": {"name": "Expected profile configuration hash"}}},
-    "archive_zone": {"name": "Archive irrigation zone", "description": "Archive an idle zone while retaining its device identity, history, statistics, and accounting."},
-    "restore_zone": {"name": "Restore irrigation zone", "description": "Restore an archived zone at safe idle."},
-    "suspend_automatic": {"name": "Suspend automatic irrigation", "description": "Suspend automatic irrigation globally or for one zone until a timestamp."},
-    "resume_automatic": {"name": "Resume automatic irrigation", "description": "Clear a global or zone automatic suspension immediately."},
-    "list_maintenance": {"name": "List irrigation maintenance", "description": "Return recurring tasks, due dates, history, and spring recommission status."},
-    "complete_maintenance_task": {"name": "Complete maintenance task", "description": "Complete a recurring task and calculate its next due date."},
-    "snooze_maintenance_task": {"name": "Snooze maintenance task", "description": "Delay one task while retaining its original due date and history."},
-    "update_spring_checklist": {"name": "Update spring checklist", "description": "Confirm or reopen one configured recommission checklist item."},
-    "set_installation_operation": {"name": "Set installation operation release", "description": "Enable or disable all manual and automatic irrigation."},
-    "set_installation_automation": {"name": "Set installation automatic release", "description": "Enable or disable automatic irrigation without changing manual operation."},
-    "set_zone_operation": {"name": "Set zone operation release", "description": "Enable or disable all irrigation for one zone."},
-    "set_zone_automation": {"name": "Set zone automatic release", "description": "Enable or disable automatic irrigation for one zone."},
-    "reset_safety_lock": {"name": "Reset safety lock", "description": "Reset the canonical installation safety lock after inspection."}
+    "start_manual": {"name": "Start manual irrigation", "description": "Start one zone with exactly one duration or volume target."},
+    "create_manual": {"name": "Create manual irrigation order", "description": "Persist and queue one manual irrigation order."},
+    "start_manual_from_card": {"name": "Start manual irrigation from a card", "description": "Create one manual order and resolve an active execution using the selected policy."},
+    "cancel_request": {"name": "Cancel irrigation order", "description": "Cancel one unstarted irrigation order."},
+    "stop": {"name": "Stop irrigation", "description": "Stop the active irrigation execution."},
+    "emergency_stop": {"name": "Emergency stop", "description": "Stop irrigation immediately and set the persistent installation safety lock."},
+    "set_installation_operation": {"name": "Set installation operation release"},
+    "set_installation_automation": {"name": "Set installation automatic release"},
+    "set_zone_operation": {"name": "Set zone operation release"},
+    "set_zone_automation": {"name": "Set zone automatic release"},
+    "reset_safety_lock": {"name": "Reset safety lock"},
+    "plan_automatic": {"name": "Replan automatic irrigation"},
+    "correct_physical_meter": {"name": "Correct physical meter"},
+    "list_card_orders": {"name": "List open irrigation orders"},
+    "list_zone_history": {"name": "List zone irrigation history"}
   },
   "selector": {
-    "installation_purpose": {"options": {"private_garden": "Private garden", "landscape": "Ornamental landscape", "food_garden": "Food garden", "mixed": "Mixed use"}},
-    "meter_kind": {"options": {"cumulative": "Cumulative volume meter", "raw": "Pulse or count meter", "none": "No water meter"}},
     "meter_type": {"options": {"cumulative": "Cumulative volume meter", "pulse": "Pulse meter", "none": "No water measurement"}},
     "pulse_factor_mode": {"options": {"liters_per_pulse": "Liters per pulse", "pulses_per_liter": "Pulses per liter"}},
     "control_type": {"options": {"time": "Time control", "volume": "Volume control"}},
-    "weather_strategy": {"options": {"recommended": "Use the recommended available source", "local": "Local sensors or weather entity", "open_meteo": "Open-Meteo", "seasonal": "Seasonal fallback only"}},
-    "setup_mode": {"options": {"guided": "Guided setup", "expert": "Expert settings"}},
-    "calibration_resolution": {"options": {"accept": "Apply measured values", "discard": "Discard measured values"}},
-    "zone_category": {"options": {"raised_bed": "Raised bed", "vegetables": "Vegetable bed", "lawn": "Lawn", "shrubs": "Shrubs or hedge", "flowers": "Flowers or perennials", "young_tree": "Young fruit tree"}},
-    "area_method": {"options": {"measured": "I know the area", "rectangle": "Calculate length × width", "unknown": "I do not know yet"}},
-    "soil_answer": {"options": {"potting_mix": "Mostly purchased potting/raised-bed mix", "mineral_mix": "Mixed garden soil and compost", "sand": "Sandy and very loose", "sandy_loam": "Loose soil that holds some water", "loam": "Balanced garden soil", "clay_loam": "Heavy soil", "clay": "Very heavy/sticky soil", "unknown": "I am not sure"}},
-    "bed_age": {"options": {"new": "New this season", "established": "Established for more than one season", "unknown": "I am not sure"}},
-    "answer_unknown": {"options": {"yes": "Yes", "no": "No", "unknown": "I am not sure"}},
-    "drainage": {"options": {"fast": "Drains very quickly", "normal": "Normal", "slow": "Water remains for a long time", "unknown": "I am not sure"}},
-    "plant_choice": {"options": {"vegetables": "Mixed vegetables, e.g. lettuce, tomatoes, beans", "lawn": "Cool-season lawn", "shrubs": "Established shrubs and hedges", "flowers": "Groundcover and perennials", "young_tree": "Young fruit tree in establishment"}},
-    "irrigation_method": {"options": {"drip": "Drip line or emitters", "microspray": "Microsprayers", "fixed_spray": "Fixed spray heads", "rotor": "Rotor sprinklers"}},
-    "exposure": {"options": {"full_sun": "Full sun and normal rain", "partial_sun": "Part sun", "shade": "Mostly shaded", "sheltered": "Sheltered from some rain", "rain_shadow": "Under a roof/eave or strong rain shadow"}},
-    "rate_source": {"options": {"measured": "Measured flow range", "estimated": "Estimated application rate", "unknown": "Unknown; calibrate later"}},
-    "meter_failure_strategy": {
-      "options": {
-        "abort": "Abort",
-        "estimated_time_fallback": "Estimated time fallback"
-      }
-    },
-    "watering_mode": {
-      "options": {
-        "demand": "Demand watering",
-        "minimum": "Minimum watering"
-      }
-    },
-    "weather_failure_policy": {
-      "options": {"fail_safe": "Fail safe (block affected watering)"}
-    },
-    "external_failure_policy": {
-      "options": {"fail_safe": "Fail safe (block on unavailable or stale input)"}
-    },
-    "wind_manual_policy": {
-      "options": {"allow": "Allow manual irrigation", "block": "Block manual irrigation"}
-    },
-    "et0_priority": {
-      "options": {
-        "direct": "Prefer direct ET0",
-        "calculated": "Prefer calculated ET0"
-      }
-    },
-    "soil_moisture_role": {
-      "options": {
-        "plausibility": "Plausibility only",
-        "safety_wet_inhibit": "Wet-soil safety inhibit",
-        "conservative_correction": "Configured conservative correction"
-      }
-    },
-    "soil_moisture_aggregation": {
-      "options": {"minimum": "Minimum", "median": "Median", "mean": "Mean"}
-    }
+    "calibration_resolution": {"options": {"accept": "Apply measured values", "discard": "Discard measured values"}}
   },
   "entity": {
-    "calendar": {"schedule": {"name": "Schedule"}},
     "binary_sensor": {
-      "emergency_stop": {
-        "name": "Emergency stop"
-      },
-      "zone_safety_lock": {
-        "name": "Safety lock"
-      },
-      "installation_safety_lock": {
-        "name": "Installation safety lock"
-      },
-      "automation_needed": {
-        "name": "Automatic irrigation needed"
-      },
-      "winter_lock": {
-        "name": "Winter lock"
-      },
-      "maintenance_mode": {
-        "name": "Maintenance mode"
-      },
-      "frost_safety": {
-        "name": "Frost safety block"
-      },
-      "rain_stop": {
-        "name": "Automatic rain stop"
-      },
-      "external_safety": {
-        "name": "External safety block"
-      },
-      "wind_interlock": {
-        "name": "Strong-wind interlock"
-      },
-      "automation_release": {
-        "name": "Automatic release"
-      },
-      "archived": {
-        "name": "Archived"
-      }
+      "emergency_stop": {"name": "Emergency stop"},
+      "installation_safety_lock": {"name": "Installation safety lock"}
     },
     "sensor": {
-      "water_total": {
-        "name": "Water consumption"
-      },
-      "unassigned_water_total": {
-        "name": "Unassigned water consumption"
-      },
+      "water_total": {"name": "Water consumption"},
+      "unassigned_water_total": {"name": "Unassigned water consumption"},
       "water_today": {"name": "Water today"},
-      "water_week": {"name": "Water this week"},
       "water_month": {"name": "Water this month"},
-      "water_year": {"name": "Water this year"},
-      "current_flow": {"name": "Current flow"},
       "physical_meter": {"name": "Corrected physical meter"},
-      "meter_measurement_quality": {"name": "Meter measurement quality"},
-      "status": {
-        "name": "Status",
-        "state": {
-          "idle": "Idle",
-          "watering": "Watering",
-          "error": "Error",
-          "safety_lock": "Safety lock",
-           "emergency_stop": "Emergency stop",
-           "soaking": "Soaking",
-           "winter_lock": "Winter lock",
-           "maintenance": "Maintenance",
-           "disabled": "Disabled",
-           "automatic_disabled": "Active, automatic irrigation disabled",
-           "needs_reconfiguration": "Reconfiguration required"
-        }
-      },
-      "active_zone": {
-        "name": "Active zone"
-      },
-      "pending_requests": {"name": "Pending requests"},
-      "current_dose": {"name": "Current dose"},
-      "remaining_target": {"name": "Remaining target"},
-      "last_delivered": {
-        "name": "Last delivered water"
-      },
-      "last_duration": {
-        "name": "Last watering duration"
-      },
-      "measurement_quality": {
-        "name": "Measurement quality",
-        "state": {
-          "measured": "Measured",
-          "integrated": "Integrated from flow",
-          "estimated": "Estimated",
-          "unknown": "Unknown",
-          "unavailable": "Unavailable"
-        }
-      },
-      "water_deficit": {"name": "Water deficit"},
-      "automatic_target": {"name": "Automatic target"},
-      "next_watering_window": {"name": "Next watering window"},
+      "runtime_today": {"name": "Runtime today"},
+      "runtime_month": {"name": "Runtime this month"},
+      "status": {"name": "Status", "state": {"idle": "Idle", "watering": "Watering", "error": "Error", "safety_lock": "Safety lock", "emergency_stop": "Emergency stop", "disabled": "Disabled", "automatic_disabled": "Active, automatic irrigation disabled", "needs_reconfiguration": "Reconfiguration required"}},
+      "pending_requests": {"name": "Pending orders"},
       "next_irrigation": {"name": "Next irrigation"},
-      "planning_reason": {"name": "Planning reason"},
-      "weather_model_quality": {
-        "name": "Weather model quality",
-        "state": {
-          "observed": "Observed",
-          "external_service": "External service",
-          "calculated_high": "Calculated, complete inputs",
-          "calculated_reduced": "Calculated, reduced inputs",
-          "calculated_partial": "Calculated, partial daily coverage",
-          "degraded": "Temporary fallback",
-          "provided": "Manually provided",
-          "unknown": "Unknown daily inputs",
-          "unavailable": "Unavailable"
-        }
-      },
-      "reference_evapotranspiration": {"name": "Reference evapotranspiration"},
-      "measured_rain": {"name": "Measured rain"},
-      "provisional_water_deficit": {"name": "Provisional water deficit"},
-      "crop_evapotranspiration": {"name": "Crop evapotranspiration"},
-      "effective_rain": {"name": "Effective rain"},
-      "soil_moisture_status": {"name": "Soil moisture status", "state": {"not_configured": "Not configured", "valid": "Valid", "partial": "Partially valid", "unavailable": "Unavailable"}},
-      "hardware_health": {"name": "Valve hardware health", "state": {"not_configured": "Not configured", "healthy": "Healthy", "blocked": "Blocked"}},
       "next_zone": {"name": "Next zone"},
       "next_start": {"name": "Next planned start"},
-      "maintenance_due": {"name": "Maintenance tasks due"},
-      "water_cost": {"name": "Water cost"},
-      "zone_status": {"name": "Status", "state": {"idle": "Idle", "watering_needed": "Watering needed", "watering": "Watering", "suspended": "Suspended", "safety_lock": "Safety lock", "archived": "Archived", "disabled": "Disabled", "installation_disabled": "Installation disabled", "automatic_disabled": "Automatic irrigation disabled", "needs_reconfiguration": "Reconfiguration required"}},
-      "zone_priority": {"name": "Priority"},
-      "last_effective_irrigation": {"name": "Last effective irrigation"},
-      "demand_coverage": {"name": "Demand coverage"},
-      "expected_flow": {"name": "Expected flow"},
-      "actual_flow": {"name": "Actual flow"},
-      "flow_deviation": {"name": "Flow deviation"}
+      "zone_status": {"name": "Status", "state": {"idle": "Idle", "watering": "Watering", "safety_lock": "Safety lock", "disabled": "Disabled", "installation_disabled": "Installation disabled", "automatic_disabled": "Automatic irrigation disabled", "needs_reconfiguration": "Reconfiguration required"}}
     }
   },
   "config": {
     "step": {
-      "user": {
-        "title": "Set up Irrigation Manager",
-        "menu_options": {
-          "create": "Create a new irrigation installation",
-          "expert_create": "Create with expert settings",
-          "import": "Import a portable irrigation installation"
-        }
-      },
-      "expert_create": {
-        "title": "Create irrigation installation",
-        "description": "Configure the shared water supply. Irrigation zones are added afterwards.",
-        "data": {
-          "name": "Name",
-          "purpose": "What will this installation water?",
-          "main_valve": "Main valve",
-          "main_valve_feedback": "Main valve feedback",
-          "water_meter": "Cumulative water meter",
-          "raw_meter": "Raw pulse or count meter",
-          "liters_per_count": "Liters per pulse or count",
-          "meter_resolution_liters": "Meter resolution",
-          "flow_sensor": "Flow sensor",
-          "leak_monitoring": "Monitor for leaks while idle",
-          "leak_flow_threshold": "Idle leak flow threshold",
-          "leak_duration_seconds": "Leak confirmation duration",
-          "weather_entity": "Weather entity",
-          "temperature_sensors": "Temperature sensors in priority order",
-          "humidity_sensors": "Humidity sensors in priority order",
-          "wind_speed_sensors": "Wind sensors in priority order",
-          "local_wind_height_m": "Local wind sensor measurement height",
-          "weather_wind_height_m": "Weather entity wind measurement height",
-          "solar_radiation_sensors": "Solar radiation sensors in priority order",
-          "sunshine_duration_sensors": "Sunshine duration sensors in priority order",
-          "pressure_sensors": "Pressure sensors in priority order",
-          "rain_sensors": "Rain sensors in priority order",
-          "et0_sensors": "Direct ET0 sensors in priority order",
-          "et0_priority": "ET0 method priority",
-          "open_meteo_enabled": "Use Open-Meteo as last source",
-          "weather_observation_max_age_hours": "Maximum observation age",
-          "weather_fallback_days": "Maximum fallback duration",
-          "weather_backfill_days": "Maximum weather backfill retention",
-          "seasonal_et0_mm": "Monthly seasonal ET0 fallback",
-          "weather_finalization_time": "Daily weather finalization time",
-          "weather_preview_interval_hours": "Provisional update interval",
-          "frost_entity": "Frost temperature entity",
-          "frost_threshold": "Frost blocking threshold",
-          "rain_stop_entity": "Current rain entity",
-          "rain_stop_threshold": "Automatic rain-stop threshold",
-          "weather_max_age_seconds": "Maximum weather safety data age",
-          "weather_failure_policy": "Weather failure policy",
-          "installation_max_delivery_runtime": "Maximum installation delivery runtime",
-          "installation_max_operation_lifetime": "Maximum operation lifetime",
-          "actuator_transition_grace_seconds": "Actuator feedback transition grace",
-          "actuator_feedback_max_age_seconds": "Maximum actuator feedback age",
-          "external_permit": "External permit sensor",
-          "external_block": "External block sensor",
-          "external_max_age_seconds": "Maximum external safety input age",
-          "external_failure_policy": "External input failure policy",
-           "notify_entities": "Critical notification targets"
-          ,"maintenance_max_duration": "Maximum maintenance test duration"
-          ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
-          ,"calibration_settle_seconds": "Calibration post-run observation time"
-          ,"installation_daily_budget_liters": "Daily installation budget"
-          ,"installation_weekly_budget_liters": "Weekly installation budget"
-          ,"pause_timeout_seconds": "Maximum pause duration"
-          ,"custom_profiles": "User-owned profile copies"
-          ,"water_tariff_per_m3": "Water tariff per m³"
-          ,"automation_enabled": "Global automatic release"
-          ,"hardware_shutoff_acknowledged": "Independent hardware-shutoff warning acknowledged"
-          ,"winter_reminder_date": "Winter reminder date (MM-DD)"
-          ,"maintenance_tasks": "Recurring maintenance tasks"
-          ,"spring_checklist": "Spring recommission checklist"
-        },
-        "data_description": {
-          "main_valve": "Optional switch or valve that isolates the complete installation.",
-          "water_meter": "Optional cumulative water sensor. Without it only time control is available.",
-          "flow_sensor": "Optional rate sensor for faster flow safety checks and idle leak monitoring.",
-          "leak_monitoring": "Enabled by default when a flow sensor is configured.",
-          "leak_flow_threshold": "Continuous idle flow above this rate is hazardous.",
-          "leak_duration_seconds": "Shorter flow artifacts and post-watering runoff are ignored.",
-          "weather_entity": "Optional source for weather measurements and forecasts.",
-          "local_wind_height_m": "Defaults to 2 m. Set the physical measurement height of the configured local wind sensors; only other heights are normalized to 2 m.",
-          "weather_wind_height_m": "Defaults to 10 m because weather providers commonly report standardized 10 m wind. Change it when the provider documents another height.",
-          "weather_backfill_days": "Safety and retention cap for missing daily periods processed after downtime. Older periods are outside retained automatic backfill."
-        }
-      },
+      "user": {"title": "Set up Irrigation Manager", "menu_options": {"create": "Create a new irrigation installation"}},
       "create": {"title": "Create irrigation installation", "description": "Enter a recognizable installation name.", "data": {"name": "Name"}},
       "installation_hardware": {"title": "Optional main valve", "description": "Leave this empty when the installation has no shared main valve.", "data": {"main_valve": "Main valve"}},
-      "installation_meter": {"title": "Optional water measurement", "description": "Select no measurement, a cumulative volume meter, or a pulse meter. Pulse factors are stored canonically as liters per pulse.", "data": {"meter_type": "Measurement type", "meter_entity": "Meter entity", "pulse_factor_mode": "Factor format", "pulse_factor": "Factor"}},
+      "installation_meter": {"title": "Optional water measurement", "description": "Choose no measurement, a cumulative volume sensor, or a raw pulse counter. Only fields needed by that source are requested next.", "data": {"meter_type": "Measurement type"}},
+      "installation_meter_details": {"title": "Water meter source", "description": "Select the source sensor. Raw pulse counters additionally require a conversion factor so counts can be converted to liters.", "data": {"meter_entity": "Meter entity", "pulse_factor_mode": "Factor format", "pulse_factor": "Factor"}},
       "installation_zone": {"title": "First irrigation zone", "data": {"name": "Name", "zone_valve": "Zone valve", "control_type": "Control type", "volume_max_runtime": "Hard maximum runtime"}},
-      "installation_schedule": {"title": "Weekly schedule", "description": "Each weekday is either completely empty or has start, end, and one full target."},
-      "installation_weather": {"title": "Weather source", "description": "{meter_preview} {comparison}", "data": {"weather_strategy": "Weather approach", "weather_entity": "Local weather entity", "et0_sensors": "Direct reference-evapotranspiration sensors"}},
-      "installation_safety": {"title": "Safety limits", "description": "Software and wireless valves can fail. Use a physical hardware shutoff timer or equivalent independent limit so water stops even if Home Assistant does not.", "data": {"installation_max_delivery_runtime": "Hard maximum delivery time", "hardware_shutoff_acknowledged": "I understand and have considered an independent hardware shutoff"}},
-      "installation_review": {"title": "Review and dry-run readiness", "description": "{preview}", "data": {"confirm_ready": "Create this installation"}},
-      "import": {
-        "title": "Import a new irrigation installation",
-        "description": "Validate a portable export and explicit entity remapping before creating a separate installation.",
-        "data": {
-          "payload": "Portable configuration",
-          "entity_remapping": "Entity remapping"
-        }
-      },
-      "import_confirm": {
-        "title": "Confirm new installation",
-        "description": "Create a new installation and all zone subentries with fresh identities. Preview: {preview}",
-        "data": {"confirm_create": "Create installation"}
-      },
-      "import_profile_confirmation": {
-        "title": "Confirm imported researched profiles",
-        "description": "Review the researched profile sources, assumptions, TAW, and RAW locally. Imported confirmation flags are ignored. Preview: {preview}",
-        "data": {"confirm_researched_profiles": "I reviewed and accept these profile assumptions"}
-      }
+      "installation_schedule": {"title": "Weekly schedule"}
     },
-    "abort": {
-      "already_configured": "This irrigation installation is already configured.",
-      "actuator_already_owned": "An existing irrigation installation already owns one of the imported actuators or feedback entities.",
-      "invalid_import": "The portable configuration is invalid.",
-      "import_not_pending": "There is no validated import awaiting confirmation.",
-      "import_cancelled": "The portable import was cancelled."
-    },
-    "error": {
-      "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time.",
-      "invalid_profiles": "Profile data or a profile reference is invalid.",
-      "multiple_meter_sources": "Select either a cumulative volume meter or a raw count meter, not both.",
-      "raw_meter_requires_factor": "A raw meter and its liters-per-count factor must be configured together."
-      ,"main_feedback_requires_main_valve": "Main-valve feedback requires a configured main valve."
-      ,"selected_meter_required": "Select the sensor matching the chosen meter type."
-      ,"local_weather_source_required": "Select a local weather entity or direct reference-evapotranspiration sensor."
-      ,"hardware_shutoff_acknowledgement_required": "Automatic operation cannot be enabled until the independent hardware-shutoff warning is acknowledged."
-    }
+    "abort": {"already_configured": "This irrigation installation is already configured.", "actuator_already_owned": "Another irrigation installation already owns this actuator."},
+    "error": {"selected_meter_required": "Select the sensor matching the chosen meter type.", "raw_meter_requires_factor": "A raw pulse counter requires a positive conversion factor.", "volume_max_runtime_required": "Volume control requires a hard maximum runtime.", "schedule_row_incomplete": "Every configured weekday requires start, end, and target.", "schedule_row_invalid": "Enter a valid start and end time.", "schedule_target_invalid": "Enter a positive duration or volume target.", "schedule_overlap": "Adjacent weekday windows must not overlap, including across midnight.", "schedule_target_does_not_fit": "The complete target must fit inside its window."}
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Irrigation Manager settings",
-        "menu_options": {
-          "v2_installation": "Installation configuration",
-          "actions": "Operation and safety actions",
-          "guided": "Guided settings",
-          "expert": "Expert settings",
-          "import_config": "Import portable configuration"
-        }
-      },
-      "v2_installation": {"title": "Installation settings", "data": {"name": "Name", "operation_enabled": "Operation release", "automation_enabled": "Automatic release", "main_valve": "Main valve", "meter_type": "Meter type", "meter_entity": "Meter entity", "pulse_factor_mode": "Factor format", "pulse_factor": "Factor"}},
-      "actions": {"title": "Operation and safety actions", "menu_options": {"installation_releases": "Enable or disable operation", "emergency_stop": "Emergency stop now", "reset_safety": "Clear safety lock", "replan": "Replan automatic irrigation"}},
+      "init": {"title": "Irrigation Manager settings", "menu_options": {"installation_reconfiguration": "Complete required reconfiguration", "basics": "Installation name", "main_valve": "Main valve", "meter": "Water measurement", "installation_releases": "Operation releases", "replan": "Replan automatic irrigation", "emergency_stop": "Emergency stop", "reset_safety": "Reset safety lock", "physical_meter_correction": "Correct physical meter"}},
+      "basics": {"title": "Installation name", "data": {"name": "Name"}},
+      "main_valve": {"title": "Optional main valve", "data": {"main_valve": "Main valve"}},
+      "meter": {"title": "Water measurement", "description": "Choose the measurement type. Only fields needed by that source are requested next.", "data": {"meter_type": "Measurement type"}},
+      "meter_details": {"title": "Water meter source", "description": "Select the source sensor. Raw pulse counters additionally require a conversion factor so counts can be converted to liters.", "data": {"meter_entity": "Meter entity", "pulse_factor_mode": "Factor format", "pulse_factor": "Factor"}},
+      "installation_reconfiguration": {"title": "Required installation reconfiguration", "description": "Review the complete installation before clearing the migration lock.", "data": {"name": "Name", "main_valve": "Main valve", "meter_type": "Measurement type"}},
+      "installation_reconfiguration_meter": {"title": "Water meter source", "description": "Complete the selected meter configuration before the migration lock can be cleared.", "data": {"meter_entity": "Meter entity", "pulse_factor_mode": "Factor format", "pulse_factor": "Factor"}},
       "installation_releases": {"title": "Installation releases", "data": {"operation_enabled": "Operation release", "automation_enabled": "Automatic release"}},
-      "installation_automation_disable": {"title": "Disable automatic irrigation", "description": "An automatic irrigation execution is active. Choose whether to stop it now or let it finish.", "data": {"active_execution": "Active execution"}},
-      "reset_safety": {"title": "Clear safety lock", "description": "Warning: clear the lock only after inspecting the installation and confirming that every valve is safely closed.", "data": {"confirm_reset": "The installation was inspected and is safe to release"}},
-      "action_result": {"title": "Action completed", "description": "Result: {result}"},
-      "guided": {"title": "Guided settings", "menu_options": {"guided_installation": "Installation essentials", "guided_zone": "Zone and profile settings"}},
-      "expert": {"title": "Expert settings", "menu_options": {"installation": "Installation expert settings", "zone": "Zone expert settings"}},
-      "guided_installation": {"title": "Installation essentials", "description": "Only common choices are shown. Hidden expert values are preserved. Imported and migrated installations remain automatically disabled until the hardware warning is acknowledged locally.", "data": {"name": "Name", "main_valve": "Main valve", "main_valve_feedback": "Main-valve feedback", "water_meter": "Cumulative water meter", "flow_sensor": "Flow sensor", "weather_entity": "Weather entity", "open_meteo_enabled": "Use Open-Meteo fallback", "hardware_shutoff_acknowledged": "Independent hardware-shutoff warning acknowledged", "automation_enabled": "Global automatic release"}},
-      "guided_zone": {"title": "Select irrigation zone", "data": {"zone_subentry_id": "Irrigation zone"}},
-      "guided_zone_settings": {"title": "Guided zone settings", "description": "Profile changes show their expected water and runtime impact before saving. Hidden expert values are preserved.", "data": {"name": "Name", "area_m2": "Watered area", "plant_profile": "Plants", "soil_profile": "Soil", "irrigation_profile": "Irrigation method", "min_flow": "Measured minimum flow", "max_flow": "Measured maximum flow", "automation_enabled": "Automatic release"}},
-      "installation": {
-        "title": "Installation expert settings",
-        "description": "Changes are saved immediately and applied after all open irrigation requests are finished.",
-        "data": {
-          "name": "Name",
-          "main_valve": "Main valve",
-          "main_valve_feedback": "Main valve feedback",
-          "water_meter": "Cumulative water meter",
-          "raw_meter": "Raw pulse or count meter",
-          "liters_per_count": "Liters per pulse or count",
-          "meter_resolution_liters": "Meter resolution",
-          "flow_sensor": "Flow sensor",
-          "leak_monitoring": "Monitor for leaks while idle",
-          "leak_flow_threshold": "Idle leak flow threshold",
-          "leak_duration_seconds": "Leak confirmation duration",
-          "weather_entity": "Weather entity",
-          "temperature_sensors": "Temperature sensors in priority order",
-          "humidity_sensors": "Humidity sensors in priority order",
-          "wind_speed_sensors": "Wind sensors in priority order",
-          "local_wind_height_m": "Local wind sensor measurement height",
-          "weather_wind_height_m": "Weather entity wind measurement height",
-          "solar_radiation_sensors": "Solar radiation sensors in priority order",
-          "sunshine_duration_sensors": "Sunshine duration sensors in priority order",
-          "pressure_sensors": "Pressure sensors in priority order",
-          "rain_sensors": "Rain sensors in priority order",
-          "et0_sensors": "Direct ET0 sensors in priority order",
-          "et0_priority": "ET0 method priority",
-          "open_meteo_enabled": "Use Open-Meteo as last source",
-          "weather_observation_max_age_hours": "Maximum observation age",
-          "weather_fallback_days": "Maximum fallback duration",
-          "weather_backfill_days": "Maximum weather backfill retention",
-          "seasonal_et0_mm": "Monthly seasonal ET0 fallback",
-          "weather_finalization_time": "Daily weather finalization time",
-          "weather_preview_interval_hours": "Provisional update interval",
-          "frost_entity": "Frost temperature entity",
-          "frost_threshold": "Frost blocking threshold",
-          "rain_stop_entity": "Current rain entity",
-          "rain_stop_threshold": "Automatic rain-stop threshold",
-          "weather_max_age_seconds": "Maximum weather safety data age",
-          "weather_failure_policy": "Weather failure policy",
-          "installation_max_delivery_runtime": "Maximum installation delivery runtime",
-          "installation_max_operation_lifetime": "Maximum operation lifetime",
-          "actuator_transition_grace_seconds": "Actuator feedback transition grace",
-          "actuator_feedback_max_age_seconds": "Maximum actuator feedback age",
-          "external_permit": "External permit sensor",
-          "external_block": "External block sensor",
-          "external_max_age_seconds": "Maximum external safety input age",
-          "external_failure_policy": "External input failure policy",
-           "notify_entities": "Critical notification targets"
-          ,"maintenance_max_duration": "Maximum maintenance test duration"
-          ,"maintenance_confirmation_interval": "Dead-man confirmation interval"
-          ,"calibration_settle_seconds": "Calibration post-run observation time"
-          ,"installation_daily_budget_liters": "Daily installation budget"
-          ,"installation_weekly_budget_liters": "Weekly installation budget"
-          ,"pause_timeout_seconds": "Maximum pause duration"
-          ,"custom_profiles": "User-owned profile copies"
-          ,"water_tariff_per_m3": "Water tariff per m³"
-          ,"automation_enabled": "Global automatic release"
-          ,"hardware_shutoff_acknowledged": "Independent hardware-shutoff warning acknowledged"
-          ,"winter_reminder_date": "Winter reminder date (MM-DD)"
-          ,"maintenance_tasks": "Recurring maintenance tasks"
-          ,"spring_checklist": "Spring recommission checklist"
-        },
-        "data_description": {
-          "local_wind_height_m": "Defaults to 2 m for local garden sensors; set their actual physical height.",
-          "weather_wind_height_m": "Defaults to the standard weather-provider height of 10 m; override when documented otherwise.",
-          "weather_backfill_days": "Maximum number of historical local days retained for automatic restart backfill."
-        }
-      },
-      "zone": {
-        "title": "Select irrigation zone",
-        "data": {"zone_subentry_id": "Irrigation zone"}
-      },
-      "import_config": {"title": "Preview configuration import", "description": "Provide only an Irrigation Manager portable export and explicit mappings.", "data": {"payload": "Portable configuration", "entity_remapping": "Entity remapping", "zone_remapping": "Zone remapping"}},
-      "import_profile_confirmation": {"title": "Confirm imported researched profiles", "description": "Review the researched profile zones and resolved TAW/RAW locally. Imported confirmation flags are ignored. Preview: {preview}", "data": {"confirm_researched_profiles": "I reviewed and accept these profile assumptions"}},
-      "import_confirm": {"title": "Confirm configuration overwrite", "description": "Dry-run preview: {preview}", "data": {"confirm_overwrite": "Overwrite the mapped installation and zones"}},
-      "profile_impact": {
-        "title": "Confirm profile changes",
-        "description": "Affected irrigation zones: {zones}. Historical calculations remain unchanged.",
-        "data": {"confirm_profile_changes": "Apply profile changes"}
-      },
-      "zone_settings": {
-        "title": "Zone expert settings",
-        "description": "Changes are saved immediately and applied after all open irrigation requests are finished.",
-        "data": {
-          "name": "Name",
-          "zone_valve": "Zone valve",
-          "zone_valve_feedback": "Zone valve feedback",
-          "external_permit": "External permit sensor",
-          "external_block": "External block sensor",
-          "external_max_age_seconds": "Maximum external safety input age",
-          "external_failure_policy": "External input failure policy",
-          "wind_interlock_entity": "Wind interlock source",
-          "wind_interlock_threshold": "Strong-wind threshold (m/s)",
-          "wind_manual_policy": "Manual wind policy",
-          "default_duration": "Default manual duration",
-          "min_flow": "Minimum expected flow",
-          "max_flow": "Maximum expected flow",
-          "flow_grace_seconds": "Flow stabilization time",
-          "meter_failure_strategy": "Meter failure strategy",
-          "max_dose_amount": "Maximum dose amount",
-          "max_dose_duration": "Maximum dose duration",
-          "soak_duration": "Soak duration",
-          "automation_enabled": "Automatic release",
-          "watering_mode": "Watering mode",
-          "area_m2": "Area in square meters",
-          "application_efficiency": "Application efficiency",
-          "crop_factor": "Crop and location factor",
-          "rain_factor": "Effective rain factor",
-          "max_effective_rain_mm": "Maximum daily effective rain",
-          "seasonal_crop_factors": "Monthly seasonal crop factors",
-          "forecast_rain_threshold_mm": "Forecast rain threshold",
-          "forecast_rain_probability": "Forecast probability threshold",
-          "forecast_deferral_hours": "Maximum forecast deferral",
-          "maximum_deficit_mm": "Maximum water deficit",
-          "minimum_interval_days": "Minimum interval in days",
-          "maximum_interval_days": "Maximum interval in days",
-          "minimum_trigger_liters": "Minimum demand trigger",
-          "mandatory_amount_liters": "Mandatory minimum amount",
-          "minimum_effective_liters": "Effective irrigation threshold",
-          "maximum_target_liters": "Maximum automatic target",
-          "automatic_max_duration": "Maximum automatic duration",
-          "max_delivery_runtime": "Maximum zone delivery runtime",
-          "max_operation_lifetime": "Maximum operation lifetime",
-          "zone_priority": "Zone priority",
-          "watering_windows": "Watering-window rules",
-          "zone_daily_budget_liters": "Daily zone budget",
-          "zone_weekly_budget_liters": "Weekly zone budget",
-          "agronomic_values_confirmed": "I reviewed and confirm the agronomic values",
-          "plant_profile": "Plant profile ID",
-          "soil_profile": "Soil profile ID",
-          "exposure_profile": "Exposure profile ID",
-          "irrigation_profile": "Irrigation profile ID",
-          "subareas": "Teilflaechen",
-          "profile_overrides": "Profile overrides",
-          "phenology_stage_schedule": "Local phenology schedule",
-          "soil_moisture_sensors": "Soil moisture sensors",
-          "soil_moisture_role": "Soil moisture role",
-          "soil_moisture_aggregation": "Soil moisture aggregation",
-          "soil_moisture_max_age_seconds": "Maximum soil moisture age",
-          "soil_moisture_wet_threshold": "Wet-soil threshold",
-          "soil_moisture_correction_limit_mm": "Maximum configured correction",
-          "hardware_battery_sensor": "Valve battery sensor",
-          "hardware_battery_minimum": "Minimum valve battery",
-          "hardware_connectivity_sensor": "Valve connectivity sensor",
-          "hardware_fault_sensor": "Valve fault sensor",
-          "hardware_health_max_age_seconds": "Maximum hardware-health age"
-        }
-      },
-      "zone_profile_confirmation": {
-        "title": "Confirm researched profile selection",
-        "description": "Review profile ranges, confidence, sources, assumptions, warnings, and the resolved TAW and RAW before saving: {preview}",
-        "data": {"confirm_profile_selection": "Use these profile assumptions"}
-      }
+      "installation_automation_disable": {"title": "Disable automatic irrigation", "description": "Choose whether to stop the active automatic execution or let it finish.", "data": {"active_execution": "Active execution"}},
+      "reset_safety": {"title": "Reset safety lock", "description": "Clear the lock only after inspecting the installation.", "data": {"confirm_reset": "The installation is safe"}},
+      "physical_meter_correction": {"title": "Correct physical meter", "description": "The correction changes only the aligned physical meter total. Consumption history remains unchanged. The optional reason is stored in the audit history.", "data": {"physical_total_liters": "Physical meter total", "reason": "Reason"}},
+      "action_result": {"title": "Action completed", "description": "Result: {result}"}
     },
-    "abort": {
-      "no_zones": "Add an irrigation zone before editing zone settings.",
-      "zone_not_found": "The selected irrigation zone no longer exists.",
-      "already_configured": "This zone valve is already configured.",
-      "profile_change_not_pending": "There is no pending profile change to confirm.",
-      "configuration_changed": "The installation changed while this form was open. Reopen it and apply your changes again."
-      ,"installation_not_loaded": "The irrigation installation is not loaded."
-      ,"import_not_pending": "There is no previewed import to confirm."
-      ,"profile_selection_not_pending": "There is no researched profile selection awaiting confirmation."
-      ,"profile_selection_cancelled": "The researched profile selection was not saved."
-    },
-    "error": {
-      "invalid_weather_curve": "Enter twelve comma-separated monthly values and a valid finalization time.",
-      "invalid_profiles": "Profile data or a profile reference is invalid.",
-      "multiple_meter_sources": "Select either a cumulative volume meter or a raw count meter, not both.",
-      "raw_meter_requires_factor": "A raw meter and its liters-per-count factor must be configured together.",
-      "main_feedback_requires_main_valve": "Main-valve feedback requires a configured main valve.",
-      "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
-      ,"wind_interlock_requires_source_and_threshold": "Wind source and threshold must be configured together."
-      ,"invalid_import": "The portable file, version, entity mappings, or zone mappings are invalid."
-       ,"invalid_maintenance_configuration": "Use a valid MM-DD reminder date, unique task/checklist IDs, ISO due dates, and positive recurrence intervals."
-       ,"selected_meter_required": "Select the sensor matching the chosen meter type."
-       ,"meter_required_by_volume_zones": "Convert all volume-controlled zones to time control before removing the water meter."
-       ,"reset_confirmation_required": "Inspect the installation and explicitly confirm the safety reset."
-    }
+    "abort": {"actuator_already_owned": "Another irrigation installation already owns this actuator.", "installation_not_loaded": "The irrigation installation is not loaded.", "release_change_not_pending": "No release change is pending.", "meter_not_configured": "No water meter is configured.", "reconfiguration_not_required": "This installation does not require aggregate reconfiguration."},
+    "error": {"selected_meter_required": "Select the sensor matching the chosen meter type.", "raw_meter_requires_factor": "A raw pulse counter requires a positive conversion factor.", "meter_required_by_volume_zones": "Convert all volume-controlled zones to time control before removing the meter.", "reset_confirmation_required": "Inspect the installation and explicitly confirm the reset.", "meter_correction_failed": "The physical meter correction failed."}
   },
   "config_subentries": {
     "zone": {
@@ -671,227 +80,19 @@
       "initiate_flow": {"user": "Add irrigation zone"},
       "title": "Irrigation zone",
       "step": {
-        "expert": {
-          "title": "Add irrigation zone",
-          "description": "Choose a guided setup for plain-language recommendations or expert settings for the complete stored model.",
-          "data": {
-            "setup_mode": "Setup mode",
-            "name": "Name",
-            "zone_valve": "Zone valve",
-            "zone_valve_feedback": "Zone valve feedback",
-            "external_permit": "External permit sensor",
-            "external_block": "External block sensor",
-            "external_max_age_seconds": "Maximum external safety input age",
-            "external_failure_policy": "External input failure policy",
-            "wind_interlock_entity": "Wind interlock source",
-            "wind_interlock_threshold": "Strong-wind threshold (m/s)",
-            "wind_manual_policy": "Manual wind policy",
-            "default_duration": "Default manual duration",
-            "min_flow": "Minimum expected flow",
-            "max_flow": "Maximum expected flow",
-            "flow_grace_seconds": "Flow stabilization time",
-            "meter_failure_strategy": "Meter failure strategy",
-            "max_dose_amount": "Maximum dose amount",
-            "max_dose_duration": "Maximum dose duration",
-            "soak_duration": "Soak duration",
-            "automation_enabled": "Automatic release",
-            "watering_mode": "Watering mode",
-            "area_m2": "Area in square meters",
-            "application_efficiency": "Application efficiency",
-            "crop_factor": "Crop and location factor",
-            "rain_factor": "Effective rain factor",
-            "max_effective_rain_mm": "Maximum daily effective rain",
-            "seasonal_crop_factors": "Monthly seasonal crop factors",
-            "forecast_rain_threshold_mm": "Forecast rain threshold",
-            "forecast_rain_probability": "Forecast probability threshold",
-            "forecast_deferral_hours": "Maximum forecast deferral",
-            "maximum_deficit_mm": "Maximum water deficit",
-            "minimum_interval_days": "Minimum interval in days",
-            "maximum_interval_days": "Maximum interval in days",
-            "minimum_trigger_liters": "Minimum demand trigger",
-            "mandatory_amount_liters": "Mandatory minimum amount",
-            "minimum_effective_liters": "Effective irrigation threshold",
-            "maximum_target_liters": "Maximum automatic target",
-            "automatic_max_duration": "Maximum automatic duration",
-            "max_delivery_runtime": "Maximum zone delivery runtime",
-            "max_operation_lifetime": "Maximum operation lifetime",
-            "zone_priority": "Zone priority",
-            "watering_windows": "Watering-window rules",
-            "zone_daily_budget_liters": "Daily zone budget",
-            "zone_weekly_budget_liters": "Weekly zone budget",
-            "agronomic_values_confirmed": "I reviewed and confirm the agronomic values",
-            "plant_profile": "Plant profile ID",
-            "soil_profile": "Soil profile ID",
-            "exposure_profile": "Exposure profile ID",
-            "irrigation_profile": "Irrigation profile ID",
-            "subareas": "Teilflaechen",
-            "profile_overrides": "Profile overrides",
-            "phenology_stage_schedule": "Local phenology schedule",
-            "soil_moisture_sensors": "Soil moisture sensors",
-            "soil_moisture_role": "Soil moisture role",
-            "soil_moisture_aggregation": "Soil moisture aggregation",
-            "soil_moisture_max_age_seconds": "Maximum soil moisture age",
-            "soil_moisture_wet_threshold": "Wet-soil threshold",
-            "soil_moisture_correction_limit_mm": "Maximum configured correction",
-            "hardware_battery_sensor": "Valve battery sensor",
-            "hardware_battery_minimum": "Minimum valve battery",
-            "hardware_connectivity_sensor": "Valve connectivity sensor",
-            "hardware_fault_sensor": "Valve fault sensor",
-            "hardware_health_max_age_seconds": "Maximum hardware-health age"
-          },
-          "data_description": {
-            "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
-            "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults.",
-            "phenology_stage_schedule": "For staged profiles, provide season_start as MM-DD plus initial_days, development_days, mid_days, and late_days, or explicit recurring stage boundary dates. No hemisphere is assumed."
-          }
-        },
-        "user": {"title": "Add irrigation zone", "description": "Choose guided setup for plain-language recommendations or expert settings for the complete stored model.", "data": {"setup_mode": "Setup mode"}},
-        "zone_basic": {"title": "Zone and valve", "description": "One zone is everything switched by this one valve.", "data": {"name": "Name", "zone_valve": "Zone valve", "zone_valve_feedback": "Optional independent feedback", "zone_category": "What best describes this zone?"}},
-        "zone_area": {"title": "Watered area", "description": "Area directly determines expected liters. An unknown area uses a clearly marked 1 m² placeholder and blocks safe automation readiness.", "data": {"area_method": "How should area be entered?", "area_m2": "Measured area in m²", "length_m": "Length in meters", "width_m": "Width in meters"}},
-        "zone_raised_bed": {"title": "Raised-bed soil", "description": "Usable soil depth limits water storage; do not include drainage layers or empty space. Age, organic matter, and drainage help explain uncertainty.", "data": {"usable_depth_cm": "Usable soil depth in cm", "soil_answer": "Closest soil mix", "bed_age": "Bed age", "organic_rich": "Is the mix rich in compost/organic matter?", "drainage": "Observed drainage"}},
-        "zone_profiles": {"title": "Plants and location", "description": "Choose recognizable categories. The next review explains why these researched planning defaults were selected and shows their ranges and assumptions.", "data": {"plant_choice": "Plant group", "soil_answer": "Closest soil", "irrigation_method": "Irrigation method", "exposure": "Sun and rain exposure"}},
-        "zone_rate": {"title": "Application rate", "description": "Measured flow enables calibrated automatic operation. An application-rate estimate is useful for a preview but does not count as calibration.", "data": {"rate_source": "How is the application rate known?", "min_flow": "Measured minimum flow (L/min)", "max_flow": "Measured maximum flow (L/min)", "application_rate_mm_h": "Estimated application rate (mm/h)"}},
-        "zone_automatic": {"title": "Automatic watering", "description": "Demand mode waters only when enough water is missing. Minimum mode guarantees a minimum dose at every due opportunity.", "data": {"request_automation": "Request automatic release", "watering_mode": "Watering mode", "window_start": "Daily window starts", "window_end": "Daily window ends"}},
-        "zone_cycle_soak": {"title": "Cycle and soak", "description": "Recommendation reason: {recommendation}. Short doses with soak pauses reduce runoff when water arrives faster than soil can accept it.", "data": {"use_cycle_soak": "Use cycle and soak", "max_dose_minutes": "Maximum minutes per partial dose", "soak_minutes": "Soak pause in minutes"}},
-        "zone_safety": {"title": "Zone safety limits", "description": "These limits cap every automatic target independently of the calculated need.", "data": {"automatic_max_minutes": "Maximum automatic runtime", "maximum_target_liters": "Maximum automatic liters"}},
-        "zone_review": {"title": "Recommendation and impact preview", "description": "{preview}", "data": {"confirm_profile_selection": "I reviewed the assumptions and want to save this zone"}},
-        "profile_confirmation": {
-          "title": "Confirm researched profile selection",
-          "description": "Review profile ranges, confidence, sources, assumptions, warnings, and the resolved TAW and RAW before saving: {preview}",
-          "data": {"confirm_profile_selection": "Use these profile assumptions"}
-        },
-        "calibration": {
-          "title": "Calibrate flow",
-          "description": "{zone} will receive real water for the selected duration. Stay on site, inspect pipes and emitters, and keep Stop or Emergency Stop available. Water is attributed to this zone; measured values are applied only after a separate review.",
-          "data": {"duration": "Measurement duration", "confirm_supervision": "I am supervising this zone on site and it may open now"}
-        },
-        "calibration_running": {
-          "title": "Calibration running",
-          "description": "{zone} is being measured and will close automatically. Select Submit at least every {interval} seconds to renew safety supervision. Once the valve and post-run observation have finished, the next submission shows the result. {status}",
-          "data": {}
-        },
-        "calibration_review": {
-          "title": "Review calibration",
-          "description": "{result} Apply the proposed normal range only when flow and installation behavior were plausible.",
-          "data": {"resolution": "Decision", "confirm_resolution": "I reviewed the measurement and proposed values"}
-        },
-        "reconfigure_expert": {
-          "title": "Update irrigation zone (expert)",
-          "data": {
-            "setup_mode": "Edit mode",
-            "name": "Name",
-            "zone_valve": "Zone valve",
-            "zone_valve_feedback": "Zone valve feedback",
-            "external_permit": "External permit sensor",
-            "external_block": "External block sensor",
-            "external_max_age_seconds": "Maximum external safety input age",
-            "external_failure_policy": "External input failure policy",
-            "wind_interlock_entity": "Wind interlock source",
-            "wind_interlock_threshold": "Strong-wind threshold (m/s)",
-            "wind_manual_policy": "Manual wind policy",
-            "default_duration": "Default manual duration",
-            "min_flow": "Minimum expected flow",
-            "max_flow": "Maximum expected flow",
-            "flow_grace_seconds": "Flow stabilization time",
-            "meter_failure_strategy": "Meter failure strategy",
-            "max_dose_amount": "Maximum dose amount",
-            "max_dose_duration": "Maximum dose duration",
-            "soak_duration": "Soak duration",
-            "automation_enabled": "Automatic release",
-            "watering_mode": "Watering mode",
-            "area_m2": "Area in square meters",
-            "application_efficiency": "Application efficiency",
-            "crop_factor": "Crop and location factor",
-            "rain_factor": "Effective rain factor",
-            "max_effective_rain_mm": "Maximum daily effective rain",
-            "seasonal_crop_factors": "Monthly seasonal crop factors",
-            "forecast_rain_threshold_mm": "Forecast rain threshold",
-            "forecast_rain_probability": "Forecast probability threshold",
-            "forecast_deferral_hours": "Maximum forecast deferral",
-            "maximum_deficit_mm": "Maximum water deficit",
-            "minimum_interval_days": "Minimum interval in days",
-            "maximum_interval_days": "Maximum interval in days",
-            "minimum_trigger_liters": "Minimum demand trigger",
-            "mandatory_amount_liters": "Mandatory minimum amount",
-            "minimum_effective_liters": "Effective irrigation threshold",
-            "maximum_target_liters": "Maximum automatic target",
-            "automatic_max_duration": "Maximum automatic duration",
-            "max_delivery_runtime": "Maximum zone delivery runtime",
-            "max_operation_lifetime": "Maximum operation lifetime",
-            "zone_priority": "Zone priority",
-            "watering_windows": "Watering-window rules",
-            "zone_daily_budget_liters": "Daily zone budget",
-            "zone_weekly_budget_liters": "Weekly zone budget",
-            "agronomic_values_confirmed": "I reviewed and confirm the agronomic values",
-            "plant_profile": "Plant profile ID",
-            "soil_profile": "Soil profile ID",
-            "exposure_profile": "Exposure profile ID",
-            "irrigation_profile": "Irrigation profile ID",
-            "subareas": "Teilflaechen",
-            "profile_overrides": "Profile overrides",
-            "phenology_stage_schedule": "Local phenology schedule",
-            "soil_moisture_sensors": "Soil moisture sensors",
-            "soil_moisture_role": "Soil moisture role",
-            "soil_moisture_aggregation": "Soil moisture aggregation",
-            "soil_moisture_max_age_seconds": "Maximum soil moisture age",
-            "soil_moisture_wet_threshold": "Wet-soil threshold",
-            "soil_moisture_correction_limit_mm": "Maximum configured correction",
-            "hardware_battery_sensor": "Valve battery sensor",
-            "hardware_battery_minimum": "Minimum valve battery",
-            "hardware_connectivity_sensor": "Valve connectivity sensor",
-            "hardware_fault_sensor": "Valve fault sensor",
-            "hardware_health_max_age_seconds": "Maximum hardware-health age"
-          },
-          "data_description": {
-            "meter_failure_strategy": "Applies only when a configured cumulative meter fails. Estimated fallback continues by time using the zone flow profile. Without a cumulative meter, automatic targets run by estimated duration.",
-            "watering_windows": "Rules use HH:MM-HH:MM, mon,tue@HH:MM-HH:MM, YYYY-MM-DD@closed, or mon@sunrise-00:30..sunset+01:00. Date rules override weekdays; weekday rules override defaults.",
-            "phenology_stage_schedule": "For staged profiles, provide season_start as MM-DD plus initial_days, development_days, mid_days, and late_days, or explicit recurring stage boundary dates. No hemisphere is assumed."
-          }
-        },
-        "minimal": {"title": "Add irrigation zone", "data": {"name": "Name", "operation_enabled": "Operation release", "automation_enabled": "Automatic release", "zone_valve": "Zone valve", "control_type": "Control type", "volume_max_runtime": "Hard maximum runtime"}},
+        "minimal": {"title": "Add irrigation zone", "data": {"name": "Name", "zone_valve": "Zone valve", "control_type": "Control type", "volume_max_runtime": "Hard maximum runtime"}},
         "minimal_schedule": {"title": "Weekly schedule"},
-        "reconfigure_minimal": {"title": "Edit irrigation zone", "data": {"name": "Name", "operation_enabled": "Operation release", "automation_enabled": "Automatic release", "zone_valve": "Zone valve", "control_type": "Control type", "volume_max_runtime": "Hard maximum runtime"}},
+        "reconfigure": {"title": "Irrigation zone", "menu_options": {"reconfigure_minimal": "Zone and weekly schedule", "releases": "Operation releases", "calibration": "Calibrate flow"}},
+        "reconfigure_minimal": {"title": "Edit irrigation zone"},
         "reconfigure_minimal_schedule": {"title": "Weekly schedule"},
-        "reconfigure": {"title": "Irrigation zone", "menu_options": {"reconfigure_minimal": "Zone and weekly schedule", "releases": "Operation and automatic releases", "reconfigure_guided": "Guided editing", "reconfigure_expert": "Expert settings", "calibration": "Calibrate flow"}},
         "releases": {"title": "Zone releases", "data": {"operation_enabled": "Operation release", "automation_enabled": "Automatic release"}},
-        "automation_disable": {"title": "Disable automatic irrigation", "description": "An automatic irrigation execution is active in this zone. Choose whether to stop it now or let it finish.", "data": {"active_execution": "Active execution"}}
+        "automation_disable": {"title": "Disable automatic irrigation", "description": "Choose whether to stop this zone's active automatic execution or let it finish.", "data": {"active_execution": "Active execution"}},
+        "calibration": {"title": "Calibrate flow", "description": "{zone} will receive real water. Stay on site and keep Emergency Stop available.", "data": {"duration": "Measurement duration", "confirm_supervision": "I am supervising this zone"}},
+        "calibration_running": {"title": "Calibration running", "description": "{zone} is being measured. {status}"},
+        "calibration_review": {"title": "Review calibration", "description": "{result}", "data": {"resolution": "Decision", "confirm_resolution": "I reviewed the measurement"}}
       },
-      "abort": {
-        "releases_updated": "The zone releases were updated.",
-        "already_configured": "This zone valve is already configured.",
-        "profile_selection_not_pending": "There is no researched profile selection awaiting confirmation.",
-        "profile_selection_cancelled": "The researched profile selection was not saved.",
-        "installation_not_loaded": "The irrigation installation is not currently loaded.",
-        "calibration_configuration_invalid": "The configured test and supervision deadlines do not permit a safe calibration.",
-        "calibration_not_started": "No calibration was started.",
-        "calibration_no_proposal": "The measurement ended without a valid calibration proposal. Check locks, sensors, and events before trying again.",
-        "calibration_accepted": "The measured flow range was applied to this irrigation zone.",
-        "calibration_discarded": "The calibration proposal was discarded; the previous flow values remain unchanged."
-      },
-      "error": {
-        "invalid_intervals": "The maximum interval must not be shorter than the minimum interval.",
-        "invalid_watering_windows": "Enter at least one valid default, weekday, date, or sun-event watering-window rule.",
-        "automation_requires_flow_profile": "Automatic release requires minimum and maximum flow values.",
-        "agronomic_confirmation_required": "Review and confirm the generic or customized agronomic values before enabling automatic irrigation.",
-        "invalid_profiles": "Profile data, Teilflaechen, or a profile reference is invalid.",
-        "soil_moisture_correction_limit_required": "A conservative correction role requires an explicit positive correction limit."
-        ,"wind_interlock_requires_source_and_threshold": "Wind source and threshold must be configured together."
-        ,"area_required": "Enter the measured watered area."
-        ,"dimensions_required": "Enter both length and width."
-        ,"measured_flow_required": "Enter both ends of the measured flow range."
-        ,"invalid_flow_range": "Maximum flow must be greater than minimum flow."
-        ,"application_rate_required": "Enter the estimated application rate."
-        ,"calibration_supervision_required": "Confirm on-site supervision before opening a valve."
-        ,"calibration_start_failed": "Calibration did not pass its safety preflight or the installation is busy."
-        ,"calibration_resolution_required": "Review the result and confirm your decision."
-        ,"calibration_resolution_failed": "The proposal could not be applied or discarded. The zone may have changed since measurement."
-        ,"volume_max_runtime_required": "Volume control requires a hard maximum runtime."
-        ,"schedule_row_incomplete": "Every configured weekday requires start, end, and target."
-        ,"schedule_row_invalid": "Enter a valid start and end time."
-        ,"schedule_target_invalid": "Enter a positive duration or volume target."
-        ,"schedule_overlap": "Adjacent weekday windows must not overlap, including across midnight."
-        ,"schedule_target_does_not_fit": "The complete target must fit inside its window."
-      }
+      "abort": {"releases_updated": "The zone releases were updated.", "actuator_already_owned": "Another irrigation installation already owns this actuator.", "installation_not_loaded": "The irrigation installation is not loaded.", "release_change_not_pending": "No release change is pending.", "calibration_configuration_invalid": "The calibration limits are invalid.", "calibration_not_started": "No calibration was started.", "calibration_no_proposal": "The measurement produced no valid proposal.", "calibration_accepted": "The measured flow range was applied.", "calibration_discarded": "The calibration proposal was discarded."},
+      "error": {"volume_max_runtime_required": "Volume control requires a hard maximum runtime.", "schedule_row_incomplete": "Every configured weekday requires start, end, and target.", "schedule_row_invalid": "Enter a valid start and end time.", "schedule_target_invalid": "Enter a positive duration or volume target.", "schedule_overlap": "Adjacent weekday windows must not overlap.", "schedule_target_does_not_fit": "The complete target must fit inside its window.", "calibration_supervision_required": "Confirm on-site supervision.", "calibration_start_failed": "Calibration could not start.", "calibration_resolution_required": "Review and confirm the decision.", "calibration_resolution_failed": "The proposal could not be resolved."}
     }
   }
 }

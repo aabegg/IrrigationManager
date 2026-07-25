@@ -29,13 +29,6 @@ class MeterPort(Protocol):
         """Return the current cumulative total in liters."""
 
 
-class FlowPort(Protocol):
-    """Read normalized instantaneous irrigation flow."""
-
-    async def read_l_min(self) -> float:
-        """Return the current flow in liters per minute."""
-
-
 class ClockPort(Protocol):
     """Provide elapsed-time waits without coupling domain logic to HA."""
 
@@ -52,7 +45,7 @@ class ValveDidNotOpenError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRequest:
-    """One exclusive irrigation dose with exactly one target."""
+    """One exclusive irrigation operation with exactly one target."""
 
     zone_id: str
     zone_valve: str
@@ -60,23 +53,13 @@ class ExecutionRequest:
     duration_seconds: float | None = None
     amount_liters: float | None = None
     hard_time_limit_seconds: float | None = None
-    meter_failure_strategy: str = "abort"
-    estimated_flow_l_min: float | None = None
-    start_in_estimated_fallback: bool = False
     settle_seconds: float = 0.0
     managed_zone_valves: tuple[str, ...] = ()
     monitor_interval_seconds: float = 0.0
-    minimum_flow_l_min: float | None = None
-    maximum_flow_l_min: float | None = None
-    flow_grace_seconds: float = 0.0
     on_zone_opening: Callable[[], Awaitable[None]] | None = None
     on_zone_opened: Callable[[], Awaitable[None]] | None = None
     on_progress: Callable[[float, str], Awaitable[None]] | None = None
-    observe_flow: bool = False
-    use_flow_consumption: bool = False
-    flow_freshness_seconds: float = 30.0
     require_meter_progress: bool = False
-    on_flow_sample: Callable[[float], Awaitable[None]] | None = None
     on_actuator_command: Callable[[str, bool], Awaitable[None]] | None = None
     feedback_bypass_entities: tuple[str, ...] = ()
 
@@ -90,7 +73,7 @@ class ExecutionRequest:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
-    """Measured result of one irrigation dose."""
+    """Measured result of one irrigation operation."""
 
     zone_id: str
     delivered_liters: float
@@ -106,293 +89,170 @@ class ExecutionResult:
 
 @dataclass(slots=True)
 class _ExecutionProgress:
-    """Latest accounting state, retained when monitoring is interrupted."""
+    """Latest cumulative-meter progress retained on interruption."""
 
-    delivered_liters: float
-    measurement_quality: str
-    target_reached: bool
-    accounted_at: float | None = None
-    flow_accounted_at: float | None = None
-    integrated_liters: float = 0.0
-    confirmed_meter_liters: float = 0.0
-    last_flow_l_min: float | None = None
-    flow_finalized: bool = False
+    delivered_liters: float = 0.0
+    target_reached: bool = False
+    watering_started_at: float | None = None
+    opening_latency_seconds: float = 0.0
+    zone_open_confirmed: bool = False
 
 
 class IrrigationExecutor:
-    """Execute one hydraulic dose at a time and always close its valves."""
+    """Execute one hydraulic operation at a time and always close its valves."""
 
     def __init__(
         self,
         *,
         actuators: ActuatorPort,
         meter: MeterPort,
-        flow: FlowPort | None = None,
         clock: ClockPort,
     ) -> None:
         """Initialize the executor with hardware and timing ports."""
         self._actuators = actuators
         self._meter = meter
-        self._flow = flow
         self._clock = clock
         self._lock = asyncio.Lock()
 
     async def execute(self, request: ExecutionRequest) -> ExecutionResult:
-        """Execute a request and attribute measured or explicitly estimated water."""
+        """Execute a request and attribute only cumulative-meter water."""
         async with self._lock:
             time_limit = request.duration_seconds or request.hard_time_limit_seconds
             if time_limit is None:
                 raise ValueError("An execution time limit is required")
-            using_estimated_fallback = request.start_in_estimated_fallback
-            meter_start_liters: float | None = None
-            if not using_estimated_fallback and not request.use_flow_consumption:
-                try:
-                    meter_start_liters = await self._meter.read_liters()
-                    self._validate_meter_reading(meter_start_liters)
-                except Exception:
-                    if (
-                        request.amount_liters is None
-                        or request.meter_failure_strategy != "estimated_time_fallback"
-                        or request.estimated_flow_l_min is None
-                        or request.estimated_flow_l_min <= 0
-                    ):
-                        raise
-                    using_estimated_fallback = True
-            zone_closed = False
-            zone_open_confirmed = False
-            stopped = False
-            watering_started_at: float | None = None
-            delivered_duration_seconds = time_limit
-            progress = _ExecutionProgress(
-                delivered_liters=0.0,
-                measurement_quality=(
-                    "integrated"
-                    if request.use_flow_consumption
-                    or (using_estimated_fallback and self._flow is not None)
-                    else "estimated"
-                    if using_estimated_fallback
-                    else "measured"
-                ),
-                target_reached=request.duration_seconds is not None,
-            )
-            violations: list[str] = []
-            safety_scope: str | None = None
-            execution_error: Exception | None = None
-            deadline_expired = False
+
             operation_started_at = (
                 self._clock.monotonic() if request.amount_liters is not None else None
             )
-            zone_open_command_at: float | None = None
-            opening_latency_seconds = 0.0
-            meter_at_close_liters: float | None = None
-            meter_end_liters: float | None = None
             deadline = (
                 operation_started_at + time_limit if operation_started_at is not None else None
             )
+            meter_start_liters: float | None = None
+            try:
+                if deadline is not None:
+                    async with asyncio.timeout(max(0.0, deadline - self._clock.monotonic())):
+                        meter_start_liters = await self._meter.read_liters()
+                else:
+                    meter_start_liters = await self._meter.read_liters()
+                self._validate_meter_reading(meter_start_liters)
+            except (Exception, TimeoutError) as err:
+                if request.amount_liters is not None or request.require_meter_progress:
+                    await self._close_in_order(
+                        [
+                            entity_id
+                            for entity_id in (request.zone_valve, request.main_valve)
+                            if entity_id is not None
+                        ],
+                        budget_seconds=CLEANUP_FEEDBACK_BUDGET_SECONDS,
+                        on_command=request.on_actuator_command,
+                        feedback_bypass_entities=request.feedback_bypass_entities,
+                    )
+                    raise RuntimeError(f"Water meter is unavailable: {err}") from err
+            progress = _ExecutionProgress(target_reached=request.duration_seconds is not None)
+            violations: list[str] = []
+            safety_scope: str | None = None
+            execution_error: Exception | None = None
+            stopped = False
+            deadline_expired = False
             try:
                 try:
                     if request.amount_liters is not None:
                         if deadline is None:
                             raise RuntimeError("Volume irrigation deadline is missing")
                         async with asyncio.timeout(max(0.0, deadline - self._clock.monotonic())):
-                            if request.main_valve is not None:
-                                await self._open_and_confirm(request, request.main_valve)
-                            if request.on_zone_opening is not None:
-                                await request.on_zone_opening()
-                            watering_started_at = self._clock.monotonic()
-                            progress.accounted_at = watering_started_at
-                            progress.flow_accounted_at = watering_started_at
-                            zone_open_command_at = self._clock.monotonic()
-                            await self._open_and_confirm(request, request.zone_valve)
-                            opening_latency_seconds = self._clock.monotonic() - zone_open_command_at
-                            zone_open_confirmed = True
-                            if request.on_zone_opened is not None:
-                                await request.on_zone_opened()
-                            safety_scope = await self._water_and_monitor(
+                            safety_scope = await self._open_and_water(
                                 request,
-                                violations,
-                                deadline,
-                                meter_start_liters,
-                                progress,
+                                deadline=deadline,
+                                meter_start_liters=meter_start_liters,
+                                progress=progress,
+                                violations=violations,
                             )
                     else:
-                        if request.main_valve is not None:
-                            await self._open_and_confirm(request, request.main_valve)
-                        if request.on_zone_opening is not None:
-                            await request.on_zone_opening()
-                        watering_started_at = self._clock.monotonic()
-                        progress.accounted_at = watering_started_at
-                        progress.flow_accounted_at = watering_started_at
-                        deadline = watering_started_at + time_limit
-                        zone_open_command_at = self._clock.monotonic()
-                        await self._open_and_confirm(request, request.zone_valve)
-                        opening_latency_seconds = self._clock.monotonic() - zone_open_command_at
-                        zone_open_confirmed = True
-                        if request.on_zone_opened is not None:
-                            await request.on_zone_opened()
+                        await self._open_valves(request, progress)
+                        if progress.watering_started_at is None:
+                            raise RuntimeError("Irrigation start checkpoint is missing")
+                        deadline = progress.watering_started_at + time_limit
                         safety_scope = await self._water_and_monitor(
                             request,
-                            violations,
-                            deadline,
-                            meter_start_liters,
-                            progress,
+                            deadline=deadline,
+                            meter_start_liters=meter_start_liters,
+                            progress=progress,
+                            violations=violations,
                         )
                 except TimeoutError:
                     deadline_expired = True
                     self._record_hard_timeout(request, violations, progress)
-                if request.amount_liters is not None or violations:
-                    elapsed_started_at = (
-                        watering_started_at
-                        if watering_started_at is not None
-                        else operation_started_at
-                    )
-                    delivered_duration_seconds = min(
-                        time_limit,
-                        0.0
-                        if elapsed_started_at is None
-                        else max(0.0, self._clock.monotonic() - elapsed_started_at),
-                    )
-                if meter_start_liters is not None and request.observe_flow:
-                    try:
-                        meter_at_close_liters = await self._meter.read_liters()
-                    except Exception:  # noqa: BLE001
-                        meter_at_close_liters = None
-                try:
-                    if request.amount_liters is not None and deadline is not None:
-                        async with asyncio.timeout(max(0.0, deadline - self._clock.monotonic())):
-                            await self._notify_actuator_command(request, request.zone_valve, False)
-                            await self._actuators.close(
-                                request.zone_valve,
-                                verify=request.zone_valve not in request.feedback_bypass_entities,
-                            )
-                    else:
-                        await self._notify_actuator_command(request, request.zone_valve, False)
-                        await self._actuators.close(
-                            request.zone_valve,
-                            verify=request.zone_valve not in request.feedback_bypass_entities,
-                        )
-                    zone_closed = True
-                except TimeoutError:
-                    deadline_expired = True
-                    self._record_hard_timeout(request, violations, progress)
-                except Exception as err:  # noqa: BLE001
-                    violations.append(f"Could not close {request.zone_valve}: {err}")
-                    safety_scope = safety_scope or "zone"
+
             except asyncio.CancelledError:
                 stopped = True
-                self._capture_estimated_progress(request, progress)
-                elapsed_started_at = (
-                    watering_started_at if watering_started_at is not None else operation_started_at
-                )
-                delivered_duration_seconds = (
-                    0.0
-                    if elapsed_started_at is None
-                    else min(
-                        time_limit,
-                        max(0.0, self._clock.monotonic() - elapsed_started_at),
-                    )
-                )
             except Exception as err:  # noqa: BLE001
                 execution_error = err
-                elapsed_started_at = (
-                    watering_started_at if watering_started_at is not None else operation_started_at
-                )
-                if elapsed_started_at is not None:
-                    delivered_duration_seconds = min(
-                        time_limit,
-                        max(0.0, self._clock.monotonic() - elapsed_started_at),
-                    )
             finally:
-                self._finalize_flow_progress(request, progress, at=self._clock.monotonic())
-                cleanup_entities = [] if zone_closed else [request.zone_valve]
+                cleanup_entities = [request.zone_valve]
                 if request.main_valve is not None:
                     cleanup_entities.append(request.main_valve)
-                cleanup_errors = await self._close_with_shared_feedback_budget(
+                cleanup_errors = await self._close_in_order(
                     cleanup_entities,
                     budget_seconds=CLEANUP_FEEDBACK_BUDGET_SECONDS,
                     on_command=request.on_actuator_command,
                     feedback_bypass_entities=request.feedback_bypass_entities,
                 )
                 for entity_id, cleanup_error in cleanup_errors.items():
-                    if entity_id == request.zone_valve:
-                        violations.append(f"Could not close {request.zone_valve}: {cleanup_error}")
-                        safety_scope = safety_scope or "zone"
-                    else:
-                        violations.append(f"Could not close {entity_id}: {cleanup_error}")
-                        safety_scope = "installation"
+                    violations.append(f"Could not close {entity_id}: {cleanup_error}")
+                    safety_scope = (
+                        "installation"
+                        if entity_id != request.zone_valve
+                        else safety_scope or "zone"
+                    )
 
-            if not zone_open_confirmed and execution_error is not None:
+            if not progress.zone_open_confirmed and execution_error is not None:
                 raise execution_error
-            if watering_started_at is None:
+            if progress.watering_started_at is None:
                 if execution_error is not None:
                     raise execution_error
                 if violations and not deadline_expired:
                     raise RuntimeError("; ".join(violations))
 
+            ended_at = self._clock.monotonic()
+            elapsed_started_at = (
+                progress.watering_started_at
+                if progress.watering_started_at is not None
+                else operation_started_at
+            )
+            delivered_duration_seconds = min(
+                time_limit,
+                0.0 if elapsed_started_at is None else max(0.0, ended_at - elapsed_started_at),
+            )
             if not stopped:
                 await self._clock.sleep(request.settle_seconds)
-            if progress.measurement_quality == "measured" and meter_start_liters is not None:
-                try:
-                    meter_end_liters = await self._meter.read_liters()
-                except Exception as err:  # noqa: BLE001
-                    if progress.integrated_liters > 0:
-                        progress.measurement_quality = "integrated"
-                        progress.delivered_liters = progress.integrated_liters
-                        if (
-                            request.amount_liters is not None
-                            and request.meter_failure_strategy != "estimated_time_fallback"
-                        ):
-                            violations.append(f"Water meter failed during irrigation: {err}")
-                            progress.target_reached = False
-                    elif request.amount_liters is None:
-                        execution_error = execution_error or err
+            try:
+                meter_end_liters = await self._meter.read_liters()
+                if meter_start_liters is None:
+                    raise RuntimeError("Water meter start reading was unavailable")
+                progress.delivered_liters = self._meter_delta(
+                    start_liters=meter_start_liters,
+                    current_liters=meter_end_liters,
+                )
+            except Exception as err:  # noqa: BLE001
+                if request.amount_liters is not None or request.require_meter_progress:
+                    violations.append(f"Water meter failed during irrigation: {err}")
+                    progress.target_reached = False
+                    safety_scope = safety_scope or "installation"
                 else:
-                    try:
-                        progress.delivered_liters = self._meter_delta(
-                            request,
-                            start_liters=meter_start_liters,
-                            current_liters=meter_end_liters,
-                        )
-                        progress.confirmed_meter_liters = progress.delivered_liters
-                    except ValueError as err:
-                        violations.append(str(err))
-                        progress.target_reached = False
-                        safety_scope = "installation"
-            elif progress.measurement_quality == "integrated":
-                progress.delivered_liters = progress.integrated_liters
-            metered_duration_seconds = max(
-                0.0, delivered_duration_seconds - opening_latency_seconds
+                    progress.delivered_liters = 0.0
+
+            meter_progress_required = (
+                request.amount_liters is not None or request.require_meter_progress
             )
             if (
                 not stopped
-                and request.require_meter_progress
-                and progress.confirmed_meter_liters <= 0
+                and progress.zone_open_confirmed
+                and meter_progress_required
+                and progress.delivered_liters <= 0
             ):
                 violations.append("No cumulative meter progress during irrigation")
                 progress.target_reached = False
                 safety_scope = safety_scope or "zone"
-            elif not stopped and request.require_meter_progress and metered_duration_seconds > 0:
-                average_flow_l_min = progress.confirmed_meter_liters * 60 / metered_duration_seconds
-                if (
-                    request.maximum_flow_l_min is not None
-                    and average_flow_l_min > request.maximum_flow_l_min
-                ):
-                    violations.append(
-                        f"Average metered flow {average_flow_l_min} L/min exceeds maximum "
-                        f"{request.maximum_flow_l_min} L/min"
-                    )
-                    progress.target_reached = False
-                    safety_scope = "installation"
-                elif (
-                    request.minimum_flow_l_min is not None
-                    and average_flow_l_min < request.minimum_flow_l_min
-                ):
-                    violations.append(
-                        f"Average metered flow {average_flow_l_min} L/min is below minimum "
-                        f"{request.minimum_flow_l_min} L/min"
-                    )
-                    progress.target_reached = False
-                    safety_scope = safety_scope or "zone"
             if execution_error is not None:
                 violations.append(str(execution_error))
 
@@ -403,47 +263,62 @@ class IrrigationExecutor:
                 stopped=stopped,
                 safety_violation="; ".join(dict.fromkeys(violations)) or None,
                 safety_scope=safety_scope,
-                measurement_quality=progress.measurement_quality,
-                target_reached=progress.target_reached,
-                opening_latency_seconds=opening_latency_seconds,
-                post_run_liters=(
-                    max(0.0, meter_end_liters - meter_at_close_liters)
-                    if meter_start_liters is not None
-                    and meter_at_close_liters is not None
-                    and meter_end_liters is not None
-                    else 0.0
+                measurement_quality=(
+                    "measured" if meter_start_liters is not None else "unavailable"
                 ),
+                target_reached=progress.target_reached,
+                opening_latency_seconds=progress.opening_latency_seconds,
             )
+
+    async def _open_and_water(
+        self,
+        request: ExecutionRequest,
+        *,
+        deadline: float,
+        meter_start_liters: float | None,
+        progress: _ExecutionProgress,
+        violations: list[str],
+    ) -> str | None:
+        """Open valves and deliver water within one absolute volume deadline."""
+        await self._open_valves(request, progress)
+        return await self._water_and_monitor(
+            request,
+            deadline=deadline,
+            meter_start_liters=meter_start_liters,
+            progress=progress,
+            violations=violations,
+        )
+
+    async def _open_valves(self, request: ExecutionRequest, progress: _ExecutionProgress) -> None:
+        """Open the main valve before issuing the zone-valve command."""
+        if request.main_valve is not None:
+            await self._open_and_confirm(request, request.main_valve)
+        if request.on_zone_opening is not None:
+            await request.on_zone_opening()
+        progress.watering_started_at = self._clock.monotonic()
+        await self._open_and_confirm(request, request.zone_valve)
+        progress.opening_latency_seconds = self._clock.monotonic() - progress.watering_started_at
+        progress.zone_open_confirmed = True
+        if request.on_zone_opened is not None:
+            await request.on_zone_opened()
 
     async def _water_and_monitor(
         self,
         request: ExecutionRequest,
-        violations: list[str],
+        *,
         deadline: float,
         meter_start_liters: float | None,
         progress: _ExecutionProgress,
+        violations: list[str],
     ) -> str | None:
-        """Water for the requested duration while enforcing valve exclusivity."""
+        """Deliver irrigation while enforcing exclusivity and meter targets."""
         if request.amount_liters is None and request.monitor_interval_seconds <= 0:
             await self._clock.sleep(max(0.0, deadline - self._clock.monotonic()))
             return None
 
-        watering_started_at = self._clock.monotonic()
         while self._clock.monotonic() < deadline:
             interval = request.monitor_interval_seconds or 1.0
-            step = min(interval, max(0.0, deadline - self._clock.monotonic()))
-            if (
-                request.amount_liters is not None
-                and progress.measurement_quality == "estimated"
-                and request.estimated_flow_l_min
-            ):
-                estimated_seconds_to_target = (
-                    max(0.0, request.amount_liters - progress.delivered_liters)
-                    * 60
-                    / request.estimated_flow_l_min
-                )
-                step = min(step, estimated_seconds_to_target)
-            await self._clock.sleep(step)
+            await self._clock.sleep(min(interval, max(0.0, deadline - self._clock.monotonic())))
             if request.amount_liters is not None and self._clock.monotonic() >= deadline:
                 self._record_hard_timeout(request, violations, progress)
                 return None
@@ -454,9 +329,6 @@ class IrrigationExecutor:
                 violations.append(f"{request.zone_valve} closed unexpectedly")
                 progress.target_reached = False
                 return "zone"
-            if request.amount_liters is not None and self._clock.monotonic() >= deadline:
-                self._record_hard_timeout(request, violations, progress)
-                return None
             for entity_id in request.managed_zone_valves:
                 if entity_id == request.zone_valve:
                     continue
@@ -468,201 +340,44 @@ class IrrigationExecutor:
                         violations.append(f"Could not close {entity_id}: {err}")
                     progress.target_reached = False
                     return "installation"
-                if request.amount_liters is not None and self._clock.monotonic() >= deadline:
-                    self._record_hard_timeout(request, violations, progress)
-                    return None
-            if self._flow is not None and (
-                request.observe_flow
-                or request.minimum_flow_l_min is not None
-                or request.maximum_flow_l_min is not None
-            ):
-                elapsed = self._clock.monotonic() - watering_started_at
-                if elapsed >= request.flow_grace_seconds:
-                    try:
-                        flow_l_min = await self._flow.read_l_min()
-                    except Exception as err:  # noqa: BLE001
-                        violations.append(f"Flow safety unavailable: {err}")
-                        progress.target_reached = False
-                        return "installation"
-                    if request.on_flow_sample is not None:
-                        await request.on_flow_sample(flow_l_min)
-                    now = self._clock.monotonic()
-                    self._integrate_flow_interval(
-                        request,
-                        progress,
-                        at=now,
-                        fallback_flow_l_min=flow_l_min,
-                    )
-                    progress.flow_accounted_at = now
-                    progress.last_flow_l_min = flow_l_min
-                    if progress.measurement_quality == "integrated":
-                        progress.delivered_liters = progress.integrated_liters
-                    if request.amount_liters is not None and self._clock.monotonic() >= deadline:
-                        self._record_hard_timeout(request, violations, progress)
-                        return None
-                    if (
-                        request.maximum_flow_l_min is not None
-                        and flow_l_min > request.maximum_flow_l_min
-                    ):
-                        violations.append(
-                            f"Flow {flow_l_min} L/min exceeds maximum "
-                            f"{request.maximum_flow_l_min} L/min"
-                        )
-                        progress.target_reached = False
-                        return "installation"
-                    if (
-                        request.minimum_flow_l_min is not None
-                        and flow_l_min < request.minimum_flow_l_min
-                    ):
-                        violations.append(
-                            f"Flow {flow_l_min} L/min is below minimum "
-                            f"{request.minimum_flow_l_min} L/min"
-                        )
-                        progress.target_reached = False
-                        return "zone"
 
-            if request.amount_liters is not None:
-                if progress.measurement_quality == "measured":
-                    try:
-                        current_liters = await self._meter.read_liters()
-                    except Exception as err:  # noqa: BLE001
-                        if request.meter_failure_strategy != "estimated_time_fallback":
-                            if self._flow is not None and progress.integrated_liters > 0:
-                                progress.delivered_liters = max(
-                                    progress.delivered_liters, progress.integrated_liters
-                                )
-                                progress.measurement_quality = "integrated"
-                            violations.append(f"Water meter failed during irrigation: {err}")
-                            progress.target_reached = False
-                            return None
-                        if (
-                            request.estimated_flow_l_min is None
-                            or request.estimated_flow_l_min <= 0
-                        ):
-                            violations.append(
-                                "Water meter failed and no flow profile is configured"
-                            )
-                            progress.target_reached = False
-                            return None
-                        if (
-                            self._flow is not None
-                            and progress.flow_accounted_at is not None
-                            and progress.integrated_liters > 0
-                        ):
-                            progress.measurement_quality = "integrated"
-                            progress.delivered_liters = max(
-                                progress.delivered_liters, progress.integrated_liters
-                            )
-                            progress.accounted_at = self._clock.monotonic()
-                        else:
-                            progress.measurement_quality = "estimated"
-                            self._capture_estimated_progress(request, progress)
-                    else:
-                        if meter_start_liters is None:
-                            raise RuntimeError("Volume irrigation meter baseline is missing")
-                        try:
-                            progress.delivered_liters = self._meter_delta(
-                                request,
-                                start_liters=meter_start_liters,
-                                current_liters=current_liters,
-                            )
-                            progress.confirmed_meter_liters = progress.delivered_liters
-                        except ValueError as err:
-                            violations.append(str(err))
-                            progress.target_reached = False
-                            return "installation"
-                        progress.accounted_at = self._clock.monotonic()
-                elif progress.measurement_quality == "integrated":
-                    progress.delivered_liters = progress.integrated_liters
-                else:
-                    if request.estimated_flow_l_min is None or request.estimated_flow_l_min <= 0:
-                        raise RuntimeError("Estimated fallback flow is missing")
-                    self._capture_estimated_progress(request, progress)
-                if self._clock.monotonic() >= deadline:
-                    self._record_hard_timeout(request, violations, progress)
-                    return None
-                if request.on_progress is not None:
-                    await request.on_progress(
-                        max(0.0, request.amount_liters - progress.delivered_liters),
-                        progress.measurement_quality,
-                    )
-                if self._clock.monotonic() >= deadline:
-                    self._record_hard_timeout(request, violations, progress)
-                    return None
-                if progress.delivered_liters >= request.amount_liters:
-                    progress.target_reached = True
-                    return None
+            if request.amount_liters is None:
+                continue
+            if meter_start_liters is None:
+                raise RuntimeError("Volume irrigation meter baseline is unavailable")
+            try:
+                current_liters = await self._meter.read_liters()
+                progress.delivered_liters = self._meter_delta(
+                    start_liters=meter_start_liters,
+                    current_liters=current_liters,
+                )
+            except Exception as err:  # noqa: BLE001
+                violations.append(f"Water meter failed during irrigation: {err}")
+                progress.target_reached = False
+                return "installation"
+            if request.on_progress is not None:
+                await request.on_progress(
+                    max(0.0, request.amount_liters - progress.delivered_liters),
+                    "measured",
+                )
+            if progress.delivered_liters >= request.amount_liters:
+                progress.target_reached = True
+                return None
+
         if request.amount_liters is not None:
             self._record_hard_timeout(request, violations, progress)
         return None
 
+    @staticmethod
     def _record_hard_timeout(
-        self,
         request: ExecutionRequest,
         violations: list[str],
         progress: _ExecutionProgress,
     ) -> None:
         """Mark an unreached volume target at its absolute deadline."""
-        self._capture_estimated_progress(request, progress)
         progress.target_reached = False
         if request.amount_liters is not None:
             violations.append("Hard time limit reached before volume target")
-
-    def _capture_estimated_progress(
-        self,
-        request: ExecutionRequest,
-        progress: _ExecutionProgress,
-    ) -> None:
-        """Account estimated water elapsed since the latest durable observation."""
-        if (
-            progress.measurement_quality != "estimated"
-            or request.estimated_flow_l_min is None
-            or request.estimated_flow_l_min <= 0
-            or progress.accounted_at is None
-        ):
-            return
-        now = self._clock.monotonic()
-        progress.delivered_liters += (
-            max(0.0, now - progress.accounted_at) * request.estimated_flow_l_min / 60
-        )
-        progress.accounted_at = now
-
-    @staticmethod
-    def _integrate_flow_interval(
-        request: ExecutionRequest,
-        progress: _ExecutionProgress,
-        *,
-        at: float,
-        fallback_flow_l_min: float | None = None,
-    ) -> None:
-        """Integrate one monotonic interval using only a fresh last valid sample."""
-        if progress.flow_accounted_at is None:
-            return
-        flow_l_min = progress.last_flow_l_min
-        if flow_l_min is None:
-            flow_l_min = fallback_flow_l_min
-        if flow_l_min is None:
-            return
-        elapsed = max(0.0, at - progress.flow_accounted_at)
-        fresh_elapsed = min(elapsed, max(0.0, request.flow_freshness_seconds))
-        progress.integrated_liters += fresh_elapsed * flow_l_min / 60
-
-    @classmethod
-    def _finalize_flow_progress(
-        cls,
-        request: ExecutionRequest,
-        progress: _ExecutionProgress,
-        *,
-        at: float,
-    ) -> None:
-        """Capture the final fresh flow interval exactly once on every exit path."""
-        if progress.flow_finalized:
-            return
-        cls._integrate_flow_interval(request, progress, at=at)
-        progress.flow_accounted_at = at
-        progress.flow_finalized = True
-        if progress.measurement_quality == "integrated":
-            progress.delivered_liters = progress.integrated_liters
 
     @staticmethod
     def _validate_meter_reading(reading_liters: float) -> None:
@@ -671,27 +386,13 @@ class IrrigationExecutor:
             raise ValueError("Water meter reading is not plausible")
 
     @classmethod
-    def _meter_delta(
-        cls,
-        request: ExecutionRequest,
-        *,
-        start_liters: float,
-        current_liters: float,
-    ) -> float:
-        """Return a plausible dose delta without converting bad input into water."""
+    def _meter_delta(cls, *, start_liters: float, current_liters: float) -> float:
+        """Return measured irrigation water without accepting meter regression."""
         cls._validate_meter_reading(start_liters)
         cls._validate_meter_reading(current_liters)
         if current_liters < start_liters:
             raise ValueError("Water meter regressed during irrigation")
-        delta_liters = current_liters - start_liters
-        maximum_duration_seconds = request.hard_time_limit_seconds or request.duration_seconds
-        if (
-            request.maximum_flow_l_min is not None
-            and maximum_duration_seconds is not None
-            and delta_liters > request.maximum_flow_l_min * maximum_duration_seconds / 60
-        ):
-            raise ValueError("Water meter jump exceeds the plausible execution maximum")
-        return delta_liters
+        return current_liters - start_liters
 
     async def _open_and_confirm(self, request: ExecutionRequest, entity_id: str) -> None:
         """Open one actuator and reject missing feedback."""
@@ -701,7 +402,15 @@ class IrrigationExecutor:
         if not bypass and not await self._actuators.is_open(entity_id):
             raise ValveDidNotOpenError(entity_id)
 
-    async def _close_with_shared_feedback_budget(
+    async def _close_zone(self, request: ExecutionRequest) -> None:
+        """Close the active zone before the main-valve cleanup phase."""
+        await self._notify_actuator_command(request, request.zone_valve, False)
+        await self._actuators.close(
+            request.zone_valve,
+            verify=request.zone_valve not in request.feedback_bypass_entities,
+        )
+
+    async def _close_in_order(
         self,
         entity_ids: list[str],
         *,
@@ -709,37 +418,19 @@ class IrrigationExecutor:
         on_command: Callable[[str, bool], Awaitable[None]] | None = None,
         feedback_bypass_entities: tuple[str, ...] = (),
     ) -> dict[str, BaseException]:
-        """Start every fail-safe close and share one bounded feedback budget.
-
-        The water-runtime deadline determines when closure starts. This separate
-        budget only bounds confirmation that all close commands took effect.
-        """
-        if on_command is not None:
-            await asyncio.gather(*(on_command(entity_id, False) for entity_id in entity_ids))
-        tasks = {
-            entity_id: asyncio.create_task(
-                self._actuators.close(
-                    entity_id,
-                    verify=entity_id not in feedback_bypass_entities,
-                )
-            )
-            for entity_id in dict.fromkeys(entity_ids)
-        }
-        if not tasks:
-            return {}
-        done, pending = await asyncio.wait(tasks.values(), timeout=budget_seconds)
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        """Command zone then main closure, each with a cleanup-only bound."""
         errors: dict[str, BaseException] = {}
-        for entity_id, task in tasks.items():
-            if task in pending:
-                errors[entity_id] = TimeoutError(
-                    "close feedback exceeded the shared cleanup budget"
-                )
-            elif task in done and (error := task.exception()) is not None:
-                errors[entity_id] = error
+        for entity_id in dict.fromkeys(entity_ids):
+            try:
+                async with asyncio.timeout(budget_seconds):
+                    if on_command is not None:
+                        await on_command(entity_id, False)
+                    await self._actuators.close(
+                        entity_id,
+                        verify=entity_id not in feedback_bypass_entities,
+                    )
+            except BaseException as err:  # noqa: BLE001
+                errors[entity_id] = err
         return errors
 
     @staticmethod

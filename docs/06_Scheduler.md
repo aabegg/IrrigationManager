@@ -1,5 +1,7 @@
 # Scheduler
 
+> **Historischer Version-1-Entwurf:** Version 2 plant ausschließlich feste Wochenziele gemäß `docs/17_Neukonzept.md`. Teilgaben, Sickerpausen und bedarfsabhängige Planung sind nicht implementiert.
+
 ## Grundregel
 
 Der Scheduler erzeugt Bewässerungsaufträge, schaltet aber keine Ventile. Pro Bewässerungsanlage darf der Executor immer nur eine Teilgabe gleichzeitig ausführen. Weitere Bewässerungsvorgänge dürfen ausschließlich während ihrer Sickerpause offen warten.

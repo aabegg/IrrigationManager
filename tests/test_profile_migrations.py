@@ -1,175 +1,243 @@
-"""Migration tests for immutable resolved calculation inputs."""
+"""Tests for the single destructive rc6-to-v2 storage migration."""
 
-from types import MappingProxyType
-
-from homeassistant.config_entries import ConfigSubentry
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from custom_components.irrigation_manager import async_migrate_entry
-from custom_components.irrigation_manager.models import ManualIrrigationRequest
+from custom_components.irrigation_manager.models import (
+    ActiveExecutionState,
+    IrrigationExecutionState,
+    ManualIrrigationRequest,
+    StoredInstallationState,
+    WaterConsumptionRecord,
+)
 from custom_components.irrigation_manager.storage import _StateStore
 
 
-async def test_storage_21_adds_resolved_inputs_to_durable_records() -> None:
-    """Keep legacy history readable while marking unavailable old inputs explicitly."""
-    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
-        None,
-        1,
-        21,
-        {
-            "manual_requests": [{"request_id": "request-1"}],
-            "irrigation_executions": [{"execution_id": "execution-1"}],
-            "active_execution": {"zone_id": "zone-1"},
-        },
-    )
-
-    assert migrated["manual_requests"] == [
-        {
-            "request_id": "request-1",
-            "resolved_inputs": {},
-            "balance_total_available_water_mm": None,
-            "balance_readily_available_water_mm": None,
-        }
-    ]
-    assert migrated["irrigation_executions"] == [
-        {
-            "execution_id": "execution-1",
-            "resolved_inputs": {},
-            "measurement_quality": "unknown",
-            "measurement_origin": "unknown",
-            "warnings": [],
-            "doses": [],
-            "balance_total_available_water_mm": None,
-            "balance_readily_available_water_mm": None,
-        }
-    ]
-    assert migrated["active_execution"] == {
-        "zone_id": "zone-1",
-        "resolved_inputs": {},
-        "fallback_quality": "estimated",
-        "balance_total_available_water_mm": None,
-        "balance_readily_available_water_mm": None,
-    }
-
-
-async def test_storage_22_adds_meter_continuity_and_monotonic_unassigned_balance() -> None:
-    """Preserve old unassigned water while adding future continuity records."""
-    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
-        None,
-        1,
-        22,
-        {"unassigned_total_liters": 12.0, "irrigation_executions": []},
-    )
-
-    assert migrated["unassigned_available_liters"] == 12
-    assert migrated["meter_last_raw_liters"] is None
-    assert migrated["water_consumption_history"] == []
-
-
-async def test_storage_24_adds_meter_source_identity_and_history_quality() -> None:
-    """Mark legacy continuity identity unknown and retained periods complete."""
-    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
-        None,
-        1,
-        24,
-        {},
-    )
-
-    assert migrated["meter_source_entity_id"] is None
-    assert migrated["meter_source_liters_per_count"] is None
-    assert migrated["water_history_incomplete"] is False
-
-
-def test_request_round_trip_retains_resolved_profile_snapshot() -> None:
-    """Do not re-resolve historical execution inputs after profile edits."""
-    request = ManualIrrigationRequest(
-        request_id="request-1",
+def _request(
+    request_id: str,
+    *,
+    source: str = "manual",
+    status: str = "completed",
+    execution_id: str | None = None,
+) -> ManualIrrigationRequest:
+    return ManualIrrigationRequest(
+        request_id=request_id,
         sequence=1,
         zone_id="zone-1",
         zone_subentry_id="subentry-1",
-        zone_name="Bed",
-        zone_valve="switch.bed",
+        zone_name="Lawn",
+        zone_valve="switch.lawn",
         main_valve=None,
         target_type="duration",
         target_value=60,
-        remaining_value=60,
-        created_at="2026-07-22T00:00:00+00:00",
-        expires_at="2026-07-22T01:00:00+00:00",
-        resolved_inputs={"profile_schema_version": 1, "area_m2": 12.0},
-        balance_total_available_water_mm=60,
-        balance_readily_available_water_mm=24,
+        remaining_value=0,
+        created_at="2026-07-24T10:00:00+00:00",
+        expires_at="2026-07-24T11:00:00+00:00",
+        status=status,
+        source=source,
+        execution_id=execution_id,
+        delivery_runtime_limit_seconds=60,
+        operation_deadline_at="2026-07-24T11:00:00+00:00",
     )
 
-    restored = ManualIrrigationRequest.from_dict(request.as_dict())
 
-    assert restored.resolved_inputs == request.resolved_inputs
-    assert restored.balance_total_available_water_mm == 60
-    assert restored.balance_readily_available_water_mm == 24
+def _execution(execution_id: str, request_id: str, *, status: str) -> IrrigationExecutionState:
+    return IrrigationExecutionState(
+        execution_id=execution_id,
+        request_id=request_id,
+        zone_id="zone-1",
+        target_type="duration",
+        target_value=60,
+        remaining_value=0,
+        status=status,
+        created_at="2026-07-24T10:00:00+00:00",
+        delivered_liters=12,
+        delivered_duration_seconds=60,
+        ended_at=("2026-07-24T10:01:00+00:00" if status == "completed" else None),
+    )
 
 
-async def test_storage_27_preserves_legacy_one_limit_as_equal_taw_and_raw() -> None:
-    """Migrate persisted snapshots without changing legacy scheduling behavior."""
-    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
-        None,
-        1,
-        26,
+async def test_rc6_migration_preserves_only_valid_v2_state() -> None:
+    """Keep accounting, releases, lock state, and completed history."""
+    completed_request = _request("completed")
+    completed_execution = _execution("execution-completed", "completed", status="completed")
+    history = WaterConsumptionRecord(
+        recorded_at="2026-07-24T10:01:00+00:00",
+        amount_liters=12,
+        zone_id="zone-1",
+        source="manual",
+        quality="measured",
+    )
+    old_data = StoredInstallationState(
+        installation_total_liters=120,
+        zone_totals_liters={"zone-1": 100},
+        unassigned_total_liters=20,
+        meter_accumulated_liters=1_000,
+        meter_last_raw_liters=10,
+        meter_correction_liters=5,
+        meter_reset_count=2,
+        manual_requests=(completed_request,),
+        irrigation_executions=(completed_execution,),
+        water_consumption_history=(history,),
+        emergency_stop=True,
+        installation_safety_lock="valve_error",
+        installation_safety_lock_at="2026-07-24T10:02:00+00:00",
+        operation_enabled=False,
+        automation_enabled=True,
+        zone_operation_enabled={"zone-1": False},
+        zone_automation_enabled={"zone-1": True},
+    ).as_dict()
+    old_data.update(
         {
-            "manual_requests": [{"request_id": "request-1", "balance_maximum_deficit_mm": 40}],
-            "irrigation_executions": [],
-        },
+            "weather_failure_since": "legacy",
+            "zone_deficit_mm": {"zone-1": 9},
+            "winter_lock": True,
+            "archived_zones": {"zone-old": "legacy"},
+            "installation_cost": 99,
+        }
+    )
+    executions = old_data["irrigation_executions"]
+    history_records = old_data["water_consumption_history"]
+    assert isinstance(executions, list)
+    assert isinstance(history_records, list)
+    executions[0].update(
+        {
+            "dose_number": 3,
+            "doses": [{"dose_number": 3, "duration_seconds": 60}],
+        }
+    )
+    history_records[0]["dose_number"] = 3
+
+    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
+        None, 1, 29, old_data
+    )
+    state = StoredInstallationState.from_dict(migrated)
+
+    assert state.installation_total_liters == 120
+    assert state.zone_totals_liters == {"zone-1": 100}
+    assert state.unassigned_total_liters == 20
+    assert state.meter_accumulated_liters == 1_000
+    assert state.meter_last_raw_liters == 10
+    assert state.meter_correction_liters == 5
+    assert state.meter_reset_count == 2
+    assert state.manual_requests == (completed_request,)
+    assert state.irrigation_executions == (completed_execution,)
+    assert state.water_consumption_history == (history,)
+    assert "dose_number" not in state.irrigation_executions[0].as_dict()
+    assert "doses" not in state.irrigation_executions[0].as_dict()
+    assert "dose_number" not in state.water_consumption_history[0].as_dict()
+    assert state.emergency_stop is True
+    assert state.installation_safety_lock == "valve_error"
+    assert state.operation_enabled is False
+    assert state.automation_enabled is True
+    assert state.zone_operation_enabled == {"zone-1": False}
+    assert state.zone_automation_enabled == {"zone-1": True}
+    assert set(migrated) == set(StoredInstallationState().as_dict())
+
+
+async def test_rc6_migration_discards_stale_automatic_and_legacy_work() -> None:
+    """Drop pending automatic and malformed legacy records."""
+    old_data = StoredInstallationState(
+        manual_requests=(
+            _request("manual-pending", status="pending"),
+            _request("automatic-pending", source="automatic", status="pending"),
+        )
+    ).as_dict()
+    requests = old_data["manual_requests"]
+    assert isinstance(requests, list)
+    requests.extend(
+        [
+            {**_request("paused").as_dict(), "status": "paused"},
+            {**_request("soaking").as_dict(), "status": "soaking"},
+            {"request_id": "malformed"},
+        ]
     )
 
-    request = migrated["manual_requests"][0]
-    assert request["balance_total_available_water_mm"] == 40
-    assert request["balance_readily_available_water_mm"] == 40
-
-
-async def test_legacy_profile_config_resets_to_disabled_v2_shell(hass: HomeAssistant) -> None:
-    """Discard incompatible v1 planning fields and require explicit v2 reconfiguration."""
-    entry = MockConfigEntry(
-        domain="irrigation_manager",
-        title="Garden",
-        data={
-            "name": "Garden",
-            "automation_enabled": True,
-            "hardware_shutoff_acknowledged": True,
-            "meter_max_age_seconds": 300,
-            "flow_max_age_seconds": 30,
-        },
-        version=1,
-        minor_version=3,
+    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
+        None, 1, 29, old_data
     )
-    entry.add_to_hass(hass)
-    zone = ConfigSubentry(
-        data=MappingProxyType(
-            {"name": "Lawn", "zone_valve": "switch.lawn", "automation_enabled": True}
-        ),
-        subentry_id="zone-1",
-        subentry_type="zone",
-        title="Lawn",
-        unique_id="zone-1",
-    )
-    hass.config_entries.async_add_subentry(entry, zone)
+    state = StoredInstallationState.from_dict(migrated)
 
-    assert await async_migrate_entry(hass, entry)
-    assert entry.version == 2
-    assert entry.minor_version == 0
-    assert set(entry.data) == {
-        "name",
-        "meter_type",
-        "operation_enabled",
-        "automation_enabled",
-        "needs_reconfiguration",
-    }
-    assert entry.data["meter_type"] == "none"
-    assert entry.data["operation_enabled"] is False
-    assert entry.data["automation_enabled"] is False
-    assert entry.data["needs_reconfiguration"] is True
-    migrated_zone = entry.subentries["zone-1"].data
-    assert migrated_zone["zone_valve"] == "switch.lawn"
-    assert migrated_zone["control_type"] == "time"
-    assert migrated_zone["operation_enabled"] is False
-    assert migrated_zone["automation_enabled"] is False
-    assert migrated_zone["needs_reconfiguration"] is True
-    assert len(migrated_zone["weekly_schedule"]) == 7
+    assert [request.request_id for request in state.manual_requests] == ["manual-pending"]
+    assert state.active_execution is None
+
+
+async def test_rc6_migration_preserves_only_coherent_active_v2_execution() -> None:
+    """Retain an active checkpoint only with both linked durable records."""
+    request = _request(
+        "automatic-active",
+        source="automatic",
+        status="executing",
+        execution_id="execution-active",
+    )
+    execution = _execution("execution-active", "automatic-active", status="watering")
+    active = ActiveExecutionState(
+        zone_id="zone-1",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        meter_raw_baseline_liters=100,
+        prepared_at="2026-07-24T10:00:00+00:00",
+        watering_started_at="2026-07-24T10:00:01+00:00",
+        requested_duration_seconds=60,
+        request_id=request.request_id,
+        execution_id=execution.execution_id,
+    )
+    old_data = StoredInstallationState(
+        active_execution=active,
+        manual_requests=(request,),
+        irrigation_executions=(execution,),
+    ).as_dict()
+    active_data = old_data["active_execution"]
+    assert isinstance(active_data, dict)
+    active_data.update(
+        {
+            "estimated_flow_l_min": 12,
+            "dose_number": 2,
+            "dose_target_value": 30,
+            "fallback_started_at": "2026-07-24T10:00:30+00:00",
+        }
+    )
+
+    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
+        None, 1, 29, old_data
+    )
+    state = StoredInstallationState.from_dict(migrated)
+
+    assert state.active_execution == active
+    assert (
+        not {
+            "estimated_flow_l_min",
+            "dose_number",
+            "dose_target_value",
+            "fallback_started_at",
+        }
+        & state.active_execution.as_dict().keys()
+    )
+    assert state.manual_requests == (request,)
+    assert state.irrigation_executions == (execution,)
+
+    executions = old_data["irrigation_executions"]
+    assert isinstance(executions, list)
+    executions.clear()
+    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
+        None, 1, 29, old_data
+    )
+    discarded = StoredInstallationState.from_dict(migrated)
+    assert discarded.active_execution is None
+    assert all(request.status != "executing" for request in discarded.manual_requests)
+    assert all(execution.status != "watering" for execution in discarded.irrigation_executions)
+
+
+def test_emergency_stop_load_normalizes_missing_safety_lock() -> None:
+    """Keep emergency stop independently fail-closed after malformed persistence."""
+    state = StoredInstallationState.from_dict({"emergency_stop": True})
+
+    assert state.emergency_stop is True
+    assert state.installation_safety_lock == "Emergency stop activated"
+
+
+async def test_migration_normalizes_emergency_stop_without_legacy_lock() -> None:
+    """Persist the same fail-closed invariant directly in migrated storage."""
+    migrated = await _StateStore._async_migrate_func(  # type: ignore[arg-type]
+        None, 1, 29, {"emergency_stop": True}
+    )
+
+    assert migrated["emergency_stop"] is True
+    assert migrated["installation_safety_lock"] == "Emergency stop activated"

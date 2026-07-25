@@ -1,15 +1,15 @@
-start_manual:
-  fields:
-    config_entry_id:
+start_manual: &manual_action
+  fields: &manual_fields
+    config_entry_id: &installation
       required: true
       selector:
         config_entry:
           integration: irrigation_manager
-    zone_subentry_id:
+    zone_subentry_id: &zone
       required: true
       selector:
         text:
-    duration:
+    duration: &duration
       required: false
       selector:
         number:
@@ -18,7 +18,7 @@ start_manual:
           step: 1
           unit_of_measurement: s
           mode: box
-    amount:
+    amount: &amount
       required: false
       selector:
         number:
@@ -27,7 +27,7 @@ start_manual:
           step: 0.001
           unit_of_measurement: L
           mode: box
-    hard_time_limit:
+    hard_time_limit: &hard_time_limit
       required: false
       selector:
         number:
@@ -38,7 +38,6 @@ start_manual:
           mode: box
     expiry:
       required: false
-      default: 3600
       selector:
         number:
           min: 0.001
@@ -50,95 +49,16 @@ start_manual:
       required: false
       selector:
         datetime:
-create_manual:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
-      required: true
-      selector:
-        text:
-    duration:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          max: 604800
-          step: 1
-          unit_of_measurement: s
-          mode: box
-    amount:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          max: 1000000
-          step: 0.001
-          unit_of_measurement: L
-          mode: box
-    hard_time_limit:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          max: 604800
-          step: 1
-          unit_of_measurement: s
-          mode: box
-    expiry:
-      required: false
-      default: 3600
-      selector:
-        number:
-          min: 0.001
-          max: 604800
-          step: 1
-          unit_of_measurement: s
-          mode: box
-    start_at:
-      required: false
-      selector:
-        datetime:
+
+create_manual: *manual_action
+
 start_manual_from_card:
   fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
-      required: true
-      selector:
-        text:
-    duration:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          max: 604800
-          step: 1
-          unit_of_measurement: s
-          mode: box
-    amount:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          step: 0.001
-          unit_of_measurement: L
-          mode: box
-    hard_time_limit:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          max: 604800
-          step: 1
-          unit_of_measurement: s
-          mode: box
+    config_entry_id: *installation
+    zone_subentry_id: *zone
+    duration: *duration
+    amount: *amount
+    hard_time_limit: *hard_time_limit
     conflict_policy:
       required: true
       selector:
@@ -147,24 +67,89 @@ start_manual_from_card:
             - start_now
             - stop_active
             - priority_next
-list_card_orders:
+
+cancel_request:
   fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-list_zone_history:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
+    config_entry_id: *installation
+    request_id:
       required: true
       selector:
         text:
+
+stop:
+  fields:
+    config_entry_id: *installation
+    execution_id:
+      required: true
+      selector:
+        text:
+
+emergency_stop:
+  fields:
+    config_entry_id: *installation
+
+set_installation_operation:
+  fields:
+    config_entry_id: *installation
+    enabled: &enabled
+      required: true
+      selector:
+        boolean:
+
+set_installation_automation:
+  fields:
+    config_entry_id: *installation
+    enabled: *enabled
+    stop_active: &stop_active
+      required: false
+      default: false
+      selector:
+        boolean:
+
+set_zone_operation:
+  fields:
+    config_entry_id: *installation
+    zone_subentry_id: *zone
+    enabled: *enabled
+
+set_zone_automation:
+  fields:
+    config_entry_id: *installation
+    zone_subentry_id: *zone
+    enabled: *enabled
+    stop_active: *stop_active
+
+reset_safety_lock:
+  fields:
+    config_entry_id: *installation
+
+plan_automatic:
+  fields:
+    config_entry_id: *installation
+
+correct_physical_meter:
+  fields:
+    config_entry_id: *installation
+    physical_total:
+      required: true
+      selector:
+        number:
+          min: 0
+          step: 0.001
+          unit_of_measurement: L
+          mode: box
+    reason:
+      selector:
+        text:
+
+list_card_orders:
+  fields:
+    config_entry_id: *installation
+
+list_zone_history:
+  fields:
+    config_entry_id: *installation
+    zone_subentry_id: *zone
     offset:
       default: 0
       selector:
@@ -187,654 +172,8 @@ list_zone_history:
           options:
             - manual
             - automatic
-            - maintenance
             - calibration
     result:
       required: false
       selector:
         text:
-create_manual_plan:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    items:
-      required: true
-      selector:
-        object:
-    plan_id:
-      required: false
-      selector:
-        text:
-    start_at:
-      required: false
-      selector:
-        datetime:
-    expiry:
-      required: false
-      default: 3600
-      selector:
-        number:
-          min: 0.001
-          max: 604800
-          unit_of_measurement: s
-          mode: box
-list_requests:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-cancel_request:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    request_id:
-      required: true
-      selector:
-        text:
-edit_request:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    request_id:
-      required: true
-      selector:
-        text:
-    duration:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          max: 604800
-          unit_of_measurement: s
-          mode: box
-    amount:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          unit_of_measurement: L
-          mode: box
-    hard_time_limit:
-      required: false
-      selector:
-        number:
-          min: 0.001
-          max: 604800
-          unit_of_measurement: s
-          mode: box
-    start_at:
-      required: false
-      selector:
-        datetime:
-    expires_at:
-      required: false
-      selector:
-        datetime:
-reorder_requests:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    request_ids:
-      required: true
-      selector:
-        object:
-pause_request:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    request_id:
-      required: true
-      selector:
-        text:
-resume_request:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    request_id:
-      required: true
-      selector:
-        text:
-stop:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    request_id:
-      required: false
-      selector:
-        text:
-stop_and_skip:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    request_id:
-      required: false
-      selector:
-        text:
-    execution_id:
-      required: false
-      selector:
-        text:
-    at:
-      required: false
-      selector:
-        datetime:
-emergency_stop:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-set_installation_operation:
-  fields:
-    config_entry_id: &release_installation
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    enabled: &release_enabled
-      required: true
-      selector:
-        boolean:
-set_installation_automation:
-  fields:
-    config_entry_id: *release_installation
-    enabled: *release_enabled
-    stop_active: &stop_active
-      required: false
-      default: false
-      selector:
-        boolean:
-set_zone_operation:
-  fields:
-    config_entry_id: *release_installation
-    zone_subentry_id: &release_zone
-      required: true
-      selector:
-        text:
-    enabled: *release_enabled
-set_zone_automation:
-  fields:
-    config_entry_id: *release_installation
-    zone_subentry_id: *release_zone
-    enabled: *release_enabled
-    stop_active: *stop_active
-reset_safety_lock:
-  fields:
-    config_entry_id: *release_installation
-reset_emergency_stop:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-reset_zone_safety:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
-      required: true
-      selector:
-        text:
-reset_installation_safety:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-assign_water:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
-      required: true
-      selector:
-        text:
-    amount:
-      required: true
-      selector:
-        number:
-          min: 0.001
-          max: 1000000
-          step: 0.001
-          unit_of_measurement: L
-          mode: box
-plan_automatic:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    dry_run:
-      required: false
-      default: false
-      selector:
-        boolean:
-    at:
-      required: false
-      selector:
-        datetime:
-finalize_daily_weather:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    period_id:
-      required: true
-      selector:
-        text:
-    reference_evapotranspiration:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 100
-          step: 0.01
-          unit_of_measurement: mm
-          mode: box
-    rain:
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 1000
-          step: 0.01
-          unit_of_measurement: mm
-          mode: box
-skip_automatic:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
-      required: true
-      selector:
-        text:
-    at:
-      required: false
-      selector:
-        datetime:
-clear_forecast_deferral:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
-      required: true
-      selector:
-        text:
-export_config:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-import_config:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    payload:
-      required: true
-      selector:
-        object:
-    entity_remapping:
-      required: false
-      default: {}
-      selector:
-        object:
-    zone_remapping:
-      required: false
-      default: {}
-      selector:
-        object:
-    dry_run:
-      required: false
-      default: true
-      selector:
-        boolean:
-    confirm_overwrite:
-      required: false
-      default: false
-      selector:
-        boolean:
-    confirm_researched_profiles:
-      required: false
-      default: false
-      selector:
-        boolean:
-    config_hash:
-      required: false
-      selector:
-        text:
-correct_physical_meter:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    physical_total:
-      required: true
-      selector:
-        number:
-          min: 0
-          step: 0.001
-          unit_of_measurement: L
-          mode: box
-export_history:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    format:
-      required: false
-      default: json
-      selector:
-        select:
-          options:
-            - json
-            - csv
-    limit:
-      required: false
-      default: 100
-      selector:
-        number:
-          min: 1
-          max: 1000
-          step: 1
-          mode: box
-resolve_balance_reconciliation:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    reconciliation_id:
-      required: true
-      selector:
-        text:
-    resolution:
-      required: true
-      selector:
-        select:
-          options:
-            - apply
-            - discard
-set_winter_lock:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-clear_winter_lock:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-start_maintenance_test:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
-      required: true
-      selector:
-        text:
-    duration:
-      required: true
-      selector:
-        number:
-          min: 0.001
-          max: 3600
-          step: 1
-          unit_of_measurement: s
-          mode: box
-    bypass_checks:
-      required: false
-      default: []
-      selector:
-        select:
-          multiple: true
-          options:
-            - feedback
-            - flow
-            - weather
-            - external
-    kind:
-      required: false
-      default: maintenance
-      selector:
-        select:
-          options:
-            - maintenance
-            - spring_recommission
-    water_attribution:
-      required: false
-      default: zone
-      selector:
-        select:
-          options:
-            - zone
-            - unassigned
-confirm_maintenance_test:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    test_id:
-      required: true
-      selector:
-        text:
-stop_maintenance_test:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-start_calibration:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id:
-      required: true
-      selector:
-        text:
-    duration:
-      required: true
-      selector:
-        number:
-          min: 0.001
-          max: 3600
-          step: 1
-          unit_of_measurement: s
-          mode: box
-get_calibration_proposal:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-resolve_calibration:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    proposal_id:
-      required: true
-      selector:
-        text:
-    resolution:
-      required: true
-      selector:
-        select:
-          options:
-            - accept
-            - discard
-list_profiles:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-preview_profile_impact:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    profile_id:
-      required: true
-      selector:
-        text:
-copy_profile:
-  fields:
-    config_entry_id:
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    source_profile_id:
-      required: true
-      selector:
-        text:
-    new_profile_id:
-      required: true
-      selector:
-        text:
-    name:
-      required: true
-      selector:
-        text:
-    config_hash:
-      required: false
-      selector:
-        text:
-archive_zone:
-  fields:
-    config_entry_id: &installation
-      required: true
-      selector:
-        config_entry:
-          integration: irrigation_manager
-    zone_subentry_id: &zone
-      required: true
-      selector:
-        text:
-restore_zone:
-  fields:
-    config_entry_id: *installation
-    zone_subentry_id: *zone
-suspend_automatic:
-  fields:
-    config_entry_id: *installation
-    zone_subentry_id:
-      required: false
-      selector:
-        text:
-    until:
-      required: true
-      selector:
-        datetime:
-resume_automatic:
-  fields:
-    config_entry_id: *installation
-    zone_subentry_id:
-      required: false
-      selector:
-        text:
-list_maintenance:
-  fields:
-    config_entry_id: *installation
-complete_maintenance_task:
-  fields:
-    config_entry_id: *installation
-    task_id:
-      required: true
-      selector:
-        text:
-snooze_maintenance_task:
-  fields:
-    config_entry_id: *installation
-    task_id:
-      required: true
-      selector:
-        text:
-    until:
-      required: true
-      selector:
-        date:
-update_spring_checklist:
-  fields:
-    config_entry_id: *installation
-    item_id:
-      required: true
-      selector:
-        text:
-    completed:
-      required: true
-      selector:
-        boolean:

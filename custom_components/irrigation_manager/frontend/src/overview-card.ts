@@ -3,7 +3,6 @@ import { LitElement, html, nothing, type TemplateResult } from "lit";
 import {
   DOMAIN,
   entity,
-  progress,
   resolveOverviewConfig,
   statusIcon,
   stringAttribute,
@@ -12,9 +11,6 @@ import {
 import { displayState, localize, translatedValue } from "./localize";
 import { cardStyles } from "./styles";
 import type { HassEntity, HomeAssistant, OverviewCardConfig } from "./types";
-
-const DEFAULT_METRICS = ["pending", "next", "today", "month", "meter"];
-const DEFAULT_ACTIONS: string[] = [];
 
 export class IrrigationManagerOverviewCard extends LitElement {
   static styles = cardStyles;
@@ -41,8 +37,7 @@ export class IrrigationManagerOverviewCard extends LitElement {
   static getStubConfig(): OverviewCardConfig {
     return {
       type: "custom:irrigation-manager-overview-card",
-      configuration_mode: "simple",
-      installation: "",
+      entity: "",
     };
   }
 
@@ -51,11 +46,10 @@ export class IrrigationManagerOverviewCard extends LitElement {
   }
 
   getCardSize(): number {
-    return this._config?.display_mode === "compact" ? 3 : 5;
+    return 5;
   }
 
-  private metric(key: string, label: string, state?: HassEntity): TemplateResult | typeof nothing {
-    if (!(this._config.visible_metrics ?? DEFAULT_METRICS).includes(key)) return nothing;
+  private metric(label: string, state?: HassEntity): TemplateResult {
     return html`<div class="metric"><span>${label}</span><strong>${displayState(this.hass, state)}</strong></div>`;
   }
 
@@ -113,85 +107,38 @@ export class IrrigationManagerOverviewCard extends LitElement {
       return html`<ha-card><div class="card"><div class="warning"><ha-icon icon="mdi:water-alert"></ha-icon><span>${localize(this.hass, "missing")}</span></div></div></ha-card>`;
     }
     const status = entity(this.hass, config.status_entity);
-    const emergency = entity(this.hass, config.emergency_entity);
-    const lock = entity(this.hass, config.lock_entity);
-    const winter = entity(this.hass, config.winter_entity);
-    const maintenance = entity(this.hass, config.maintenance_entity);
-    const release = entity(this.hass, config.automation_release_entity);
-    const active = entity(this.hass, config.active_zone_entity);
     const configEntryId = stringAttribute(status, "config_entry_id");
-    const percent = progress(active);
-    const actions = this._config.visible_actions ?? DEFAULT_ACTIONS;
     const statusValue = status?.state ?? "unavailable";
-    const locked = emergency?.state === "on" || lock?.state === "on";
     const meteringFunctional = status?.attributes.volume_control_available === true;
+    const title = typeof status?.attributes.card_name === "string"
+      ? status.attributes.card_name
+      : status?.attributes.friendly_name ?? localize(this.hass, "overview");
 
     return html`
       <ha-card>
-        <div class="card ${this._config.display_mode === "compact" ? "compact" : ""}">
+        <div class="card">
           <header>
             <div class="hero">
               <ha-icon .icon=${statusIcon(statusValue)}></ha-icon>
               <div>
-                <h2>${this._config.name ?? localize(this.hass, "overview")}</h2>
+                <h2>${title}</h2>
                 <strong>${usable(status) ? translatedValue(this.hass, status.state) : displayState(this.hass, status)}</strong>
               </div>
             </div>
           </header>
 
-          ${locked
-            ? html`<div class="warning danger"><ha-icon icon="mdi:lock-alert-outline"></ha-icon><span>${emergency?.state === "on" ? localize(this.hass, "emergency_stop") : localize(this.hass, "safety_lock")}${stringAttribute(lock, "reason") ? `: ${stringAttribute(lock, "reason")}` : ""}</span></div>`
-            : nothing}
-          ${winter?.state === "on"
-            ? html`<div class="warning"><ha-icon icon="mdi:snowflake-alert"></ha-icon><span>${localize(this.hass, "winter_lock")}</span></div>`
-            : nothing}
-          ${maintenance?.state === "on"
-            ? html`<div class="warning"><ha-icon icon="mdi:wrench-clock"></ha-icon><span>${localize(this.hass, "maintenance_active")}</span></div>`
-            : nothing}
-          ${release?.state === "off" && stringAttribute(release, "suspended_until")
-            ? html`<div class="warning"><ha-icon icon="mdi:calendar-clock"></ha-icon><span>${localize(this.hass, "automatic_suspended")}: ${stringAttribute(release, "suspended_until")}</span></div>`
-            : nothing}
-
-          ${(this._config.visible_metrics ?? DEFAULT_METRICS).includes("active") && active
-            ? html`
-                <section>
-                  <h3>${localize(this.hass, "active_zone")}</h3>
-                  <strong>${displayState(this.hass, active)}</strong>
-                  ${config.dose_entity
-                    ? html`<div class="secondary">${localize(this.hass, "dose")}: ${displayState(this.hass, entity(this.hass, config.dose_entity))}</div>`
-                    : nothing}
-                  ${percent === undefined
-                    ? nothing
-                    : html`<div class="secondary">${localize(this.hass, "progress")}: ${Math.round(percent)}%</div><progress max="100" .value=${percent} aria-label=${localize(this.hass, "progress")}></progress>`}
-                </section>
-              `
-            : nothing}
-
-          <div class="metrics details">
-            ${(this._config.visible_metrics ?? DEFAULT_METRICS).includes("pending")
-              ? html`<button class="metric metric-button" data-testid="open-orders" ?disabled=${this._busy || !configEntryId} @click=${this.openOrders}><span>${localize(this.hass, "pending")}</span><strong>${displayState(this.hass, entity(this.hass, config.pending_entity))}</strong></button>`
-              : nothing}
-            ${this.metric("next", localize(this.hass, "next_zone"), entity(this.hass, config.next_entity))}
-            ${this.metric("next", localize(this.hass, "expected_start"), entity(this.hass, config.next_start_entity))}
-            ${this.metric("today", localize(this.hass, meteringFunctional ? "water_today" : "runtime_today"), entity(this.hass, meteringFunctional ? config.today_consumption_entity : config.runtime_today_entity))}
-            ${this.metric("month", localize(this.hass, meteringFunctional ? "water_month" : "runtime_month"), entity(this.hass, meteringFunctional ? config.month_consumption_entity : config.runtime_month_entity))}
-            ${this.metric("meter", localize(this.hass, "corrected_meter"), entity(this.hass, config.physical_meter_entity))}
-            ${this.metric("quality", localize(this.hass, "model_quality"), entity(this.hass, config.model_quality_entity))}
-            ${this.metric("maintenance", localize(this.hass, "maintenance_due"), entity(this.hass, config.maintenance_due_entity))}
+          <div class="metrics">
+            <button class="metric metric-button" data-testid="open-orders" ?disabled=${this._busy || !configEntryId} @click=${this.openOrders}><span>${localize(this.hass, "pending")}</span><strong>${displayState(this.hass, entity(this.hass, config.pending_entity))}</strong></button>
+            ${this.metric(localize(this.hass, "next_zone"), entity(this.hass, config.next_entity))}
+            ${this.metric(localize(this.hass, "expected_start"), entity(this.hass, config.next_start_entity))}
+            ${this.metric(localize(this.hass, meteringFunctional ? "water_today" : "runtime_today"), entity(this.hass, meteringFunctional ? config.today_consumption_entity : config.runtime_today_entity))}
+            ${this.metric(localize(this.hass, meteringFunctional ? "water_month" : "runtime_month"), entity(this.hass, meteringFunctional ? config.month_consumption_entity : config.runtime_month_entity))}
+            ${meteringFunctional ? this.metric(localize(this.hass, "physical_meter"), entity(this.hass, config.physical_meter_entity)) : nothing}
           </div>
 
           ${this._error ? html`<div class="error" role="alert">${this._error}</div>` : nothing}
           <div class="actions">
-            ${actions.includes("stop")
-              ? html`<button class="danger" ?disabled=${this._busy || !usable(status) || !configEntryId} @click=${() => this.call("stop", localize(this.hass, "confirm_stop"))}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${localize(this.hass, "stop")}</button>`
-              : nothing}
             <button class="danger emergency" data-testid="emergency-stop" ?disabled=${this._busy || !configEntryId} @click=${() => this.call("emergency_stop")}><ha-icon icon="mdi:alert-octagon-outline"></ha-icon>${localize(this.hass, "emergency")}</button>
-            ${actions.includes("suspend")
-              ? html`<button ?disabled=${this._busy || !configEntryId} @click=${() => this.call("suspend_automatic", localize(this.hass, "confirm_suspend"), { until: new Date(Date.now() + 86400000).toISOString() })}><ha-icon icon="mdi:calendar-clock"></ha-icon>${localize(this.hass, "suspend_24h")}</button>`
-              : nothing}
-            ${actions.includes("resume")
-              ? html`<button ?disabled=${this._busy || !configEntryId} @click=${() => this.call("resume_automatic", localize(this.hass, "confirm_resume"))}><ha-icon icon="mdi:calendar-check"></ha-icon>${localize(this.hass, "resume_automatic")}</button>`
-              : nothing}
           </div>
           ${this._ordersOpen ? html`
             <dialog open aria-labelledby="orders-title">

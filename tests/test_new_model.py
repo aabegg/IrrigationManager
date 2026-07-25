@@ -19,7 +19,9 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager import async_migrate_entry
 from custom_components.irrigation_manager.const import DOMAIN
+from custom_components.irrigation_manager.executor import ExecutionResult
 from custom_components.irrigation_manager.models import (
+    ActiveExecutionState,
     IrrigationExecutionState,
     ManualIrrigationRequest,
 )
@@ -30,6 +32,7 @@ async def _setup_v2_installation(
     hass: HomeAssistant,
     *,
     with_meter: bool = False,
+    valve_open: bool = False,
     installation_overrides: dict[str, object] | None = None,
     zone_overrides: dict[str, object] | None = None,
 ) -> tuple[MockConfigEntry, ConfigSubentry]:
@@ -41,7 +44,7 @@ async def _setup_v2_installation(
 
     hass.services.async_register("switch", "turn_on", turn_on)
     hass.services.async_register("switch", "turn_off", turn_off)
-    hass.states.async_set("switch.lawn", STATE_OFF)
+    hass.states.async_set("switch.lawn", "on" if valve_open else STATE_OFF)
     if with_meter:
         hass.states.async_set(
             "sensor.water",
@@ -186,7 +189,7 @@ async def test_v2_creation_menu_has_no_zone_less_expert_path(hass: HomeAssistant
     """Every ordinary v2 creation path must produce its first valid zone."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
 
-    assert result["menu_options"] == ["create", "import"]
+    assert result["menu_options"] == ["create"]
 
 
 async def test_weekly_schedule_rejects_partial_and_overlapping_rows(
@@ -267,7 +270,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
     assert await async_migrate_entry(hass, entry)
 
     assert entry.version == 2
-    assert entry.minor_version == 0
+    assert entry.minor_version == 1
     assert entry.data == {
         "name": "Legacy garden",
         "main_valve": "switch.main",
@@ -298,6 +301,64 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
         ],
         "needs_reconfiguration": True,
     }
+
+
+async def test_v2_minor_migration_removes_only_retired_entity_unique_ids(
+    hass: HomeAssistant,
+) -> None:
+    """Clean stale entity registrations without touching allowed renamed entities."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={"name": "Garden", "meter_type": "none"},
+        unique_id="migration-installation",
+        version=2,
+        minor_version=0,
+    )
+    entry.add_to_hass(hass)
+    zone = ConfigSubentry(
+        data=MappingProxyType({"name": "Lawn", "zone_valve": "switch.lawn"}),
+        subentry_id="migration-zone-subentry",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="migration-zone",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+    registry = er.async_get(hass)
+    allowed = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        "migration-zone_zone_status",
+        config_entry=entry,
+        suggested_object_id="legacy_zone_status",
+    )
+    registry.async_update_entity(allowed.entity_id, new_entity_id="sensor.renamed_zone_status")
+    retired = {
+        registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            "migration-installation_weather_model_quality",
+            config_entry=entry,
+        ).entity_id,
+        registry.async_get_or_create(
+            "binary_sensor",
+            DOMAIN,
+            "migration-zone_safety_lock",
+            config_entry=entry,
+        ).entity_id,
+        registry.async_get_or_create(
+            "calendar",
+            DOMAIN,
+            "migration-installation_calendar",
+            config_entry=entry,
+        ).entity_id,
+    }
+
+    assert await async_migrate_entry(hass, entry)
+
+    assert entry.minor_version == 1
+    assert registry.async_get("sensor.renamed_zone_status") is not None
+    assert all(registry.async_get(entity_id) is None for entity_id in retired)
 
 
 async def test_weekly_replan_atomically_replaces_only_pending_automatic_requests(
@@ -487,32 +548,6 @@ async def test_unchanged_weekly_replan_preserves_request_and_sequence(
     assert manager._stored_state.next_request_sequence == next_sequence
 
 
-async def test_weekly_replan_excludes_archived_and_suspended_zones(
-    hass: HomeAssistant,
-) -> None:
-    """Apply durable operational exclusions before creating weekly requests."""
-    entry, zone = await _setup_v2_installation(hass)
-    manager = entry.runtime_data.manager
-    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
-    zone_id = zone.unique_id
-    manager._stored_state = replace(
-        manager._stored_state,
-        manual_requests=(),
-        archived_zones={zone_id: now.isoformat()},
-    )
-
-    archived = await manager.async_plan_automatic(dry_run=True, now=now)
-    assert archived["would_create_request_ids"] == []
-
-    manager._stored_state = replace(
-        manager._stored_state,
-        archived_zones={},
-        zone_automatic_suspended_until={zone_id: (now + timedelta(days=15)).isoformat()},
-    )
-    suspended = await manager.async_plan_automatic(dry_run=True, now=now)
-    assert suspended["would_create_request_ids"] == []
-
-
 async def test_durable_releases_gate_manual_and_automatic_operation(
     hass: HomeAssistant,
 ) -> None:
@@ -540,6 +575,35 @@ async def test_durable_releases_gate_manual_and_automatic_operation(
         zone_subentry_id=zone.subentry_id, enabled=False, stop_active=False
     )
     assert manager.snapshot().zone_automation_enabled[zone.unique_id] is False
+
+
+async def test_disabled_installation_does_not_supervise_external_valve_changes(
+    hass: HomeAssistant,
+) -> None:
+    """Behave as if absent after deactivation instead of enforcing actuator state."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    await manager.async_set_installation_operation(enabled=False)
+
+    hass.states.async_set("switch.lawn", "on")
+    await hass.async_block_till_done()
+
+    assert hass.states.get("switch.lawn").state == "on"
+    assert manager.snapshot().installation_safety_lock is None
+
+
+async def test_disabled_installation_does_not_enforce_valve_state_during_startup(
+    hass: HomeAssistant,
+) -> None:
+    """Leave externally managed hardware untouched while starting disabled."""
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        valve_open=True,
+        installation_overrides={"operation_enabled": False},
+    )
+
+    assert hass.states.get("switch.lawn").state == "on"
+    assert entry.runtime_data.manager.snapshot().installation_safety_lock is None
 
 
 @pytest.mark.parametrize("flag_scope", ["installation", "zone"])
@@ -577,10 +641,9 @@ async def test_reconfiguration_flags_block_activation_manual_dispatch_and_calibr
             wait_for_completion=False,
         )
     with pytest.raises(HomeAssistantError, match="reconfiguration"):
-        await manager.async_start_maintenance_test(
+        await manager.async_start_calibration(
             zone_subentry_id=zone.subentry_id,
             duration_seconds=1,
-            kind="calibration",
         )
 
     now = datetime.now(UTC)
@@ -691,11 +754,11 @@ async def test_v2_config_edits_do_not_overwrite_disabled_durable_releases(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "v2_installation"}
+        result["flow_id"], {"next_step_id": "meter"}
     )
     assert "automation_enabled" not in {str(key) for key in result["data_schema"].schema}
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"name": "Garden", "meter_type": "none"}
+        result["flow_id"], {"meter_type": "none"}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
@@ -816,7 +879,28 @@ async def test_metered_timed_operation_completes_without_meter_progress_or_lock(
     request = manager.list_manual_requests()[-1]
     assert request["status"] == "completed"
     assert manager.snapshot().installation_safety_lock is None
-    assert manager.snapshot().zone_safety_locks == {}
+
+
+async def test_physical_meter_correction_is_audited_without_changing_consumption(
+    hass: HomeAssistant,
+) -> None:
+    """Persist the physical reading adjustment separately from consumed water."""
+    entry, _zone = await _setup_v2_installation(hass, with_meter=True)
+    manager = entry.runtime_data.manager
+    consumption_before = manager.snapshot().installation_total_liters
+
+    result = await manager.async_correct_physical_meter(
+        physical_total_liters=125.0,
+        reason="Physical reading",
+    )
+
+    assert result["previous_total_liters"] == 100.0
+    assert result["new_total_liters"] == 125.0
+    assert result["difference_liters"] == 25.0
+    assert result["reason"] == "Physical reading"
+    assert manager.snapshot().installation_total_liters == consumption_before
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.meter_correction_history[-1].as_dict() == result
 
 
 async def test_release_and_unified_lock_actions_are_registered(
@@ -865,6 +949,7 @@ async def test_no_meter_exposes_runtime_contract_without_water_entities(
     entry, zone = await _setup_v2_installation(hass)
     registry = er.async_get(hass)
 
+    assert entry.minor_version == 1
     assert (
         registry.async_get_entity_id("sensor", DOMAIN, "installation-v2-runtime_water_total")
         is None
@@ -917,12 +1002,6 @@ async def test_runtime_periods_split_at_local_midnight_and_month_end(
         created_at=(datetime.fromisoformat(ended_at) - timedelta(seconds=duration)).isoformat(),
         delivered_duration_seconds=duration,
         ended_at=ended_at,
-        doses=(
-            {
-                "ended_at": ended_at,
-                "duration_seconds": duration,
-            },
-        ),
     )
     manager._stored_state = replace(manager._stored_state, irrigation_executions=(execution,))
     with (
@@ -1042,14 +1121,14 @@ async def test_options_block_meter_removal_while_volume_zone_exists(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "v2_installation"}
+        result["flow_id"], {"next_step_id": "meter"}
     )
-    assert result["step_id"] == "v2_installation"
+    assert result["step_id"] == "meter"
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"name": "Garden", "meter_type": "none"}
+        result["flow_id"], {"meter_type": "none"}
     )
 
-    assert result["step_id"] == "v2_installation"
+    assert result["step_id"] == "meter"
     assert result["errors"] == {"base": "meter_required_by_volume_zones"}
     await hass.async_block_till_done()
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -1104,9 +1183,18 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
     hass.config_entries.async_add_subentry(entry, zone)
 
     options = await hass.config_entries.options.async_init(entry.entry_id)
-    assert options["menu_options"] == ["v2_installation", "actions"]
+    assert options["menu_options"] == [
+        "installation_reconfiguration",
+        "basics",
+        "main_valve",
+        "meter",
+        "installation_releases",
+        "replan",
+        "emergency_stop",
+        "reset_safety",
+    ]
     options = await hass.config_entries.options.async_configure(
-        options["flow_id"], {"next_step_id": "v2_installation"}
+        options["flow_id"], {"next_step_id": "installation_reconfiguration"}
     )
     installation_fields = {str(key) for key in options["data_schema"].schema}
     assert {"operation_enabled", "automation_enabled"}.isdisjoint(installation_fields)
@@ -1163,15 +1251,6 @@ async def test_v2_settings_actions_control_releases_emergency_reset_and_replan(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "actions"}
-    )
-    assert result["menu_options"] == [
-        "installation_releases",
-        "emergency_stop",
-        "reset_safety",
-        "replan",
-    ]
-    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "installation_releases"}
     )
     result = await hass.config_entries.options.async_configure(
@@ -1183,18 +1262,12 @@ async def test_v2_settings_actions_control_releases_emergency_reset_and_replan(
     await manager.async_set_installation_operation(enabled=True)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "actions"}
-    )
-    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "emergency_stop"}
     )
     assert manager.snapshot().emergency_stop is True
     assert result["step_id"] == "action_result"
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "actions"}
-    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "reset_safety"}
     )
@@ -1210,9 +1283,6 @@ async def test_v2_settings_actions_control_releases_emergency_reset_and_replan(
     assert result["step_id"] == "action_result"
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "actions"}
-    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "replan"}
     )
@@ -1248,9 +1318,6 @@ async def test_automation_disable_actions_ask_how_to_handle_active_execution(
     ):
         if scope == "installation":
             result = await hass.config_entries.options.async_init(entry.entry_id)
-            result = await hass.config_entries.options.async_configure(
-                result["flow_id"], {"next_step_id": "actions"}
-            )
             result = await hass.config_entries.options.async_configure(
                 result["flow_id"], {"next_step_id": "installation_releases"}
             )
@@ -1294,9 +1361,6 @@ async def test_automation_disable_does_not_ask_without_relevant_active_execution
     if scope == "installation":
         result = await hass.config_entries.options.async_init(entry.entry_id)
         result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {"next_step_id": "actions"}
-        )
-        result = await hass.config_entries.options.async_configure(
             result["flow_id"], {"next_step_id": "installation_releases"}
         )
         result = await hass.config_entries.options.async_configure(
@@ -1320,3 +1384,278 @@ async def test_automation_disable_does_not_ask_without_relevant_active_execution
         "installation_automation_disable",
         "automation_disable",
     }
+
+
+async def test_cancelled_execution_is_accounted_exactly_once(hass: HomeAssistant) -> None:
+    """Leave terminal ownership with the dispatcher when cancellation wakes the executor."""
+    entry, zone = await _setup_v2_installation(hass, with_meter=True)
+    manager = entry.runtime_data.manager
+    started = asyncio.Event()
+
+    async def execute(_request) -> ExecutionResult:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return ExecutionResult(
+                zone_id=zone.unique_id,
+                delivered_liters=5,
+                duration_seconds=1,
+                stopped=True,
+            )
+
+    manager._executor.execute = execute
+    manager._dispatcher_task = hass.async_create_task(manager._async_dispatch_requests())
+    response = await manager.async_start_manual(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=60,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        wait_for_completion=False,
+    )
+    await started.wait()
+
+    await manager.async_cancel_request(str(response["request_id"]))
+
+    assert manager._stored_state.installation_total_liters == 5
+    assert manager._stored_state.zone_totals_liters[zone.unique_id] == 5
+    execution = manager._stored_state.irrigation_executions[-1]
+    assert execution.delivered_liters == 5
+    assert execution.status == "cancelled"
+
+
+@pytest.mark.parametrize("stop_kind", ["deactivate", "stop", "emergency"])
+async def test_calibration_stop_owner_prevents_late_proposal_rewrite(
+    hass: HomeAssistant, stop_kind: str
+) -> None:
+    """Cancel and await calibration before a stop action publishes terminal state."""
+    entry, zone = await _setup_v2_installation(hass, with_meter=True)
+    manager = entry.runtime_data.manager
+    started = asyncio.Event()
+
+    async def execute(_request) -> ExecutionResult:
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    manager._executor.execute = execute
+    response = await manager.async_start_calibration(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=60,
+    )
+    await started.wait()
+    proposal_before = manager._stored_state.calibration_proposal
+
+    if stop_kind == "deactivate":
+        await manager.async_set_installation_operation(enabled=False)
+    elif stop_kind == "stop":
+        await manager.async_stop(execution_id=str(response["test_id"]))
+    else:
+        await manager.async_emergency_stop()
+
+    assert manager._calibration_task is None
+    assert manager._stored_state.active_execution is None
+    assert manager._stored_state.calibration_proposal is proposal_before
+    request = manager._request(f"calibration:{response['test_id']}")
+    assert request is not None
+    assert request.status == "cancelled"
+
+
+async def test_dispatch_wake_timeout_includes_future_requested_start(
+    hass: HomeAssistant,
+) -> None:
+    """Wake for readiness rather than sleeping until the request expires."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    request = ManualIrrigationRequest(
+        request_id="future",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=1,
+        remaining_value=1,
+        created_at=now.isoformat(),
+        requested_start_at=(now + timedelta(seconds=10)).isoformat(),
+        expires_at=(now + timedelta(hours=1)).isoformat(),
+    )
+    manager._stored_state = replace(manager._stored_state, manual_requests=(request,))
+
+    timeout = manager._seconds_until_next_request_change()
+
+    assert timeout is not None
+    assert 0 < timeout <= 10
+
+
+async def test_planner_accounts_for_queued_predecessor_inside_window(
+    hass: HomeAssistant,
+) -> None:
+    """Drop an automatic operation when earlier serial work consumes its full window."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    window_start = datetime.combine(
+        date(2026, 7, 27), time(4), tzinfo=dt_util.DEFAULT_TIME_ZONE
+    ).astimezone(UTC)
+    predecessor = ManualIrrigationRequest(
+        request_id="manual-predecessor",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=3_500,
+        remaining_value=3_500,
+        created_at=window_start.isoformat(),
+        requested_start_at=window_start.isoformat(),
+        expires_at=(window_start + timedelta(hours=2)).isoformat(),
+    )
+    manager._stored_state = replace(manager._stored_state, manual_requests=(predecessor,))
+
+    report = await manager.async_plan_automatic(now=window_start)
+
+    assert "automatic:zone-v2-runtime:2026-07-27" not in report["created_request_ids"]
+
+
+async def test_cross_midnight_window_survives_replan_after_midnight(
+    hass: HomeAssistant,
+) -> None:
+    """Consider the prior schedule day while its cross-midnight window remains open."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+    manager._zone_configs[0].data["weekly_schedule"] = [
+        {
+            "weekday": weekday,
+            "start": "22:00:00" if weekday == "monday" else None,
+            "end": "00:30:00" if weekday == "monday" else None,
+            "target": 600.0 if weekday == "monday" else None,
+        }
+        for weekday in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+    ]
+    local_now = datetime.combine(date(2026, 7, 28), time(0, 10), tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+    report = await manager.async_plan_automatic(now=local_now.astimezone(UTC))
+
+    assert "automatic:zone-v2-runtime:2026-07-27" in report["created_request_ids"]
+
+
+async def test_startup_recovery_accounts_persisted_meter_baseline_and_runtime(
+    hass: HomeAssistant,
+) -> None:
+    """Recover measurable water and elapsed delivery from the durable checkpoint."""
+    entry, zone = await _setup_v2_installation(hass, with_meter=True)
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    request = ManualIrrigationRequest(
+        request_id="recover-request",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=60,
+        remaining_value=60,
+        created_at=(now - timedelta(seconds=30)).isoformat(),
+        expires_at=(now + timedelta(minutes=5)).isoformat(),
+        status="executing",
+        execution_id="recover-execution",
+    )
+    execution = IrrigationExecutionState(
+        execution_id="recover-execution",
+        request_id=request.request_id,
+        zone_id=zone.unique_id,
+        target_type="duration",
+        target_value=60,
+        remaining_value=60,
+        status="watering",
+        created_at=request.created_at,
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=(request,),
+        irrigation_executions=(execution,),
+        active_execution=ActiveExecutionState(
+            zone_id=zone.unique_id,
+            zone_valve="switch.lawn",
+            main_valve=None,
+            meter_raw_baseline_liters=100,
+            prepared_at=request.created_at,
+            watering_started_at=(now - timedelta(seconds=20)).isoformat(),
+            requested_duration_seconds=60,
+            request_id=request.request_id,
+            execution_id=execution.execution_id,
+        ),
+    )
+    manager._meter.read_liters = AsyncMock(return_value=112)
+
+    await manager._async_recover_interrupted_execution()
+
+    recovered = manager._stored_state.irrigation_executions[-1]
+    assert recovered.delivered_liters == 12
+    assert recovered.delivered_duration_seconds == pytest.approx(20, abs=1)
+    assert recovered.measurement_quality == "measured"
+    assert manager._stored_state.installation_total_liters == 12
+
+
+async def test_emergency_stop_blocks_open_command_even_without_lock(
+    hass: HomeAssistant,
+) -> None:
+    """Use the emergency flag itself as the final actuation gate."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    manager._stored_state = replace(
+        manager._stored_state,
+        emergency_stop=True,
+        installation_safety_lock=None,
+    )
+
+    with pytest.raises(HomeAssistantError, match="emergency stop"):
+        await manager._async_authorize_actuator_command("switch.lawn", True)
+    await manager._async_authorize_actuator_command("switch.lawn", False)
+
+
+async def test_stale_pending_snapshot_is_cancelled_and_authorization_uses_snapshot(
+    hass: HomeAssistant,
+) -> None:
+    """Never redirect an accepted order or its permission check to newly edited valves."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    request = ManualIrrigationRequest(
+        request_id="stale-snapshot",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.old_lawn",
+        main_valve="switch.old_main",
+        target_type="duration",
+        target_value=10,
+        remaining_value=10,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(hours=1)).isoformat(),
+    )
+    manager._stored_state = replace(manager._stored_state, manual_requests=(request,))
+
+    assert manager.manual_control_entity_ids(request_ids=(request.request_id,)) == (
+        "switch.old_lawn",
+        "switch.old_main",
+    )
+    await manager._async_cancel_stale_pending_snapshots()
+    assert manager._request(request.request_id).status == "cancelled"

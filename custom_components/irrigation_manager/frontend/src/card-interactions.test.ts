@@ -49,6 +49,85 @@ beforeEach(() => {
 });
 
 describe("dashboard card interactions", () => {
+  it.each([
+    [false, "Laufzeit heute", "Laufzeit diesen Monat", "Gemessenes Wasser heute"],
+    [true, "Gemessenes Wasser heute", "Gemessenes Wasser diesen Monat", "Laufzeit heute"],
+  ] as const)(
+    "shows the installation's effective period metrics when metering is %s",
+    async (metering, todayLabel, monthLabel, excludedLabel) => {
+      const hass = home([
+        state("sensor.garden_status", "idle", {
+          config_entry_id: "garden",
+          card_name: "Garten",
+          volume_control_available: metering,
+          card_entities: {
+            status: "sensor.garden_status",
+            runtime_today: "sensor.garden_runtime_today",
+            runtime_month: "sensor.garden_runtime_month",
+            today_consumption: "sensor.garden_water_today",
+            month_consumption: "sensor.garden_water_month",
+            physical_meter: "sensor.garden_physical_meter",
+          },
+        }),
+        state("sensor.garden_runtime_today", "321", { unit_of_measurement: "s" }),
+        state("sensor.garden_runtime_month", "654", { unit_of_measurement: "s" }),
+        state("sensor.garden_water_today", "12.3", { unit_of_measurement: "L" }),
+        state("sensor.garden_water_month", "45.6", { unit_of_measurement: "L" }),
+        state("sensor.garden_physical_meter", "789.1", { unit_of_measurement: "L" }),
+      ]);
+      const card = await renderCard("irrigation-manager-overview-card", hass, {
+        type: "custom:irrigation-manager-overview-card",
+        entity: "sensor.garden_status",
+      });
+
+      expect(card.shadowRoot.textContent).toContain(todayLabel);
+      expect(card.shadowRoot.textContent).toContain(monthLabel);
+      expect(card.shadowRoot.textContent).not.toContain(excludedLabel);
+      expect(card.shadowRoot.textContent).toContain(metering ? "12.3" : "321");
+      expect(card.shadowRoot.textContent).toContain(metering ? "45.6" : "654");
+      if (metering) {
+        expect(card.shadowRoot.textContent).toContain("Physischer Zählerstand");
+        expect(card.shadowRoot.textContent).toContain("789.1");
+      }
+    },
+  );
+
+  it("does not expose legacy card actions or metrics from anchor mappings", async () => {
+    const hass = home([
+      state("sensor.lawn_status", "safety_lock", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        card_name: "Rasen",
+        card_entities: {
+          anchor: "sensor.lawn_status",
+          status: "sensor.lawn_status",
+          runtime_today: "sensor.lawn_runtime_today",
+          runtime_month: "sensor.lawn_runtime_month",
+          next_irrigation: "sensor.lawn_next",
+          deficit: "sensor.lawn_deficit",
+          quality: "sensor.lawn_quality",
+          safety_lock: "binary_sensor.lawn_lock",
+        },
+      }),
+      state("sensor.lawn_runtime_today", "600", { unit_of_measurement: "s" }),
+      state("sensor.lawn_runtime_month", "3600", { unit_of_measurement: "s" }),
+      state("sensor.lawn_next", "2026-07-26T05:00:00+00:00"),
+    ]);
+    const card = await renderCard("irrigation-manager-zone-card", hass, {
+      type: "custom:irrigation-manager-zone-card",
+      entity: "sensor.lawn_status",
+    });
+
+    expect(card.shadowRoot.textContent).toContain("Sicherheitssperre");
+    expect(card.shadowRoot.textContent).not.toContain("Wasserdefizit");
+    expect(card.shadowRoot.textContent).not.toContain("Messqualität");
+    expect(card.shadowRoot.textContent).toContain("600");
+    expect(card.shadowRoot.textContent).toContain("3600");
+    expect(card.shadowRoot.textContent).toContain("2026-07-26T05:00:00+00:00");
+    expect(card.shadowRoot.querySelector("[data-testid=reset-safety]")).toBeNull();
+    expect(card.shadowRoot.querySelectorAll(".actions > button")).toHaveLength(2);
+  });
+
   it("executes the mandatory emergency stop immediately without confirmation", async () => {
     const callService = vi.fn(async () => undefined);
     const confirm = vi.spyOn(window, "confirm");
@@ -61,8 +140,7 @@ describe("dashboard card interactions", () => {
     ], callService);
     const card = await renderCard("irrigation-manager-overview-card", hass, {
       type: "custom:irrigation-manager-overview-card",
-      installation: "garden",
-      visible_actions: [],
+      entity: "sensor.garden_status",
     });
 
     card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=emergency-stop]")!.click();
@@ -99,7 +177,7 @@ describe("dashboard card interactions", () => {
     ], callService);
     const card = await renderCard("irrigation-manager-overview-card", hass, {
       type: "custom:irrigation-manager-overview-card",
-      installation: "garden",
+      entity: "sensor.garden_status",
     });
 
     card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=open-orders]")!.click();
@@ -132,8 +210,7 @@ describe("dashboard card interactions", () => {
     ]);
     const card = await renderCard("irrigation-manager-zone-card", hass, {
       type: "custom:irrigation-manager-zone-card",
-      zone: "garden:lawn",
-      display_mode: "compact",
+      entity: "sensor.lawn_status",
     });
 
     expect(card.shadowRoot.querySelector("input")).toBeNull();
@@ -160,7 +237,7 @@ describe("dashboard card interactions", () => {
       ]);
       const card = await renderCard("irrigation-manager-zone-card", hass, {
         type: "custom:irrigation-manager-zone-card",
-        zone: "garden:lawn",
+        entity: "sensor.lawn_status",
       });
 
       expect(
@@ -182,7 +259,7 @@ describe("dashboard card interactions", () => {
     ]);
     const card = await renderCard("irrigation-manager-zone-card", hass, {
       type: "custom:irrigation-manager-zone-card",
-      zone: "garden:lawn",
+      entity: "sensor.lawn_status",
     });
 
     expect(
@@ -206,7 +283,7 @@ describe("dashboard card interactions", () => {
     ]);
     const card = await renderCard("irrigation-manager-zone-card", hass, {
       type: "custom:irrigation-manager-zone-card",
-      zone: "garden:lawn",
+      entity: "sensor.lawn_status",
     });
     card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=manual-irrigation]")!.click();
     await card.updateComplete;
@@ -236,7 +313,7 @@ describe("dashboard card interactions", () => {
     ], callService);
     const card = await renderCard("irrigation-manager-zone-card", hass, {
       type: "custom:irrigation-manager-zone-card",
-      zone: "garden:lawn",
+      entity: "sensor.lawn_status",
     });
     card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=manual-irrigation]")!.click();
     await card.updateComplete;
@@ -291,7 +368,7 @@ describe("dashboard card interactions", () => {
     ], callService);
     const card = await renderCard("irrigation-manager-zone-card", hass, {
       type: "custom:irrigation-manager-zone-card",
-      zone: "garden:lawn",
+      entity: "sensor.lawn_status",
     });
 
     card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=show-history]")!.click();

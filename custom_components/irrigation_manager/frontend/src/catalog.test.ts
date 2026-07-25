@@ -26,7 +26,9 @@ describe("Lovelace card catalog", () => {
         setConfig(config: unknown): void;
       };
       const stub = constructor!.getStubConfig();
-      expect(stub).toMatchObject({ configuration_mode: "simple" });
+      expect(Object.keys(stub as Record<string, unknown>).sort()).toEqual(
+        ["entity", "type"],
+      );
       expect(() => element.setConfig(stub)).not.toThrow();
     }
   });

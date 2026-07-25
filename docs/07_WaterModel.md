@@ -1,5 +1,7 @@
 # Wasser- und Wettermodell
 
+> **Nicht Bestandteil von Version 2:** Der verbindliche Umfang steht in `docs/17_Neukonzept.md`. Version 2 besitzt keine Wetter- oder Wasserbedarfsberechnung.
+
 ## Ziel
 
 Das Modell liefert eine reproduzierbare Schätzung des zonenspezifischen Wasserbedarfs. Die gelieferte Wassermenge kann mit einem geeigneten Zähler innerhalb seiner Auflösung gemessen werden; ohne Messquelle wird auch sie geschätzt. Verdunstung, wirksamer Regen und Pflanzenbedarf bleiben Modelle mit sichtbarer Qualitätsangabe.

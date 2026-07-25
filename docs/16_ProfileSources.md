@@ -1,5 +1,7 @@
 # Built-in profile catalog sources
 
+> **Archived version-1 research:** Version 2 does not ship or execute plant, soil, exposure, or irrigation profiles. The authoritative scope is `docs/17_Neukonzept.md`.
+
 ## Scope and status
 
 Catalog version 1 contains researched planning defaults, not measurements or locally validated

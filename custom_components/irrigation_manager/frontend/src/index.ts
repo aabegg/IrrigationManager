@@ -21,13 +21,13 @@ for (const card of [
   {
     type: "irrigation-manager-overview-card",
     name: "Irrigation Manager Overview",
-    description: "Select an installation for automatic status, metrics and safety actions.",
+    description: "Installation status, irrigation schedule, usage and emergency stop.",
     preview: true,
   },
   {
     type: "irrigation-manager-zone-card",
     name: "Irrigation Manager Zone",
-    description: "Select a zone for automatic water balance, planning and native controls.",
+    description: "Effective zone status, irrigation schedule, manual watering and history.",
     preview: true,
   },
 ]) {

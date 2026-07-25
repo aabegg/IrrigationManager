@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.0-rc7 - 2026-07-25
+
+### Changed
+
+- Rebuild the integration around the authoritative v2 installation, zone, weekly-plan,
+  manual-operation, water-meter, and calibration contracts.
+- Reduce Home Assistant entities, actions, settings, diagnostics, and dashboard cards to
+  their defined v2 surface and remove the old demand, weather, profile, maintenance,
+  winter, archive, suspension, flow-sensor, and partial-delivery modules.
+- Replace the incremental legacy storage chain with one destructive, fail-closed v2
+  migration that preserves only valid releases, locks, measurements, and history.
+- Store cards by one selected installation or zone anchor entity and clean stale rc5
+  registry entities by stable unique ID.
+
+### Fixed
+
+- Make a disabled installation fully passive after active work has stopped, including
+  during startup, so external valve changes are neither closed nor safety-locked.
+- Make cancellation and calibration termination single-owner and idempotent to prevent
+  duplicate water and runtime accounting.
+- Enforce ordered, bounded valve closure independently of volume-target deadlines.
+- Keep serial automatic work inside its windows, including cross-midnight windows, and
+  wake the dispatcher at future requested start times.
+- Allow timed irrigation to continue when its optional meter is unavailable while keeping
+  volume irrigation and calibration fail-closed.
+- Persist complete physical-meter correction records without changing consumption totals.
+
 ## 0.1.0-rc6 - 2026-07-24
 
 ### Added

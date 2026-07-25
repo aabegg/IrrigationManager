@@ -1,5 +1,7 @@
 # Datenhaltung
 
+> **Historischer Version-1-Entwurf:** Version 2 verwendet ein kompaktes Storage-Schema und eine einmalige destruktive Migration gemäß `docs/17_Neukonzept.md`; alte Wetter-, Bilanz-, Wartungs- und Zonen-Sperrzustände werden nicht übernommen.
+
 ## Ziele
 
 - Konfiguration dauerhaft und versioniert speichern

@@ -1,5 +1,7 @@
 # Datenmodell
 
+> **Historischer Version-1-Entwurf:** Das verbindliche und implementierte Version-2-Modell steht in `docs/17_Neukonzept.md`. Widersprechende Felder und Zustände dieses Dokuments existieren nicht in v2.
+
 Die Namen beschreiben fachliche Modelle. Konkrete Python-Typen und Storage-Schemas werden während der Implementierung versioniert festgelegt.
 
 ## Bewässerungsanlage

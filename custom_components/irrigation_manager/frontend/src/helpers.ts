@@ -1,28 +1,19 @@
 import type {
-  ConfigurationMode,
   HassEntity,
   HomeAssistant,
   OverviewCardConfig,
+  ResolvedOverviewCardConfig,
+  ResolvedZoneCardConfig,
   ZoneCardConfig,
 } from "./types";
 
 export const DOMAIN = "irrigation_manager";
-export const MANUAL_REQUEST_SERVICE = "create_manual";
 export const INVALID_STATES = new Set(["unknown", "unavailable"]);
-
-export interface ActiveRequestTarget {
-  requestId?: string;
-  executionId?: string;
-}
 
 type EntityMap = Record<string, string>;
 
-const overviewRoles: Record<string, keyof OverviewCardConfig> = {
+const overviewRoles: Record<string, keyof ResolvedOverviewCardConfig> = {
   status: "status_entity",
-  emergency: "emergency_entity",
-  lock: "lock_entity",
-  active_zone: "active_zone_entity",
-  dose: "dose_entity",
   pending: "pending_entity",
   next: "next_entity",
   next_start: "next_start_entity",
@@ -31,44 +22,17 @@ const overviewRoles: Record<string, keyof OverviewCardConfig> = {
   runtime_today: "runtime_today_entity",
   runtime_month: "runtime_month_entity",
   physical_meter: "physical_meter_entity",
-  model_quality: "model_quality_entity",
-  winter: "winter_entity",
-  maintenance: "maintenance_entity",
-  automation_release: "automation_release_entity",
-  maintenance_due: "maintenance_due_entity",
 };
 
-const zoneRoles: Record<string, keyof ZoneCardConfig> = {
+const zoneRoles: Record<string, keyof ResolvedZoneCardConfig> = {
   anchor: "zone_entity",
   zone: "zone_entity",
-  automation_needed: "automation_needed_entity",
-  safety_lock: "safety_lock_entity",
-  deficit: "deficit_entity",
-  target: "target_entity",
-  planning_reason: "planning_reason_entity",
-  next_window: "next_window_entity",
-  last_delivered: "last_delivered_entity",
-  last_duration: "last_duration_entity",
-  quality: "quality_entity",
   status: "status_entity",
-  automation_release: "automation_release_entity",
-  archived: "archived_entity",
-  coverage: "coverage_entity",
-  expected_flow: "expected_flow_entity",
-  actual_flow: "actual_flow_entity",
-  flow_deviation: "flow_deviation_entity",
-  calculation: "calculation_entity",
   water_today: "water_today_entity",
   water_month: "water_month_entity",
   runtime_today: "runtime_today_entity",
   runtime_month: "runtime_month_entity",
   next_irrigation: "next_irrigation_entity",
-};
-
-const installationZoneRoles: Record<string, keyof ZoneCardConfig> = {
-  active_zone: "active_zone_entity",
-  dose: "request_entity",
-  lock: "installation_safety_lock_entity",
 };
 
 export function entityMapAttribute(
@@ -84,7 +48,7 @@ export function entityMapAttribute(
   );
 }
 
-function applyRoles<T extends OverviewCardConfig | ZoneCardConfig>(
+function applyRoles<T extends ResolvedOverviewCardConfig | ResolvedZoneCardConfig>(
   config: T,
   mapping: EntityMap,
   roles: Record<string, keyof T>,
@@ -101,62 +65,39 @@ function applyRoles<T extends OverviewCardConfig | ZoneCardConfig>(
 export function resolveOverviewConfig(
   hass: HomeAssistant,
   config: OverviewCardConfig,
-): OverviewCardConfig {
-  if (!config.configuration_mode && !config.installation && config.status_entity) return config;
-  const anchor = config.installation
-    ? anchorState(hass, "installation", config.installation)
-    : entity(hass, config.status_entity);
-  return applyRoles(config, entityMapAttribute(anchor, "card_entities"), overviewRoles);
+): ResolvedOverviewCardConfig {
+  const anchor = config.entity ? hass.states[config.entity] : undefined;
+  const resolved: ResolvedOverviewCardConfig = { ...config };
+  return applyRoles(resolved, entityMapAttribute(anchor, "card_entities"), overviewRoles);
 }
 
-export function resolveZoneConfig(hass: HomeAssistant, config: ZoneCardConfig): ZoneCardConfig {
-  if (!config.configuration_mode && !config.zone && config.zone_entity) return config;
-  const anchor = config.zone
-    ? anchorState(hass, "zone", config.zone)
-    : entity(hass, config.zone_entity);
-  let resolved = applyRoles(config, entityMapAttribute(anchor, "card_entities"), zoneRoles);
-  resolved = applyRoles(
-    resolved,
-    entityMapAttribute(anchor, "installation_card_entities"),
-    installationZoneRoles,
-  );
+export function resolveZoneConfig(
+  hass: HomeAssistant,
+  config: ZoneCardConfig,
+): ResolvedZoneCardConfig {
+  const anchor = config.entity ? hass.states[config.entity] : undefined;
+  const base: ResolvedZoneCardConfig = { ...config };
+  const resolved = applyRoles(base, entityMapAttribute(anchor, "card_entities"), zoneRoles);
   if (!resolved.zone_entity && anchor) resolved.zone_entity = anchor.entity_id;
+  if (!resolved.status_entity && anchor) resolved.status_entity = anchor.entity_id;
   return resolved;
 }
 
-export function anchorState(
-  hass: HomeAssistant,
-  kind: "installation" | "zone",
-  value: string,
-): HassEntity | undefined {
-  return Object.values(hass.states).find((state) => anchorValue(state, kind) === value);
-}
-
-function anchorValue(state: HassEntity, kind: "installation" | "zone"): string | undefined {
+function isAnchor(state: HassEntity, kind: "installation" | "zone"): boolean {
   const configEntryId = state.attributes.config_entry_id;
-  if (typeof configEntryId !== "string") return undefined;
+  if (typeof configEntryId !== "string") return false;
   if (kind === "installation") {
+    if (typeof state.attributes.zone_subentry_id === "string") return false;
     return entityMapAttribute(state, "card_entities").status === state.entity_id
-      ? configEntryId
-      : undefined;
+      ? true
+      : false;
   }
   const zoneSubentryId = state.attributes.zone_subentry_id;
-  if (typeof zoneSubentryId !== "string") return undefined;
+  if (typeof zoneSubentryId !== "string") return false;
   const roles = entityMapAttribute(state, "card_entities");
-  const isAnchor = roles.anchor
+  return roles.anchor
     ? roles.anchor === state.entity_id
     : roles.zone === state.entity_id;
-  return isAnchor ? `${configEntryId}:${zoneSubentryId}` : undefined;
-}
-
-export function inferConfigurationMode(
-  config: OverviewCardConfig | ZoneCardConfig,
-  entityFields: readonly string[],
-): ConfigurationMode {
-  if (config.configuration_mode) return config.configuration_mode;
-  return entityFields.some((field) => Boolean((config as unknown as Record<string, unknown>)[field]))
-    ? "expert"
-    : "simple";
 }
 
 export function anchorChoices(
@@ -164,11 +105,9 @@ export function anchorChoices(
   kind: "installation" | "zone",
 ): Array<{ value: string; label: string }> {
   return Object.values(hass.states)
-    .filter((state) => {
-      return anchorValue(state, kind) !== undefined;
-    })
+    .filter((state) => isAnchor(state, kind))
     .map((state) => ({
-      value: anchorValue(state, kind)!,
+      value: state.entity_id,
       label:
         (typeof state.attributes.card_name === "string" && state.attributes.card_name) ||
         state.attributes.friendly_name ||
@@ -195,33 +134,10 @@ export function numberAttribute(state: HassEntity | undefined, name: string): nu
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-export function activeRequestForZone(
-  request: HassEntity | undefined,
-  zoneSubentryId: string | undefined,
-): ActiveRequestTarget | undefined {
-  if (
-    !zoneSubentryId ||
-    stringAttribute(request, "zone_subentry_id") !== zoneSubentryId
-  ) {
-    return undefined;
-  }
-  const requestId = stringAttribute(request, "request_id");
-  const executionId = stringAttribute(request, "execution_id");
-  return requestId || executionId ? { requestId, executionId } : undefined;
-}
-
-export function progress(state: HassEntity | undefined): number | undefined {
-  const target = numberAttribute(state, "target_value");
-  const remaining = numberAttribute(state, "remaining_value");
-  if (target === undefined || remaining === undefined || target <= 0) return undefined;
-  return Math.max(0, Math.min(100, ((target - remaining) / target) * 100));
-}
-
 export function statusIcon(value: string): string {
   const icons: Record<string, string> = {
     idle: "mdi:water-check-outline",
     watering: "mdi:sprinkler-variant",
-    soaking: "mdi:timer-sand",
     error: "mdi:alert-circle-outline",
     safety_lock: "mdi:lock-alert-outline",
     emergency_stop: "mdi:alert-octagon",

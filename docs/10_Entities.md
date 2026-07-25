@@ -1,5 +1,7 @@
 # Entitäten und Schnittstellen
 
+> **Historischer Version-1-Katalog:** Die implementierte Version-2-Oberfläche wird durch `docs/17_Neukonzept.md` und die dort definierten Cards und Zustände begrenzt. Nicht dort definierte Diagnose-, Wetter-, Bedarfs- und Wartungs-Entities wurden entfernt.
+
 Exakte Entity IDs werden aus stabilen Unique IDs erzeugt und sind nicht Teil des fachlichen Vertrags. Kernwerte sind standardmäßig aktiv; technische Diagnosewerte standardmäßig deaktiviert.
 
 Die Implementierung veröffentlicht nur Werte aus Konfiguration, persistentem Accounting,

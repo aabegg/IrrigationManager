@@ -1,5 +1,7 @@
 # Architektur
 
+> **Historischer Version-1-Entwurf:** Die implementierte Version-2-Architektur folgt ausschließlich `docs/17_Neukonzept.md`. Unten genannte Wetter-, Profil-, Wartungs- und Sickerpausenmodule sind nicht Bestandteil der v2-Laufzeit.
+
 ## Systemgrenze
 
 Irrigation Manager ist eine eigenständige Home-Assistant-Custom-Integration. Ein Config Entry besitzt genau eine Bewässerungsanlage mit optionalem Hauptventil, optionalem Wasserzähler und beliebig vielen Zonen als Config Subentries.

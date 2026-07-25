@@ -21,19 +21,13 @@ export interface HomeAssistant {
   formatEntityState?(state: HassEntity): string;
 }
 
-export type DisplayMode = "compact" | "detailed";
-export type ConfigurationMode = "simple" | "expert";
-
 export interface OverviewCardConfig {
   type: string;
-  name?: string;
-  configuration_mode?: ConfigurationMode;
-  installation?: string;
+  entity?: string;
+}
+
+export interface ResolvedOverviewCardConfig extends OverviewCardConfig {
   status_entity?: string;
-  emergency_entity?: string;
-  lock_entity?: string;
-  active_zone_entity?: string;
-  dose_entity?: string;
   pending_entity?: string;
   next_entity?: string;
   next_start_entity?: string;
@@ -42,50 +36,21 @@ export interface OverviewCardConfig {
   runtime_today_entity?: string;
   runtime_month_entity?: string;
   physical_meter_entity?: string;
-  model_quality_entity?: string;
-  winter_entity?: string;
-  maintenance_entity?: string;
-  automation_release_entity?: string;
-  maintenance_due_entity?: string;
-  display_mode?: DisplayMode;
-  visible_metrics?: string[];
-  visible_actions?: string[];
 }
 
 export interface ZoneCardConfig {
   type: string;
-  name?: string;
-  configuration_mode?: ConfigurationMode;
-  zone?: string;
+  entity?: string;
+}
+
+export interface ResolvedZoneCardConfig extends ZoneCardConfig {
   zone_entity?: string;
-  automation_needed_entity?: string;
-  safety_lock_entity?: string;
-  installation_safety_lock_entity?: string;
-  deficit_entity?: string;
-  target_entity?: string;
-  planning_reason_entity?: string;
-  next_window_entity?: string;
-  active_zone_entity?: string;
-  request_entity?: string;
-  last_delivered_entity?: string;
-  last_duration_entity?: string;
-  quality_entity?: string;
   status_entity?: string;
-  automation_release_entity?: string;
-  archived_entity?: string;
-  coverage_entity?: string;
-  expected_flow_entity?: string;
-  actual_flow_entity?: string;
-  flow_deviation_entity?: string;
-  calculation_entity?: string;
   water_today_entity?: string;
   water_month_entity?: string;
   runtime_today_entity?: string;
   runtime_month_entity?: string;
   next_irrigation_entity?: string;
-  display_mode?: DisplayMode;
-  visible_metrics?: string[];
-  visible_actions?: string[];
 }
 
 declare global {

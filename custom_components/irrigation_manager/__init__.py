@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -37,9 +38,67 @@ from .runtime import IrrigationConfigEntry, IrrigationRuntimeData
 from .services import async_register_services
 from .storage import IrrigationStore
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.CALENDAR, Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 LOGGER = logging.getLogger(__name__)
+
+ENTITY_SURFACE_MINOR_VERSION = 1
+METER_INSTALLATION_ENTITY_SUFFIXES = frozenset(
+    {"water_total", "unassigned_water_total", "water_today", "water_month", "physical_meter"}
+)
+METER_ZONE_ENTITY_SUFFIXES = frozenset({"water_total", "water_today", "water_month"})
+REMOVED_INSTALLATION_ENTITY_SUFFIXES = frozenset(
+    {
+        "active_zone",
+        "automation_release",
+        "calendar",
+        "current_dose",
+        "current_flow",
+        "external_safety",
+        "frost_safety",
+        "maintenance_due",
+        "maintenance_mode",
+        "measured_rain",
+        "meter_measurement_quality",
+        "rain_stop",
+        "reference_evapotranspiration",
+        "remaining_target",
+        "water_cost",
+        "water_week",
+        "water_year",
+        "weather_model_quality",
+        "winter_lock",
+    }
+)
+REMOVED_ZONE_ENTITY_SUFFIXES = frozenset(
+    {
+        "actual_flow",
+        "archived",
+        "automatic_target",
+        "automation_needed",
+        "automation_release",
+        "crop_evapotranspiration",
+        "demand_coverage",
+        "effective_rain",
+        "expected_flow",
+        "external_safety",
+        "flow_deviation",
+        "hardware_health",
+        "last_delivered",
+        "last_duration",
+        "last_effective_irrigation",
+        "measurement_quality",
+        "next_watering_window",
+        "planning_reason",
+        "provisional_water_deficit",
+        "safety_lock",
+        "soil_moisture_status",
+        "water_cost",
+        "water_deficit",
+        "wind_interlock",
+        "zone_priority",
+    }
+)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -51,6 +110,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -> bool:
     """Set up one irrigation installation from a config entry."""
+    if entry.version == 2 and entry.minor_version < ENTITY_SURFACE_MINOR_VERSION:
+        _remove_legacy_entity_surface(hass, entry)
+        hass.config_entries.async_update_entry(
+            entry,
+            minor_version=ENTITY_SURFACE_MINOR_VERSION,
+        )
+    if entry.data.get(CONF_METER_TYPE, METER_TYPE_NONE) == METER_TYPE_NONE:
+        _remove_disabled_meter_entities(hass, entry)
     store = IrrigationStore(hass, entry.entry_id)
     stored_state = await store.async_load()
     coordinator = IrrigationCoordinator(
@@ -67,17 +134,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             zone_measurement_quality=stored_state.zone_measurement_quality,
             zone_last_delivered_liters=stored_state.zone_last_delivered_liters,
             zone_last_duration_seconds=stored_state.zone_last_duration_seconds,
-            zone_safety_locks=stored_state.zone_safety_locks,
-            zone_safety_lock_at=stored_state.zone_safety_lock_at,
             unassigned_total_liters=stored_state.unassigned_total_liters,
-            unassigned_available_liters=stored_state.unassigned_available_liters,
-            unassigned_measurement_quality=stored_state.unassigned_measurement_quality,
-            unassigned_measurement_origin=stored_state.unassigned_measurement_origin,
             status=(
                 "emergency_stop"
                 if stored_state.emergency_stop
-                else "winter_lock"
-                if stored_state.winter_lock
                 else "safety_lock"
                 if stored_state.installation_safety_lock is not None
                 else "idle"
@@ -85,8 +145,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
             emergency_stop=stored_state.emergency_stop,
             installation_safety_lock=stored_state.installation_safety_lock,
             installation_safety_lock_at=stored_state.installation_safety_lock_at,
-            winter_lock=stored_state.winter_lock,
-            maintenance_active=stored_state.maintenance_test is not None,
         )
     )
     manager = IrrigationManager(
@@ -164,10 +222,49 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry,
             data=migrated_data,
             version=2,
-            minor_version=0,
+            minor_version=ENTITY_SURFACE_MINOR_VERSION,
         )
+        _remove_legacy_entity_surface(hass, entry)
         return True
-    return entry.version == 2
+    if entry.version != 2:
+        return False
+    if entry.minor_version < ENTITY_SURFACE_MINOR_VERSION:
+        _remove_legacy_entity_surface(hass, entry)
+        hass.config_entries.async_update_entry(
+            entry,
+            minor_version=ENTITY_SURFACE_MINOR_VERSION,
+        )
+    return True
+
+
+def _remove_legacy_entity_surface(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove registry identities retired by the authoritative v2 entity contract."""
+    registry = er.async_get(hass)
+    installation_id = entry.unique_id or entry.entry_id
+    removed_unique_ids = {
+        f"{installation_id}_{suffix}" for suffix in REMOVED_INSTALLATION_ENTITY_SUFFIXES
+    }
+    for subentry in entry.get_subentries_of_type("zone"):
+        zone_id = subentry.unique_id or subentry.subentry_id
+        removed_unique_ids.update(f"{zone_id}_{suffix}" for suffix in REMOVED_ZONE_ENTITY_SUFFIXES)
+    for entity in list(registry.entities.values()):
+        if entity.config_entry_id == entry.entry_id and entity.unique_id in removed_unique_ids:
+            registry.async_remove(entity.entity_id)
+
+
+def _remove_disabled_meter_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove meter-only entities by unique ID, including registry-renamed entities."""
+    registry = er.async_get(hass)
+    installation_id = entry.unique_id or entry.entry_id
+    removed_unique_ids = {
+        f"{installation_id}_{suffix}" for suffix in METER_INSTALLATION_ENTITY_SUFFIXES
+    }
+    for subentry in entry.get_subentries_of_type("zone"):
+        zone_id = subentry.unique_id or subentry.subentry_id
+        removed_unique_ids.update(f"{zone_id}_{suffix}" for suffix in METER_ZONE_ENTITY_SUFFIXES)
+    for entity in list(registry.entities.values()):
+        if entity.config_entry_id == entry.entry_id and entity.unique_id in removed_unique_ids:
+            registry.async_remove(entity.entity_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -> bool:

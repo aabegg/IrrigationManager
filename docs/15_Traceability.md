@@ -1,5 +1,7 @@
 # Anforderungs- und Sicherheitsrückverfolgbarkeit
 
+> **Archivierte Version-1-Matrix:** Sie beschreibt nicht den aktuellen Implementierungsstand. Für Version 2 ist ausschließlich `docs/17_Neukonzept.md` maßgeblich.
+
 Stand: 2026-07-22
 
 ## Leseregel

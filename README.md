@@ -1,6 +1,6 @@
 # IrrigationManager
 
-IrrigationManager ist eine geplante Home-Assistant-Integration für intelligente, vollständig über die Benutzeroberfläche konfigurierbare Bewässerung privater Gärten.
+IrrigationManager ist eine Home-Assistant-Integration für eine vollständig über die Benutzeroberfläche konfigurierbare Bewässerung privater Gärten.
 
 - Repository: <https://github.com/aabegg/IrrigationManager>
 - Fehler und Vorschläge: <https://github.com/aabegg/IrrigationManager/issues>
@@ -14,17 +14,19 @@ Mindestversion. Dort wird deshalb bewusst kein nicht standardkonformer Schlüsse
 - Einrichtung vollständig über die Home-Assistant-UI
 - ein Konfigurationseintrag je physischer Bewässerungsanlage
 - beliebig viele sequenziell ausgeführte Bewässerungszonen
-- Hauptventil-Unterstützung
-- intelligenter Scheduler
-- wissenschaftlich nachvollziehbare Wetter- und Wasserbilanz
+- optionales Hauptventil
+- einfache Wochenpläne mit genau einem Bewässerungsfenster und Ziel pro Wochentag
+- getrennte Betriebs- und Automatikfreigaben für Anlage und Zonen
 - zeit- oder mengengesteuerte Bewässerung
-- Wasserverbrauch pro Zone
+- optionale kumulative oder impulsbasierte Wassermessung
+- Laufzeit- beziehungsweise gemessene Wasserstatistiken für Anlage und Zonen
 - Historie vergangener Bewässerungsvorgänge
-- Integration in das Home-Assistant-Energie-Dashboard
+- anlagenweiter Not-Aus und persistente Sicherheitssperre
+- optionale Durchflusskalibrierung aus der Wassermessung
 - fertige Dashboard-Karten und offene Rohdaten
 - sichere und nachvollziehbare Ventilsteuerung
 
-## Geplante Architektur
+## Architektur
 
 - Backend: Python als Home-Assistant-Custom-Integration
 - Frontend: TypeScript für eigene Lovelace-Karten
@@ -42,23 +44,16 @@ dokumentiert. Das Frontend-Modul wird von der Integration automatisch registrier
 
 ## Projektstatus
 
-Private Release-Vorbereitung. Backend, geführter Config Flow, Sicherheitslogik,
-Wetter- und Wasserbilanz, Scheduler sowie Lovelace-Karten sind implementiert und
-simuliert. Die noch offenen Agronomie-, Hardware- und Feldtest-Gates sind in
-[`docs/15_Traceability.md`](docs/15_Traceability.md) dokumentiert.
+Release Candidate. Der verbindliche Umfang steht in [`docs/17_Neukonzept.md`](docs/17_Neukonzept.md).
+Bestehende Einträge aus dem früheren Funktionsmodell werden absichtlich deaktiviert und
+müssen in den Einstellungen neu validiert werden. Alte Wetter-, Bedarfs-, Profil-,
+Wartungs-, Winter-, Archiv- und Sickerpausenfunktionen gehören nicht zur v2-Laufzeit.
 
-Die Messschicht unterstützt kumulative Volumenzähler, explizit umgerechnete
-Impuls-/Zählwerte und direkte Durchflussraten. Portable Konfigurationen können über
-die Options Flow-Vorschau oder die Aktion `irrigation_manager.import_config`
-geprüft und mit expliziter Zuordnung übernommen werden. Der physische Zählerstand
-wird mit `irrigation_manager.correct_physical_meter` korrigiert.
-
-Ein portabler Export kann weiterhin mit Vorschau in eine bestehende Anlage übernommen
-werden. Der normale Einrichtungsdialog bietet außerdem „Neue Anlage“ oder „Import“ an.
-Der Import validiert Export und Entity-Neuzuordnung, prüft die exklusive Aktor- und
-Rückmeldungszuordnung gegen alle vorhandenen Anlagen erneut unter einer Importsperre und
-erzeugt den neuen Config Entry samt aller Zonen-Subentries atomar über Home Assistants
-öffentliche Config-Flow-API. Für Anlage und Zonen entstehen neue Unique IDs.
+Die Messschicht unterstützt kumulative Volumenzähler und explizit umgerechnete
+Impulszähler. Der abgeglichene physische Zählerstand kann in den Anlageneinstellungen
+oder über `irrigation_manager.correct_physical_meter` korrigiert werden. Jede Korrektur
+wird getrennt vom Verbrauch mit altem und neuem Stand, Differenz, Zeitpunkt und
+optionalem Grund protokolliert.
 
 ## Lokale Validierung
 

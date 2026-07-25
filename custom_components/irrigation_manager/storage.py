@@ -1,19 +1,224 @@
-"""Versioned Home Assistant storage for critical irrigation state."""
+"""Versioned Home Assistant storage for the version-2 runtime."""
 
-from datetime import datetime, timedelta
+import math
+from collections.abc import Callable
 from typing import override
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .models import StoredInstallationState
+from .models import (
+    ActiveExecutionState,
+    CalibrationProposal,
+    IrrigationExecutionState,
+    ManualIrrigationRequest,
+    StoredInstallationState,
+    WaterConsumptionRecord,
+)
 
-STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 29
+STORAGE_VERSION = 2
+STORAGE_MINOR_VERSION = 0
+
+
+def _valid_records[T](value: object, loader: Callable[[dict[str, object]], T]) -> tuple[T, ...]:
+    """Load independently valid records and discard malformed legacy entries."""
+    if not isinstance(value, list):
+        return ()
+    result: list[T] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            result.append(loader(item))
+        except TypeError, ValueError:
+            continue
+    return tuple(result)
+
+
+def _valid_optional[T](value: object, loader: Callable[[dict[str, object]], T]) -> T | None:
+    """Load one optional current record without carrying malformed legacy data."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        return loader(value)
+    except TypeError, ValueError:
+        return None
+
+
+def _number(value: object, default: float = 0.0) -> float:
+    """Copy one valid JSON number or use a safe default."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        numeric = float(value)
+        if math.isfinite(numeric):
+            return numeric
+    return default
+
+
+def _optional_number(value: object) -> float | None:
+    """Copy one valid optional JSON number."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        numeric = float(value)
+        if math.isfinite(numeric):
+            return numeric
+    return None
+
+
+def _number_dict(value: object) -> dict[str, float]:
+    """Copy only valid numeric map entries."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): float(item)
+        for key, item in value.items()
+        if isinstance(item, int | float)
+        and not isinstance(item, bool)
+        and math.isfinite(float(item))
+    }
+
+
+def _string_dict(value: object) -> dict[str, str]:
+    """Copy only valid string map entries."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item for key, item in value.items() if isinstance(key, str) and isinstance(item, str)
+    }
+
+
+def _bool_dict(value: object) -> dict[str, bool]:
+    """Copy only valid release entries."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item for key, item in value.items() if isinstance(key, str) and isinstance(item, bool)
+    }
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _optional_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _string_or(value: object, default: str) -> str:
+    return value if isinstance(value, str) else default
+
+
+def _bool_or(value: object, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _migrate_rc6(old_data: dict[str, object]) -> dict[str, object]:
+    """Copy only valid v2 state from the shipped rc6 storage schema."""
+    active = _valid_optional(old_data.get("active_execution"), ActiveExecutionState.from_dict)
+    active_request_id = active.request_id if active is not None else None
+    active_execution_id = active.execution_id if active is not None else None
+
+    requests = _valid_records(old_data.get("manual_requests"), ManualIrrigationRequest.from_dict)
+    requests = tuple(
+        request
+        for request in requests
+        if (
+            request.source != "automatic"
+            or (
+                request.status == "executing"
+                and request.request_id == active_request_id
+                and request.execution_id == active_execution_id
+            )
+        )
+    )
+    executions = _valid_records(
+        old_data.get("irrigation_executions"), IrrigationExecutionState.from_dict
+    )
+    executions = tuple(
+        execution
+        for execution in executions
+        if execution.status in {"completed", "failed", "cancelled", "interrupted"}
+        or (execution.execution_id == active_execution_id and execution.status == "watering")
+    )
+    if active is not None and not (
+        any(
+            request.request_id == active_request_id and request.status == "executing"
+            for request in requests
+        )
+        and any(
+            execution.execution_id == active_execution_id and execution.status == "watering"
+            for execution in executions
+        )
+    ):
+        active = None
+        requests = tuple(request for request in requests if request.status != "executing")
+        executions = tuple(execution for execution in executions if execution.status != "watering")
+
+    reset_count = old_data.get("meter_reset_count", 0)
+    next_sequence = old_data.get("next_request_sequence", 1)
+    emergency_stop = _bool_or(old_data.get("emergency_stop"), False)
+    installation_lock = _optional_string(old_data.get("installation_safety_lock"))
+    if emergency_stop and installation_lock is None:
+        installation_lock = "Emergency stop activated"
+    state = StoredInstallationState(
+        installation_total_liters=_number(old_data.get("installation_total_liters")),
+        zone_totals_liters=_number_dict(old_data.get("zone_totals_liters")),
+        zone_measurement_quality=_string_dict(old_data.get("zone_measurement_quality")),
+        zone_last_delivered_liters=_number_dict(old_data.get("zone_last_delivered_liters")),
+        zone_last_duration_seconds=_number_dict(old_data.get("zone_last_duration_seconds")),
+        unassigned_total_liters=_number(old_data.get("unassigned_total_liters")),
+        unassigned_available_liters=_number(
+            old_data.get("unassigned_available_liters"),
+            _number(old_data.get("unassigned_total_liters")),
+        ),
+        unassigned_measurement_quality=_string_or(
+            old_data.get("unassigned_measurement_quality"), "unknown"
+        ),
+        unassigned_measurement_origin=_string_or(
+            old_data.get("unassigned_measurement_origin"), "unknown"
+        ),
+        idle_meter_raw_baseline_liters=_optional_number(
+            old_data.get("idle_meter_raw_baseline_liters")
+        ),
+        emergency_stop=emergency_stop,
+        installation_safety_lock=installation_lock,
+        installation_safety_lock_at=_optional_string(old_data.get("installation_safety_lock_at")),
+        calibration_proposal=_valid_optional(
+            old_data.get("calibration_proposal"), CalibrationProposal.from_dict
+        ),
+        active_execution=active,
+        manual_requests=requests,
+        irrigation_executions=executions,
+        next_request_sequence=max(
+            (
+                next_sequence
+                if isinstance(next_sequence, int) and not isinstance(next_sequence, bool)
+                else 1
+            ),
+            max((request.sequence for request in requests), default=0) + 1,
+        ),
+        meter_accumulated_liters=_optional_number(old_data.get("meter_accumulated_liters")),
+        meter_last_raw_liters=_optional_number(old_data.get("meter_last_raw_liters")),
+        meter_correction_liters=_number(old_data.get("meter_correction_liters")),
+        meter_reset_count=(
+            reset_count if isinstance(reset_count, int) and not isinstance(reset_count, bool) else 0
+        ),
+        meter_source_entity_id=_optional_string(old_data.get("meter_source_entity_id")),
+        meter_source_liters_per_count=_optional_number(
+            old_data.get("meter_source_liters_per_count")
+        ),
+        water_consumption_history=_valid_records(
+            old_data.get("water_consumption_history"), WaterConsumptionRecord.from_dict
+        ),
+        water_history_incomplete=_bool_or(old_data.get("water_history_incomplete"), False),
+        operation_enabled=_optional_bool(old_data.get("operation_enabled")),
+        automation_enabled=_optional_bool(old_data.get("automation_enabled")),
+        zone_operation_enabled=_bool_dict(old_data.get("zone_operation_enabled")),
+        zone_automation_enabled=_bool_dict(old_data.get("zone_automation_enabled")),
+    )
+    return state.as_dict()
 
 
 class _StateStore(Store[dict[str, object]]):
-    """Migrate durable irrigation state between additive schema revisions."""
+    """Apply the single destructive migration into the v2 schema."""
 
     @override
     async def _async_migrate_func(
@@ -22,392 +227,10 @@ class _StateStore(Store[dict[str, object]]):
         old_minor_version: int,
         old_data: dict[str, object],
     ) -> dict[str, object]:
-        """Add fields introduced by additive 1.x schema revisions."""
-        if old_major_version == 1 and old_minor_version in {
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15,
-            16,
-            17,
-            18,
-            19,
-            20,
-            21,
-            22,
-            23,
-            24,
-            25,
-            26,
-            27,
-            28,
-        }:
-            migrated = dict(old_data)
-            if old_minor_version == 1:
-                migrated["active_execution"] = None
-            if old_minor_version < 3:
-                migrated["zone_last_delivered_liters"] = {}
-                migrated["zone_last_duration_seconds"] = {}
-            if old_minor_version < 4:
-                migrated["zone_safety_locks"] = {}
-            if old_minor_version < 5:
-                migrated["installation_safety_lock"] = None
-            if old_minor_version < 28:
-                migrated["zone_safety_lock_at"] = {}
-                migrated["installation_safety_lock_at"] = None
-            if old_minor_version < 6:
-                migrated["unassigned_measurement_quality"] = "unknown"
-                migrated["unassigned_measurement_origin"] = "unknown"
-                migrated["idle_meter_raw_baseline_liters"] = None
-            if old_minor_version == 6:
-                raw_active = migrated.get("active_execution")
-                if isinstance(raw_active, dict):
-                    raw_active = dict(raw_active)
-                    raw_active["requested_amount_liters"] = None
-                    raw_active["hard_time_limit_seconds"] = None
-                    raw_active["meter_failure_strategy"] = "abort"
-                    raw_active["zone_opening_at"] = None
-                    raw_active["fallback_started_at"] = None
-                    raw_active["fallback_checkpoint_at"] = None
-                    raw_active["delivered_liters_at_fallback"] = 0.0
-                    migrated["active_execution"] = raw_active
-            if old_minor_version < 8:
-                migrated["manual_requests"] = []
-                migrated["irrigation_executions"] = []
-                migrated["next_request_sequence"] = 1
-                raw_active = migrated.get("active_execution")
-                if isinstance(raw_active, dict):
-                    raw_active = dict(raw_active)
-                    raw_active["request_id"] = None
-                    raw_active["execution_id"] = None
-                    raw_active["dose_number"] = 1
-                    raw_active["dose_target_value"] = None
-                    migrated["active_execution"] = raw_active
-            if old_minor_version < 9:
-                raw_requests = migrated.get("manual_requests", [])
-                if isinstance(raw_requests, list):
-                    migrated["manual_requests"] = [
-                        {**request, "revision": 1} if isinstance(request, dict) else request
-                        for request in raw_requests
-                    ]
-            if old_minor_version < 10:
-                migrated["zone_deficit_mm"] = {}
-                migrated["zone_last_effective_irrigation"] = {}
-                migrated["finalized_weather_periods"] = {}
-            if old_minor_version < 11:
-                migrated["suppressed_automatic_opportunities"] = []
-                snapshot_defaults = {
-                    "balance_area_m2": None,
-                    "balance_application_efficiency": None,
-                    "balance_maximum_deficit_mm": None,
-                    "balance_minimum_effective_liters": None,
-                }
-                for key in ("manual_requests", "irrigation_executions"):
-                    records = migrated.get(key, [])
-                    if isinstance(records, list):
-                        migrated[key] = [
-                            {**record, **snapshot_defaults} if isinstance(record, dict) else record
-                            for record in records
-                        ]
-                raw_active = migrated.get("active_execution")
-                if isinstance(raw_active, dict):
-                    migrated["active_execution"] = {**raw_active, **snapshot_defaults}
-            if old_minor_version < 12:
-                migrated["uncredited_balance_deliveries"] = []
-                requests = migrated.get("manual_requests", [])
-                executions = migrated.get("irrigation_executions", [])
-                request_records = requests if isinstance(requests, list) else []
-                execution_records = executions if isinstance(executions, list) else []
-                request_by_id = {
-                    request.get("request_id"): request
-                    for request in request_records
-                    if isinstance(request, dict) and isinstance(request.get("request_id"), str)
-                }
-                execution_by_id = {
-                    execution.get("execution_id"): execution
-                    for execution in execution_records
-                    if isinstance(execution, dict)
-                    and isinstance(execution.get("execution_id"), str)
-                }
-                for execution in execution_by_id.values():
-                    linked_request = request_by_id.get(execution.get("request_id"))
-                    if isinstance(linked_request, dict):
-                        _backfill_balance_snapshot(execution, linked_request)
-                raw_active = migrated.get("active_execution")
-                if isinstance(raw_active, dict):
-                    linked_execution = execution_by_id.get(raw_active.get("execution_id"))
-                    linked_request = request_by_id.get(raw_active.get("request_id"))
-                    if isinstance(linked_execution, dict):
-                        _backfill_balance_snapshot(raw_active, linked_execution)
-                    if isinstance(linked_request, dict):
-                        _backfill_balance_snapshot(raw_active, linked_request)
-            if old_minor_version < 13:
-                migrated["winter_lock"] = False
-                migrated["maintenance_test"] = None
-                migrated["calibration_proposal"] = None
-            if old_minor_version < 14:
-                raw_proposal = migrated.get("calibration_proposal")
-                if isinstance(raw_proposal, dict):
-                    migrated["calibration_proposal"] = {
-                        **raw_proposal,
-                        "zone_valve": "",
-                        "zone_config_hash": "",
-                    }
-            if old_minor_version < 15:
-                requests = migrated.get("manual_requests", [])
-                if isinstance(requests, list):
-                    migrated["manual_requests"] = [
-                        {
-                            **request,
-                            "delivery_runtime_limit_seconds": request.get(
-                                "hard_time_limit_seconds"
-                            ),
-                            "operation_deadline_at": request.get("expires_at"),
-                        }
-                        if isinstance(request, dict)
-                        else request
-                        for request in requests
-                    ]
-                executions = migrated.get("irrigation_executions", [])
-                if isinstance(executions, list):
-                    migrated["irrigation_executions"] = [
-                        {
-                            **execution,
-                            "delivery_runtime_limit_seconds": None,
-                            "operation_deadline_at": None,
-                        }
-                        if isinstance(execution, dict)
-                        else execution
-                        for execution in executions
-                    ]
-                raw_active = migrated.get("active_execution")
-                if isinstance(raw_active, dict):
-                    migrated["active_execution"] = {
-                        **raw_active,
-                        "delivery_deadline_at": None,
-                        "operation_deadline_at": None,
-                    }
-            if old_minor_version < 16:
-                requests = migrated.get("manual_requests", [])
-                if isinstance(requests, list):
-                    migrated["manual_requests"] = [
-                        _migrate_request_runtime_limits(request)
-                        if isinstance(request, dict)
-                        else request
-                        for request in requests
-                    ]
-                executions = migrated.get("irrigation_executions", [])
-                if isinstance(executions, list):
-                    migrated["irrigation_executions"] = [
-                        _migrate_execution_runtime_limits(execution)
-                        if isinstance(execution, dict)
-                        else execution
-                        for execution in executions
-                    ]
-            if old_minor_version < 17:
-                migrated["weather_calculation_snapshots"] = {}
-                migrated["weather_failure_since"] = None
-            if old_minor_version < 18:
-                migrated["forecast_deferral_started"] = {}
-            if old_minor_version < 19:
-                migrated["forecast_deferral_deadlines"] = {}
-            if old_minor_version < 20:
-                migrated["cancelled_forecast_deferrals"] = []
-            if old_minor_version < 21:
-                migrated["budget_usage_liters"] = {}
-                requests = migrated.get("manual_requests", [])
-                if isinstance(requests, list):
-                    migrated["manual_requests"] = [
-                        {
-                            **request,
-                            "requested_start_at": None,
-                            "pause_until": None,
-                            "plan_id": None,
-                        }
-                        if isinstance(request, dict)
-                        else request
-                        for request in requests
-                    ]
-            if old_minor_version < 22:
-                for key in ("manual_requests", "irrigation_executions"):
-                    records = migrated.get(key, [])
-                    if isinstance(records, list):
-                        migrated[key] = [
-                            {**record, "resolved_inputs": {}}
-                            if isinstance(record, dict)
-                            else record
-                            for record in records
-                        ]
-                raw_active = migrated.get("active_execution")
-                if isinstance(raw_active, dict):
-                    migrated["active_execution"] = {**raw_active, "resolved_inputs": {}}
-            if old_minor_version < 23:
-                migrated["unassigned_available_liters"] = migrated.get(
-                    "unassigned_total_liters", 0.0
-                )
-                migrated["meter_accumulated_liters"] = None
-                migrated["meter_last_raw_liters"] = None
-                migrated["meter_correction_liters"] = 0.0
-                migrated["meter_reset_count"] = 0
-                executions = migrated.get("irrigation_executions", [])
-                if isinstance(executions, list):
-                    migrated["water_consumption_history"] = [
-                        {
-                            "recorded_at": execution["ended_at"],
-                            "amount_liters": execution.get("delivered_liters", 0.0),
-                            "zone_id": execution.get("zone_id"),
-                            "source": "historical_execution",
-                            "quality": execution.get("measurement_quality", "unknown"),
-                            "request_id": execution.get("request_id"),
-                            "execution_id": execution.get("execution_id"),
-                            "dose_number": execution.get("dose_number"),
-                            "warnings": [],
-                        }
-                        for execution in executions
-                        if isinstance(execution, dict)
-                        and isinstance(execution.get("ended_at"), str)
-                        and isinstance(execution.get("delivered_liters"), int | float)
-                        and execution.get("delivered_liters", 0.0) > 0
-                    ]
-                    migrated["irrigation_executions"] = [
-                        {
-                            **execution,
-                            "measurement_quality": "unknown",
-                            "measurement_origin": "unknown",
-                            "warnings": [],
-                            "doses": [],
-                        }
-                        if isinstance(execution, dict)
-                        else execution
-                        for execution in executions
-                    ]
-                else:
-                    migrated["water_consumption_history"] = []
-            if old_minor_version < 24:
-                raw_active = migrated.get("active_execution")
-                if isinstance(raw_active, dict):
-                    migrated["active_execution"] = {
-                        **raw_active,
-                        "fallback_quality": "estimated",
-                    }
-            if old_minor_version < 25:
-                migrated["meter_source_entity_id"] = None
-                migrated["meter_source_liters_per_count"] = None
-                migrated["water_history_incomplete"] = False
-            if old_minor_version < 26:
-                migrated["installation_cost"] = 0.0
-                migrated["zone_costs"] = {}
-                migrated["unassigned_cost"] = 0.0
-                migrated["archived_zones"] = {}
-                migrated["automatic_suspended_until"] = None
-                migrated["zone_automatic_suspended_until"] = {}
-                migrated["maintenance_task_state"] = {}
-                migrated["maintenance_history"] = []
-                migrated["maintenance_test_history"] = []
-                migrated["spring_checklist_completed"] = []
-                migrated["spring_test_status"] = "not_started"
-                migrated["winter_reminder_last_year"] = None
-                raw_test = migrated.get("maintenance_test")
-                if isinstance(raw_test, dict):
-                    migrated["maintenance_test"] = {
-                        **raw_test,
-                        "water_attribution": "zone",
-                    }
-                history = migrated.get("water_consumption_history", [])
-                if isinstance(history, list):
-                    migrated["water_consumption_history"] = [
-                        {**record, "cost": None} if isinstance(record, dict) else record
-                        for record in history
-                    ]
-            if old_minor_version < 27:
-                for key in ("manual_requests", "irrigation_executions"):
-                    records = migrated.get(key, [])
-                    if isinstance(records, list):
-                        migrated[key] = [
-                            _migrate_available_water_snapshot(record)
-                            if isinstance(record, dict)
-                            else record
-                            for record in records
-                        ]
-                raw_active = migrated.get("active_execution")
-                if isinstance(raw_active, dict):
-                    migrated["active_execution"] = _migrate_available_water_snapshot(raw_active)
-            if old_minor_version < 29:
-                migrated["operation_enabled"] = None
-                migrated["automation_enabled"] = None
-                migrated["zone_operation_enabled"] = {}
-                migrated["zone_automation_enabled"] = {}
-            return migrated
+        del old_minor_version
+        if old_major_version == 1:
+            return _migrate_rc6(old_data)
         raise NotImplementedError
-
-
-def _backfill_balance_snapshot(target: dict[str, object], source: dict[str, object]) -> None:
-    """Copy only missing immutable balance fields between linked durable records."""
-    for field in (
-        "balance_area_m2",
-        "balance_application_efficiency",
-        "balance_maximum_deficit_mm",
-        "balance_total_available_water_mm",
-        "balance_readily_available_water_mm",
-        "balance_minimum_effective_liters",
-    ):
-        if target.get(field) is None and source.get(field) is not None:
-            target[field] = source[field]
-
-
-def _migrate_available_water_snapshot(record: dict[str, object]) -> dict[str, object]:
-    """Preserve legacy one-limit behavior as equal TAW and RAW snapshots."""
-    legacy_limit = record.get("balance_maximum_deficit_mm")
-    return {
-        **record,
-        "balance_total_available_water_mm": legacy_limit,
-        "balance_readily_available_water_mm": legacy_limit,
-    }
-
-
-def _conservative_deadline(data: dict[str, object], *, lifetime_seconds: float) -> str:
-    """Derive a bounded deadline using only fields available inside storage migration."""
-    created_at = data.get("created_at")
-    expires_at = data.get("expires_at")
-    if not isinstance(created_at, str):
-        raise ValueError("Stored irrigation runtime has no creation timestamp")
-    deadline = datetime.fromisoformat(created_at) + timedelta(seconds=lifetime_seconds)
-    if isinstance(expires_at, str):
-        deadline = min(deadline, datetime.fromisoformat(expires_at))
-    return deadline.isoformat()
-
-
-def _migrate_request_runtime_limits(request: dict[str, object]) -> dict[str, object]:
-    """Give every legacy request conservative non-null limits pending config derivation."""
-    hard_limit = request.get("hard_time_limit_seconds")
-    delivery_limit = float(hard_limit) if isinstance(hard_limit, int | float) else 3_600.0
-    return {
-        **request,
-        "delivery_runtime_limit_seconds": delivery_limit,
-        "operation_deadline_at": _conservative_deadline(request, lifetime_seconds=14_400),
-        "runtime_limits_need_config_derivation": True,
-    }
-
-
-def _migrate_execution_runtime_limits(execution: dict[str, object]) -> dict[str, object]:
-    """Give every legacy execution conservative non-null limits pending config derivation."""
-    return {
-        **execution,
-        "delivery_runtime_limit_seconds": 3_600.0,
-        "operation_deadline_at": _conservative_deadline(execution, lifetime_seconds=14_400),
-        "runtime_limits_need_config_derivation": True,
-    }
 
 
 class IrrigationStore:
