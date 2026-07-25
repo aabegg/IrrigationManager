@@ -1,20 +1,20 @@
 {
   "services": {
     "start_manual": {"name": "Manuelle Bewässerung starten", "description": "Startet eine Zone mit genau einem Dauer- oder Mengenziel."},
-    "create_manual": {"name": "Manuellen Bewässerungsauftrag erstellen"},
-    "start_manual_from_card": {"name": "Manuelle Bewässerung aus einer Card starten"},
-    "cancel_request": {"name": "Bewässerungsauftrag stornieren"},
-    "stop": {"name": "Bewässerung stoppen"},
+    "create_manual": {"name": "Manuellen Bewässerungsauftrag erstellen", "description": "Speichert einen manuellen Bewässerungsauftrag und reiht ihn ein."},
+    "start_manual_from_card": {"name": "Manuelle Bewässerung aus einer Card starten", "description": "Erstellt einen manuellen Auftrag und behandelt einen aktiven Vorgang gemäß der gewählten Regel."},
+    "cancel_request": {"name": "Bewässerungsauftrag stornieren", "description": "Storniert einen noch nicht begonnenen Bewässerungsauftrag."},
+    "stop": {"name": "Bewässerung stoppen", "description": "Stoppt den aktiven Bewässerungsvorgang."},
     "emergency_stop": {"name": "Not-Aus", "description": "Stoppt sofort und setzt die persistente Sicherheitssperre der Anlage."},
-    "set_installation_operation": {"name": "Betriebsfreigabe der Anlage setzen"},
-    "set_installation_automation": {"name": "Automatikfreigabe der Anlage setzen"},
-    "set_zone_operation": {"name": "Betriebsfreigabe der Zone setzen"},
-    "set_zone_automation": {"name": "Automatikfreigabe der Zone setzen"},
-    "reset_safety_lock": {"name": "Sicherheitssperre zurücksetzen"},
-    "plan_automatic": {"name": "Automatische Bewässerung neu planen"},
-    "correct_physical_meter": {"name": "Physischen Zähler korrigieren"},
-    "list_card_orders": {"name": "Offene Bewässerungsaufträge auflisten"},
-    "list_zone_history": {"name": "Zonenverlauf auflisten"}
+    "set_installation_operation": {"name": "Betriebsfreigabe der Anlage setzen", "description": "Gibt den gesamten Betrieb einer Anlage frei oder sperrt ihn."},
+    "set_installation_automation": {"name": "Automatikfreigabe der Anlage setzen", "description": "Gibt die automatische Bewässerung einer Anlage frei oder sperrt sie."},
+    "set_zone_operation": {"name": "Betriebsfreigabe der Zone setzen", "description": "Gibt den gesamten Betrieb einer Zone frei oder sperrt ihn."},
+    "set_zone_automation": {"name": "Automatikfreigabe der Zone setzen", "description": "Gibt die automatische Bewässerung einer Zone frei oder sperrt sie."},
+    "reset_safety_lock": {"name": "Sicherheitssperre zurücksetzen", "description": "Hebt die Sicherheitssperre nach der Prüfung der Anlage auf."},
+    "plan_automatic": {"name": "Automatische Bewässerung neu planen", "description": "Erstellt alle noch nicht begonnenen automatischen Aufträge atomar aus den Wochenplänen neu."},
+    "correct_physical_meter": {"name": "Physischen Zähler korrigieren", "description": "Gleicht den physischen Zählerstand ab, ohne den erfassten Verbrauch zu verändern."},
+    "list_card_orders": {"name": "Offene Bewässerungsaufträge auflisten", "description": "Liefert die offenen Bewässerungsaufträge für die Anlagen-Card."},
+    "list_zone_history": {"name": "Zonenverlauf auflisten", "description": "Liefert eine gefilterte Seite abgeschlossener Bewässerungsvorgänge einer Zone."}
   },
   "selector": {
     "meter_type": {"options": {"cumulative": "Kumulativer Mengenzähler", "pulse": "Impulszähler", "none": "Keine Wassermessung"}},
