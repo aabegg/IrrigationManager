@@ -4,6 +4,8 @@ import asyncio
 
 import pytest
 from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL
+from homeassistant.components.lovelace import LovelaceData
+from homeassistant.components.lovelace.const import CONF_RESOURCE_TYPE_WS, LOVELACE_DATA
 from homeassistant.core import HomeAssistant
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_setup_component
@@ -14,6 +16,7 @@ from custom_components.irrigation_manager.frontend import (
     FRONTEND_DATA,
     FRONTEND_DIRECTORY,
     FRONTEND_FILE,
+    FRONTEND_URL_PATH,
     FrontendRegistration,
     async_register_frontend,
     async_unregister_frontend,
@@ -23,7 +26,16 @@ from custom_components.irrigation_manager.frontend import (
 async def test_frontend_bundle_is_served_registered_and_cleaned_up(
     hass: HomeAssistant, hass_client
 ) -> None:
-    """Load the versioned card module exactly while an installation is loaded."""
+    """Persist and update the versioned card module while installations are loaded."""
+    assert await async_setup_component(hass, "lovelace", {})
+    lovelace = hass.data[LOVELACE_DATA]
+    assert isinstance(lovelace, LovelaceData)
+    await lovelace.resources.async_create_item(
+        {
+            CONF_RESOURCE_TYPE_WS: "js",
+            "url": f"{FRONTEND_URL_PATH}/{FRONTEND_FILE}?v=old",
+        }
+    )
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Garden irrigation",
@@ -41,7 +53,18 @@ async def test_frontend_bundle_is_served_registered_and_cleaned_up(
     assert registration.module_url is not None
     integration = await async_get_integration(hass, DOMAIN)
     assert registration.module_url.endswith(f"irrigation-manager.js?v={integration.version}")
-    assert registration.module_url in hass.data[DATA_EXTRA_MODULE_URL].urls
+    await lovelace.resources.async_get_info()
+    matching_resources = [
+        resource
+        for resource in lovelace.resources.async_items()
+        if resource["url"].partition("?")[0] == f"{FRONTEND_URL_PATH}/{FRONTEND_FILE}"
+    ]
+    assert len(matching_resources) == 1
+    assert any(
+        resource["url"] == registration.module_url and resource["type"] == "module"
+        for resource in matching_resources
+    )
+    assert registration.module_url not in hass.data[DATA_EXTRA_MODULE_URL].urls
 
     await async_register_frontend(hass, entry.entry_id)
     assert registration.entries == {entry.entry_id}
@@ -57,10 +80,10 @@ async def test_frontend_bundle_is_served_registered_and_cleaned_up(
     module_url = registration.module_url
     await async_register_frontend(hass, "second-entry")
     assert await hass.config_entries.async_unload(entry.entry_id)
-    assert module_url in hass.data[DATA_EXTRA_MODULE_URL].urls
+    assert any(resource["url"] == module_url for resource in lovelace.resources.async_items())
 
     await async_unregister_frontend(hass, "second-entry")
-    assert module_url not in hass.data[DATA_EXTRA_MODULE_URL].urls
+    assert any(resource["url"] == module_url for resource in lovelace.resources.async_items())
 
 
 async def test_concurrent_entry_registration_registers_static_path_once(

@@ -149,15 +149,18 @@ describe("dashboard card interactions", () => {
 
   it("opens an accessible list of open irrigation orders from the metric", async () => {
     const callService = vi.fn(async (_domain, service) => service === "list_card_orders" ? {
-      orders: [{
-        request_id: "request-1",
-        zone: "Rasen",
-        source: "automatic",
-        target_type: "duration",
-        target_value: 600,
-        expected_start: "2026-07-25T05:00:00+00:00",
-        status: "pending",
-      }],
+      context: { id: "context-1" },
+      response: {
+        orders: [{
+          request_id: "request-1",
+          zone: "Rasen",
+          source: "automatic",
+          target_type: "duration",
+          target_value: 600,
+          expected_start: "2026-07-25T05:00:00+00:00",
+          status: "pending",
+        }],
+      },
     } : undefined);
     const hass = home([
       state("sensor.garden_status", "idle", {
@@ -188,8 +191,34 @@ describe("dashboard card interactions", () => {
       "list_card_orders",
       { config_entry_id: "garden" },
       undefined,
+      false,
       true,
     );
+  });
+
+  it("shows the message from Home Assistant websocket errors", async () => {
+    const callService = vi.fn(async () => Promise.reject({
+      code: "service_validation_error",
+      message: "The action requires a response.",
+    }));
+    const hass = home([
+      state("sensor.garden_status", "idle", {
+        config_entry_id: "garden",
+        card_entities: { status: "sensor.garden_status" },
+      }),
+    ], callService);
+    const card = await renderCard("irrigation-manager-overview-card", hass, {
+      type: "custom:irrigation-manager-overview-card",
+      entity: "sensor.garden_status",
+    });
+
+    card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=open-orders]")!.click();
+    await vi.waitFor(() => {
+      expect(card.shadowRoot.querySelector("[role=alert]")?.textContent)
+        .toContain("The action requires a response.");
+    });
+
+    expect(card.shadowRoot.textContent).not.toContain("[object Object]");
   });
 
   it("keeps manual inputs in a dialog and offers only effective capabilities", async () => {
@@ -322,28 +351,31 @@ describe("dashboard card interactions", () => {
       zone_subentry_id: "lawn",
       duration: 600,
       conflict_policy: "priority_next",
-    });
+    }, undefined, false, true);
     expect(callService).toHaveBeenCalledTimes(1);
   });
 
   it("loads paginated zone-filtered irrigation history into an accessible dialog", async () => {
     const callService = vi.fn(async (_domain, service) => service === "list_zone_history" ? {
-      items: [{
-        execution_id: "execution-1",
-        started_at: "2026-07-24T05:00:00+00:00",
-        ended_at: "2026-07-24T05:10:00+00:00",
-        source: "manual",
-        target_type: "duration",
-        target_value: 600,
-        result: "completed",
-        actual_duration: 600,
-        actual_water: null,
-        completion_reason: "target_reached",
-      }],
-      offset: 0,
-      limit: 20,
-      total: 1,
-      has_more: false,
+      context: { id: "context-1" },
+      response: {
+        items: [{
+          execution_id: "execution-1",
+          started_at: "2026-07-24T05:00:00+00:00",
+          ended_at: "2026-07-24T05:10:00+00:00",
+          source: "manual",
+          target_type: "duration",
+          target_value: 600,
+          result: "completed",
+          actual_duration: 600,
+          actual_water: null,
+          completion_reason: "target_reached",
+        }],
+        offset: 0,
+        limit: 20,
+        total: 1,
+        has_more: false,
+      },
     } : undefined);
     const hass = home([
       state("sensor.lawn_status", "idle", {
@@ -369,6 +401,7 @@ describe("dashboard card interactions", () => {
       "list_zone_history",
       { config_entry_id: "garden", zone_subentry_id: "lawn", offset: 0, limit: 20 },
       undefined,
+      false,
       true,
     );
   });

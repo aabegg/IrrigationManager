@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0-rc10 - 2026-07-26
+
+### Changed
+
+- Register the dashboard card bundle as one persistent Lovelace module resource and update
+  its versioned URL in place so Companion clients load it reliably after upgrades.
+
+### Fixed
+
+- Request and unwrap Home Assistant action responses correctly for open orders, zone
+  history, and manual irrigation.
+- Show readable Home Assistant WebSocket error messages instead of `[object Object]`.
+
 ## 0.1.0-rc9 - 2026-07-25
 
 ### Changed

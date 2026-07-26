@@ -10,6 +10,20 @@ import type {
 export const DOMAIN = "irrigation_manager";
 export const INVALID_STATES = new Set(["unknown", "unavailable"]);
 
+export function responseData<T>(value: unknown): T {
+  if (!value || typeof value !== "object" || !("response" in value)) return {} as T;
+  return (value as { response: T }).response;
+}
+
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return String(error);
+}
+
 type EntityMap = Record<string, string>;
 
 const overviewRoles: Record<string, keyof ResolvedOverviewCardConfig> = {

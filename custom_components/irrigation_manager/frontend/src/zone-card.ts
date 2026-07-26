@@ -3,8 +3,10 @@ import { LitElement, html, nothing, type TemplateResult } from "lit";
 import {
   DOMAIN,
   entity,
+  errorMessage,
   isAnchor,
   numberAttribute,
+  responseData,
   resolveZoneConfig,
   statusIcon,
   stringAttribute,
@@ -86,14 +88,23 @@ export class IrrigationManagerZoneCard extends LitElement {
       : undefined;
   }
 
-  private async perform(service: string, data: Record<string, unknown>, confirmation?: string): Promise<void> {
+  private async perform(
+    service: string,
+    data: Record<string, unknown>,
+    confirmation?: string,
+    returnResponse = false,
+  ): Promise<void> {
     if (confirmation && !window.confirm(confirmation)) return;
     this._busy = true;
     this._error = undefined;
     try {
-      await this.hass.callService(DOMAIN, service, data);
+      if (returnResponse) {
+        await this.hass.callService(DOMAIN, service, data, undefined, false, true);
+      } else {
+        await this.hass.callService(DOMAIN, service, data);
+      }
     } catch (error) {
-      this._error = `${localize(this.hass, "action_failed")}: ${error instanceof Error ? error.message : String(error)}`;
+      this._error = `${localize(this.hass, "action_failed")}: ${errorMessage(error)}`;
     } finally {
       this._busy = false;
     }
@@ -130,7 +141,7 @@ export class IrrigationManagerZoneCard extends LitElement {
       ...context,
       ...target,
       conflict_policy: activeExecution ? this._conflictPolicy : "start_now",
-    });
+    }, undefined, true);
     if (!this._error) this._manualOpen = false;
   }
 
@@ -152,18 +163,24 @@ export class IrrigationManagerZoneCard extends LitElement {
       const filters: Record<string, unknown> = { ...context, offset, limit: 20 };
       if (this._historySource) filters.source = this._historySource;
       if (this._historyResult) filters.result = this._historyResult;
-      const response = await this.hass.callService(
+      const result = await this.hass.callService(
         DOMAIN,
         "list_zone_history",
         filters,
         undefined,
+        false,
         true,
-      ) as { items?: Array<Record<string, unknown>>; offset?: number; total?: number };
+      );
+      const response = responseData<{
+        items?: Array<Record<string, unknown>>;
+        offset?: number;
+        total?: number;
+      }>(result);
       this._history = response.items ?? [];
       this._historyOffset = response.offset ?? offset;
       this._historyTotal = response.total ?? 0;
     } catch (error) {
-      this._error = `${localize(this.hass, "action_failed")}: ${error instanceof Error ? error.message : String(error)}`;
+      this._error = `${localize(this.hass, "action_failed")}: ${errorMessage(error)}`;
     } finally {
       this._busy = false;
     }

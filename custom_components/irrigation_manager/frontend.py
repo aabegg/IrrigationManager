@@ -7,6 +7,13 @@ from typing import Final
 
 from homeassistant.components.frontend import add_extra_js_url, remove_extra_js_url
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.lovelace import LovelaceData
+from homeassistant.components.lovelace.const import (
+    CONF_RESOURCE_TYPE_WS,
+    LOVELACE_DATA,
+)
+from homeassistant.components.lovelace.resources import ResourceStorageCollection
+from homeassistant.const import CONF_ID, CONF_TYPE, CONF_URL
 from homeassistant.core import HomeAssistant
 from homeassistant.loader import async_get_integration
 
@@ -25,7 +32,35 @@ class FrontendRegistration:
     static_path_registered: bool = False
     entries: set[str] = field(default_factory=set)
     module_url: str | None = None
+    extra_js_registered: bool = False
     lock: Lock = field(default_factory=Lock)
+
+
+async def _async_register_module(hass: HomeAssistant, module_url: str) -> bool:
+    """Persist the card as a Lovelace resource when storage mode is available."""
+    lovelace = hass.data.get(LOVELACE_DATA)
+    if not isinstance(lovelace, LovelaceData) or not isinstance(
+        lovelace.resources, ResourceStorageCollection
+    ):
+        return False
+
+    resources = lovelace.resources
+    await resources.async_get_info()
+    module_path = module_url.partition("?")[0]
+    existing = next(
+        (
+            item
+            for item in resources.async_items()
+            if str(item.get(CONF_URL, "")).partition("?")[0] == module_path
+        ),
+        None,
+    )
+    resource_data = {CONF_RESOURCE_TYPE_WS: "module", CONF_URL: module_url}
+    if existing is None:
+        await resources.async_create_item(resource_data)
+    elif existing.get(CONF_URL) != module_url or existing.get(CONF_TYPE) != "module":
+        await resources.async_update_item(existing[CONF_ID], resource_data)
+    return True
 
 
 async def async_register_frontend(hass: HomeAssistant, entry_id: str) -> None:
@@ -54,7 +89,9 @@ async def async_register_frontend(hass: HomeAssistant, entry_id: str) -> None:
             integration = await async_get_integration(hass, DOMAIN)
             version = str(integration.version or "0")
             registration.module_url = f"{FRONTEND_URL_PATH}/{FRONTEND_FILE}?v={version}"
-            add_extra_js_url(hass, registration.module_url)
+            if not await _async_register_module(hass, registration.module_url):
+                add_extra_js_url(hass, registration.module_url)
+                registration.extra_js_registered = True
 
         registration.entries.add(entry_id)
 
@@ -67,6 +104,12 @@ async def async_unregister_frontend(hass: HomeAssistant, entry_id: str) -> None:
 
     async with registration.lock:
         registration.entries.discard(entry_id)
-        if not registration.entries and registration.module_url is not None:
+        if (
+            not registration.entries
+            and registration.module_url is not None
+            and registration.extra_js_registered
+        ):
             remove_extra_js_url(hass, registration.module_url)
+            registration.extra_js_registered = False
+        if not registration.entries:
             registration.module_url = None

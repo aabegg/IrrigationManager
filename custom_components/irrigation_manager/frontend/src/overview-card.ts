@@ -3,7 +3,9 @@ import { LitElement, html, nothing, type TemplateResult } from "lit";
 import {
   DOMAIN,
   entity,
+  errorMessage,
   isAnchor,
+  responseData,
   resolveOverviewConfig,
   statusIcon,
   stringAttribute,
@@ -68,7 +70,7 @@ export class IrrigationManagerOverviewCard extends LitElement {
     try {
       await this.hass.callService(DOMAIN, service, { config_entry_id: configEntryId, ...extra });
     } catch (error) {
-      this._error = `${localize(this.hass, "action_failed")}: ${error instanceof Error ? error.message : String(error)}`;
+      this._error = `${localize(this.hass, "action_failed")}: ${errorMessage(error)}`;
     } finally {
       this._busy = false;
     }
@@ -82,16 +84,18 @@ export class IrrigationManagerOverviewCard extends LitElement {
     this._busy = true;
     this._error = undefined;
     try {
-      const response = await this.hass.callService(
+      const result = await this.hass.callService(
         DOMAIN,
         "list_card_orders",
         { config_entry_id: configEntryId },
         undefined,
+        false,
         true,
-      ) as { orders?: Array<Record<string, unknown>> };
+      );
+      const response = responseData<{ orders?: Array<Record<string, unknown>> }>(result);
       this._orders = response.orders ?? [];
     } catch (error) {
-      this._error = `${localize(this.hass, "action_failed")}: ${error instanceof Error ? error.message : String(error)}`;
+      this._error = `${localize(this.hass, "action_failed")}: ${errorMessage(error)}`;
     } finally {
       this._busy = false;
     }

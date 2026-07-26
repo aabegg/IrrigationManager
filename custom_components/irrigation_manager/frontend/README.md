@@ -1,6 +1,6 @@
 # Irrigation Manager Lovelace cards
 
-The integration serves and registers the compiled ES module automatically while at least one Irrigation Manager config entry is loaded. Do not add a duplicate Lovelace resource and do not edit `.storage`.
+The integration serves the compiled ES module and registers one persistent Lovelace module resource automatically. Existing registrations for the same module path are updated in place on release upgrades. Do not add a duplicate resource and do not edit `.storage`.
 
 Add a card through the dashboard editor and select **Irrigation Manager Overview** or **Irrigation Manager Zone**. Each editor selects exactly one Home Assistant anchor entity. The card resolves its defined sibling entities and action identifiers from that anchor.
 

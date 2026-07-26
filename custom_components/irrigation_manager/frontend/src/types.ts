@@ -16,6 +16,7 @@ export interface HomeAssistant {
     service: string,
     data?: Record<string, unknown>,
     target?: Record<string, unknown>,
+    notifyOnError?: boolean,
     returnResponse?: boolean,
   ): Promise<unknown>;
   formatEntityState?(state: HassEntity): string;
