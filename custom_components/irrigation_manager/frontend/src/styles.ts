@@ -42,6 +42,14 @@ export const cardStyles = css`
   .history-list article { display: grid; gap: 3px; padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
   .history-list article span { color: var(--secondary-text-color); font-size: 0.82rem; }
   .dialog-actions { margin-top: 16px; justify-content: flex-end; }
+  .date-navigation { display: grid; grid-template-columns: 40px minmax(160px, 240px) 40px; justify-content: center; align-items: end; gap: 8px; margin-bottom: 14px; }
+  .selected-date { margin-bottom: 8px; text-transform: capitalize; }
+  .order-list { display: grid; }
+  .order-list article { display: grid; gap: 4px; padding: 12px 0; border-bottom: 1px solid var(--divider-color); }
+  .order-list article > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .order-list article span, .order-list time { color: var(--secondary-text-color); font-size: 0.85rem; }
+  .empty-day { display: grid; justify-items: start; gap: 8px; }
+  .empty-day p { margin-bottom: 0; }
   @container (max-width: 520px) { .table-row { grid-template-columns: 1fr 1fr; } }
   :host { container-type: inline-size; }
   @media (max-width: 480px) {

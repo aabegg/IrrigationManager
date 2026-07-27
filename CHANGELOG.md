@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-rc11 - 2026-07-27
+
+### Added
+
+- Add a confirmed zone-card action that safely stops only the currently active irrigation
+  execution for that zone.
+
+### Changed
+
+- Split open irrigation orders into a localized daily view with date selection, day
+  navigation, formatted start times, and a shortcut to the next day containing orders.
+
 ## 0.1.0-rc10 - 2026-07-26
 
 ### Changed

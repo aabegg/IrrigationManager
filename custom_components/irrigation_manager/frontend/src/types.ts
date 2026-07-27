@@ -10,6 +10,7 @@ export interface HassEntity {
 
 export interface HomeAssistant {
   language: string;
+  config?: { time_zone?: string };
   states: Record<string, HassEntity>;
   callService(
     domain: string,

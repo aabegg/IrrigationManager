@@ -205,6 +205,7 @@ export class IrrigationManagerZoneCard extends LitElement {
     const zone = entity(this.hass, config.zone_entity);
     const zoneStatus = entity(this.hass, config.status_entity);
     const context = this.context();
+    const activeExecutionId = stringAttribute(zone, "active_execution_id");
     const title = typeof zone?.attributes.card_name === "string"
       ? zone.attributes.card_name
       : zone?.attributes.friendly_name ?? localize(this.hass, "zone");
@@ -237,6 +238,7 @@ export class IrrigationManagerZoneCard extends LitElement {
           ${this._error ? html`<div class="error" role="alert">${this._error}</div>` : nothing}
           <div class="actions">
             <button class="primary" data-testid="manual-irrigation" ?disabled=${this._busy || manualBlocked || !context} @click=${() => this.openManual(zone)}><ha-icon icon="mdi:sprinkler-variant"></ha-icon>${localize(this.hass, "manual_water")}</button>
+            ${zoneStatus?.state === "watering" && activeExecutionId && context ? html`<button class="danger" data-testid="stop-watering" ?disabled=${this._busy} @click=${() => this.perform("stop", { config_entry_id: context.config_entry_id, execution_id: activeExecutionId }, localize(this.hass, "confirm_stop_watering"))}><ha-icon icon="mdi:stop-circle-outline"></ha-icon>${localize(this.hass, "stop_watering")}</button>` : nothing}
             <button data-testid="show-history" ?disabled=${this._busy || !context} @click=${() => this.loadHistory(0)}><ha-icon icon="mdi:history"></ha-icon>${localize(this.hass, "show_history")}</button>
           </div>
           ${this._manualOpen ? html`

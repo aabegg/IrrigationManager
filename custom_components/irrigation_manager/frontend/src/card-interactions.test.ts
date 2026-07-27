@@ -16,12 +16,21 @@ function state(
 function home(
   states: HassEntity[],
   callService: HomeAssistant["callService"] = vi.fn(async () => undefined),
+  timeZone?: string,
 ): HomeAssistant {
   return {
     language: "de",
+    config: { time_zone: timeZone },
     states: Object.fromEntries(states.map((item) => [item.entity_id, item])),
     callService,
   };
+}
+
+function localIso(dayOffset: number, hour: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + dayOffset);
+  date.setHours(hour, 0, 0, 0);
+  return date.toISOString();
 }
 
 async function renderCard<T extends OverviewCardConfig | ZoneCardConfig>(
@@ -44,6 +53,7 @@ async function renderCard<T extends OverviewCardConfig | ZoneCardConfig>(
 }
 
 beforeEach(() => {
+  vi.useRealTimers();
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
@@ -147,7 +157,54 @@ describe("dashboard card interactions", () => {
     });
   });
 
+  it("offers a confirmed stop only for this zone's active irrigation", async () => {
+    const callService = vi.fn(async () => undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const hass = home([
+      state("sensor.lawn_status", "watering", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        active_execution: true,
+        active_execution_id: "execution-1",
+        card_entities: { anchor: "sensor.lawn_status", status: "sensor.lawn_status" },
+      }),
+    ], callService);
+    const card = await renderCard("irrigation-manager-zone-card", hass, {
+      type: "custom:irrigation-manager-zone-card",
+      entity: "sensor.lawn_status",
+    });
+
+    card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=stop-watering]")!.click();
+    await Promise.resolve();
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      "Die laufende Bewässerung dieser Zone wirklich stoppen?",
+    );
+    expect(callService).toHaveBeenCalledWith("irrigation_manager", "stop", {
+      config_entry_id: "garden",
+      execution_id: "execution-1",
+    });
+  });
+
+  it("does not show a stop action without this zone's active execution id", async () => {
+    const hass = home([
+      state("sensor.lawn_status", "idle", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        active_execution: true,
+        card_entities: { anchor: "sensor.lawn_status", status: "sensor.lawn_status" },
+      }),
+    ]);
+    const card = await renderCard("irrigation-manager-zone-card", hass, {
+      type: "custom:irrigation-manager-zone-card",
+      entity: "sensor.lawn_status",
+    });
+
+    expect(card.shadowRoot.querySelector("[data-testid=stop-watering]")).toBeNull();
+  });
+
   it("opens an accessible list of open irrigation orders from the metric", async () => {
+    const expectedStart = localIso(0, 5);
     const callService = vi.fn(async (_domain, service) => service === "list_card_orders" ? {
       context: { id: "context-1" },
       response: {
@@ -157,7 +214,7 @@ describe("dashboard card interactions", () => {
           source: "automatic",
           target_type: "duration",
           target_value: 600,
-          expected_start: "2026-07-25T05:00:00+00:00",
+          expected_start: expectedStart,
           status: "pending",
         }],
       },
@@ -186,6 +243,7 @@ describe("dashboard card interactions", () => {
     expect(dialog?.getAttribute("aria-labelledby")).toBe("orders-title");
     expect(dialog?.textContent).toContain("Rasen");
     expect(dialog?.textContent).toContain("600 s");
+    expect(dialog?.textContent).not.toContain(expectedStart);
     expect(callService).toHaveBeenCalledWith(
       "irrigation_manager",
       "list_card_orders",
@@ -194,6 +252,57 @@ describe("dashboard card interactions", () => {
       false,
       true,
     );
+  });
+
+  it("navigates open irrigation orders by local calendar day", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
+    const callService = vi.fn(async (_domain, service) => service === "list_card_orders" ? {
+      response: {
+        orders: [
+          { zone: "Später", source: "automatic", target_type: "duration", target_value: 300, expected_start: "2026-07-27T08:00:00Z", status: "pending" },
+          { zone: "Früher", source: "automatic", target_type: "duration", target_value: 200, expected_start: "2026-07-27T06:00:00Z", status: "pending" },
+          { zone: "Übermorgen", source: "automatic", target_type: "duration", target_value: 600, expected_start: "2026-07-29T06:00:00Z", status: "pending" },
+        ],
+      },
+    } : undefined);
+    const hass = home([
+      state("sensor.garden_status", "idle", {
+        config_entry_id: "garden",
+        card_entities: { status: "sensor.garden_status", pending: "sensor.pending" },
+      }),
+      state("sensor.pending", "3"),
+    ], callService, "Europe/Zurich");
+    const card = await renderCard("irrigation-manager-overview-card", hass, {
+      type: "custom:irrigation-manager-overview-card",
+      entity: "sensor.garden_status",
+    });
+
+    card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=open-orders]")!.click();
+    await Promise.resolve();
+    await card.updateComplete;
+
+    const dialog = card.shadowRoot.querySelector<HTMLDialogElement>("dialog[open]")!;
+    expect(dialog.textContent).toContain("Heute");
+    expect(dialog.textContent).not.toContain("Übermorgen");
+    expect(dialog.textContent!.indexOf("Früher")).toBeLessThan(dialog.textContent!.indexOf("Später"));
+
+    const dateInput = dialog.querySelector<HTMLInputElement>("[data-testid=orders-date]")!;
+    dateInput.value = "";
+    dateInput.dispatchEvent(new Event("change"));
+    await card.updateComplete;
+    expect(dateInput.value).toBe("2026-07-27");
+
+    dialog.querySelector<HTMLButtonElement>("[aria-label='Nächster Tag']")!.click();
+    await card.updateComplete;
+
+    expect(dialog.textContent).toContain("An diesem Tag sind keine Bewässerungsaufträge offen.");
+    dialog.querySelector<HTMLButtonElement>("[data-testid=next-orders-date]")!.click();
+    await card.updateComplete;
+
+    expect(dialog.textContent).not.toContain("Heute");
+    expect(dialog.textContent).toContain("Übermorgen");
+    vi.useRealTimers();
   });
 
   it("shows the message from Home Assistant websocket errors", async () => {

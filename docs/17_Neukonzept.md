@@ -364,6 +364,8 @@ Die Anlagen-Card zeigt:
 
 Ein Klick auf die Anzahl offener Bewässerungsaufträge öffnet einen Dialog oder eine eigene Ansicht. Die Liste zeigt für jeden Auftrag mindestens Zone, Quelle, Bewässerungsziel, erwarteten Start und aktuellen Status. Das Bewässerungsziel wird je nach Steuerungsart als Dauer oder Wassermenge dargestellt.
 
+Der Dialog zeigt jeweils die Aufträge eines lokalen Kalendertags und öffnet mit dem aktuellen Tag. Das ausgewählte Datum wird lokalisiert dargestellt und kann mit Pfeilen tageweise vor- und zurückgeschaltet werden. Gibt es am ausgewählten Tag keine offenen Aufträge, weist ein Sprungziel auf den nächsten Tag mit offenen Aufträgen. Innerhalb eines Tages werden die Aufträge nach ihrem erwarteten Start in der berechneten Ausführungsreihenfolge angezeigt.
+
 Der Not-Aus wird ohne vorgeschalteten Bestätigungsdialog sofort ausgeführt. Er stoppt die gesamte Bewässerungsanlage und setzt deren persistente Sicherheitssperre. Erst das separate Aufheben der Sperre verlangt eine Warnmeldung mit ausdrücklicher Bestätigung.
 
 Die zeitbasierten Kennzahlen werden als `Laufzeit` und nicht als `Verbrauch` bezeichnet. Der Begriff Wasserverbrauch wird nur für gemessene Wassermengen verwendet.
@@ -379,9 +381,12 @@ Die Zonen-Card zeigt:
 - die Laufzeit oder gemessene Wassermenge im aktuellen Monat
 - die nächste Bewässerung
 - die Aktion `Manuell bewässern`
+- während einer laufenden Bewässerung dieser Zone die Aktion `Bewässerung stoppen`
 - die Aktion `Verlauf anzeigen`
 
 Die Aktion `Manuell bewässern` öffnet einen Dialog zur Eingabe des Bewässerungsziels. Eine Dauer kann immer eingegeben werden. Eine Wassermenge kann nur gewählt werden, wenn für die Anlage eine funktionsfähige Mengensteuerung verfügbar ist.
+
+Die Aktion `Bewässerung stoppen` wird nur angezeigt, solange in dieser Zone ein Bewässerungsvorgang läuft. Nach einer Bestätigung beendet sie genau diesen Vorgang kontrolliert. Eine veraltete Card-Aktion darf keinen inzwischen neu gestarteten Bewässerungsvorgang stoppen.
 
 Ist kein anderer Bewässerungsvorgang aktiv, wird der manuelle Auftrag sofort gestartet. Läuft bereits eine Bewässerung innerhalb der Anlage, entscheidet der Benutzer:
 

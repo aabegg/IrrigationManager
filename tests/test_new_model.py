@@ -1424,6 +1424,52 @@ async def test_cancelled_execution_is_accounted_exactly_once(hass: HomeAssistant
     assert execution.status == "cancelled"
 
 
+async def test_stale_execution_id_cannot_stop_replacement_execution(
+    hass: HomeAssistant,
+) -> None:
+    """Keep a stale card action scoped to the execution it originally displayed."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    manager._dispatcher_task = hass.async_create_task(manager._async_dispatch_requests())
+    await manager.async_start_manual(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=0.001,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+    )
+    stale_execution_id = str(manager.list_irrigation_executions()[-1]["execution_id"])
+    replacement_started = asyncio.Event()
+
+    async def execute(_request) -> ExecutionResult:
+        replacement_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return ExecutionResult(
+                zone_id=zone.unique_id,
+                delivered_liters=0,
+                duration_seconds=0,
+                stopped=True,
+            )
+
+    manager._executor.execute = execute
+    replacement = await manager.async_start_manual(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=60,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        wait_for_completion=False,
+    )
+    await replacement_started.wait()
+    replacement_execution_id = manager.snapshot().active_execution_id
+
+    with pytest.raises(HomeAssistantError, match="already final"):
+        await manager.async_stop(execution_id=stale_execution_id)
+
+    assert manager.snapshot().active_execution_id == replacement_execution_id
+    await manager.async_cancel_request(str(replacement["request_id"]))
+
+
 @pytest.mark.parametrize("stop_kind", ["deactivate", "stop", "emergency"])
 async def test_calibration_stop_owner_prevents_late_proposal_rewrite(
     hass: HomeAssistant, stop_kind: str

@@ -1,5 +1,6 @@
 """Focused Home Assistant lifecycle and storage tests for version 2."""
 
+from dataclasses import replace
 from types import MappingProxyType
 
 import pytest
@@ -227,6 +228,25 @@ async def test_zone_status_anchor_publishes_live_meter_capability_and_volume_lim
     assert "max_manual_duration_seconds" not in anchor.attributes
     assert installation_anchor.attributes["volume_control_available"] is True
     assert "physical_meter" in installation_anchor.attributes["card_entities"]
+
+    coordinator = entry.runtime_data.coordinator
+    coordinator.set_snapshot(
+        replace(
+            coordinator.data,
+            active_zone_id="zone-metered",
+            active_execution_id="execution-1",
+        )
+    )
+    await hass.async_block_till_done()
+    active_anchor = hass.states.get(anchor_id)
+    assert active_anchor is not None
+    assert active_anchor.attributes["active_execution_id"] == "execution-1"
+
+    coordinator.set_snapshot(replace(coordinator.data, active_zone_id="another-zone"))
+    await hass.async_block_till_done()
+    inactive_anchor = hass.states.get(anchor_id)
+    assert inactive_anchor is not None
+    assert "active_execution_id" not in inactive_anchor.attributes
 
     assert await hass.config_entries.async_unload(entry.entry_id)
 

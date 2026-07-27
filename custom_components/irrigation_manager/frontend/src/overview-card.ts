@@ -24,6 +24,7 @@ export class IrrigationManagerOverviewCard extends LitElement {
     _error: { state: true },
     _ordersOpen: { state: true },
     _orders: { state: true },
+    _ordersDate: { state: true },
   };
 
   hass!: HomeAssistant;
@@ -32,6 +33,7 @@ export class IrrigationManagerOverviewCard extends LitElement {
   private _error?: string;
   private _ordersOpen = false;
   private _orders: Array<Record<string, unknown>> = [];
+  private _ordersDate = "";
 
   static getConfigElement(): HTMLElement {
     return document.createElement("irrigation-manager-overview-card-editor");
@@ -80,6 +82,7 @@ export class IrrigationManagerOverviewCard extends LitElement {
     const config = resolveOverviewConfig(this.hass, this._config);
     const configEntryId = stringAttribute(entity(this.hass, config.status_entity), "config_entry_id");
     if (!configEntryId) return;
+    this._ordersDate = this.dateKey(new Date());
     this._ordersOpen = true;
     this._busy = true;
     this._error = undefined;
@@ -105,6 +108,60 @@ export class IrrigationManagerOverviewCard extends LitElement {
     return `${String(order.target_value)} ${order.target_type === "volume" ? localize(this.hass, "liters") : localize(this.hass, "seconds")}`;
   }
 
+  private dateKey(value: string | Date): string {
+    const date = value instanceof Date ? value : new Date(value);
+    const parts = new Intl.DateTimeFormat("en", {
+      timeZone: this.hass.config?.time_zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+    const part = (type: Intl.DateTimeFormatPartTypes): string =>
+      parts.find((item) => item.type === type)?.value ?? "";
+    return `${part("year")}-${part("month")}-${part("day")}`;
+  }
+
+  private shiftOrdersDate(days: number): void {
+    const date = new Date(`${this._ordersDate}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    this._ordersDate = date.toISOString().slice(0, 10);
+  }
+
+  private formatDate(dateKey: string): string {
+    const formatted = new Intl.DateTimeFormat(this.hass.language, {
+      timeZone: "UTC",
+      weekday: "long",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(`${dateKey}T12:00:00Z`));
+    return dateKey === this.dateKey(new Date())
+      ? `${localize(this.hass, "today")}, ${formatted}`
+      : formatted;
+  }
+
+  private formatTime(value: unknown): string {
+    return new Intl.DateTimeFormat(this.hass.language, {
+      timeZone: this.hass.config?.time_zone,
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(String(value)));
+  }
+
+  private ordersForSelectedDate(): Array<Record<string, unknown>> {
+    return this._orders
+      .filter((order) => this.dateKey(String(order.expected_start)) === this._ordersDate)
+      .sort((left, right) =>
+        new Date(String(left.expected_start)).getTime() - new Date(String(right.expected_start)).getTime());
+  }
+
+  private nextOrdersDate(): string | undefined {
+    return this._orders
+      .map((order) => this.dateKey(String(order.expected_start)))
+      .filter((date) => date > this._ordersDate)
+      .sort()[0];
+  }
+
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
     if (!this._config.entity) {
@@ -124,6 +181,8 @@ export class IrrigationManagerOverviewCard extends LitElement {
     const title = typeof status?.attributes.card_name === "string"
       ? status.attributes.card_name
       : status?.attributes.friendly_name ?? localize(this.hass, "overview");
+    const selectedOrders = this.ordersForSelectedDate();
+    const nextOrdersDate = this.nextOrdersDate();
 
     return html`
       <ha-card>
@@ -154,9 +213,16 @@ export class IrrigationManagerOverviewCard extends LitElement {
           ${this._ordersOpen ? html`
             <dialog open aria-labelledby="orders-title">
               <div class="dialog-header"><h2 id="orders-title">${localize(this.hass, "irrigation_orders")}</h2><button class="icon-button" aria-label=${localize(this.hass, "close")} @click=${() => { this._ordersOpen = false; }}>×</button></div>
-              ${this._busy ? html`<p aria-live="polite">${localize(this.hass, "loading")}</p>` : this._orders.length === 0 ? html`<p>${localize(this.hass, "no_open_orders")}</p>` : html`
-                <div class="table" role="table">
-                  ${this._orders.map((order) => html`<div class="table-row" role="row"><strong>${String(order.zone)}</strong><span>${translatedValue(this.hass, String(order.source))}</span><span>${this.target(order)}</span><span>${String(order.expected_start)}</span><span>${translatedValue(this.hass, String(order.status))}</span></div>`)}
+              <div class="date-navigation">
+                <button class="icon-button" aria-label=${localize(this.hass, "previous_day")} @click=${() => this.shiftOrdersDate(-1)}><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+                <label class="field"><span>${localize(this.hass, "date")}</span><input data-testid="orders-date" type="date" .value=${this._ordersDate} @change=${(event: Event) => { const input = event.target as HTMLInputElement; this._ordersDate = input.value || this.dateKey(new Date()); input.value = this._ordersDate; }} /></label>
+                <button class="icon-button" aria-label=${localize(this.hass, "next_day")} @click=${() => this.shiftOrdersDate(1)}><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+              </div>
+              <h3 class="selected-date" aria-live="polite">${this.formatDate(this._ordersDate)}</h3>
+              ${this._busy ? html`<p aria-live="polite">${localize(this.hass, "loading")}</p>` : this._orders.length === 0 ? html`<p>${localize(this.hass, "no_open_orders")}</p>` : selectedOrders.length === 0 ? html`
+                <div class="empty-day"><p>${localize(this.hass, "no_orders_for_day")}</p>${nextOrdersDate ? html`<button data-testid="next-orders-date" @click=${() => { this._ordersDate = nextOrdersDate; }}>${localize(this.hass, "next_orders_on")} ${this.formatDate(nextOrdersDate)}</button>` : nothing}</div>` : html`
+                <div class="order-list">
+                  ${selectedOrders.map((order) => html`<article><div><strong>${String(order.zone)}</strong><time datetime=${String(order.expected_start)}>${this.formatTime(order.expected_start)}</time></div><span>${translatedValue(this.hass, String(order.source))} · ${this.target(order)} · ${translatedValue(this.hass, String(order.status))}</span></article>`)}
                 </div>`}
             </dialog>` : nothing}
         </div>

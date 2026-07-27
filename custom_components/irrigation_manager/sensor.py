@@ -801,6 +801,8 @@ class ZoneStatusContractSensor(_ZoneSensor):
             ),
             "active_execution": snapshot.active_execution_id is not None,
         }
+        if snapshot.active_zone_id == self._zone_id and snapshot.active_execution_id:
+            attributes["active_execution_id"] = snapshot.active_execution_id
         if self._max_manual_volume_runtime_seconds is not None:
             attributes["max_manual_volume_runtime_seconds"] = (
                 self._max_manual_volume_runtime_seconds
