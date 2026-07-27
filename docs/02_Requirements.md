@@ -1,6 +1,6 @@
 # Funktionsanforderungen
 
-> **Überholt für Version 2:** `docs/17_Neukonzept.md` ist der verbindliche Implementierungsvertrag. Dieses Dokument beschreibt den früheren Version-1-Umfang und gilt nur noch dort, wo es dem Neukonzept nicht widerspricht; insbesondere sind Bedarfsplanung, zonale Sicherheitssperren und geschätzte Verbrauchsbilanzen ohne Zähler keine bindenden Version-2-Anforderungen.
+> **Historisches Archiv:** Dieses Dokument ist vollständig fachlich irrelevant. Ausschließlich `docs/17_Neukonzept.md` ist verbindlich; aus den folgenden Version-1-Anforderungen darf nichts übernommen oder zur Schließung von Lücken verwendet werden.
 
 Dieses Dokument beschreibt den verbindlichen Funktionsumfang vor dem ersten realen Einsatz, mit Ausnahme des ausdrücklich als später markierten Abschnitts. Die Entwicklung darf intern in Stufen erfolgen; die reale Anlage wird erst nach vollständiger Simulation und Sicherheitsprüfung freigegeben.
 

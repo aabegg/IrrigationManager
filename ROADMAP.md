@@ -1,5 +1,7 @@
 # Roadmap
 
+> **Historisches Archiv:** Diese Roadmap ist fachlich irrelevant und darf nicht für die weitere Planung oder Umsetzung verwendet werden. Ausschließlich `docs/17_Neukonzept.md` ist verbindlich. Nicht dort geregelte Punkte sind offen und werden nicht aus dieser Roadmap übernommen.
+
 Die Implementierung erfolgt in vertikalen, simulierbaren Stufen. Keine Zwischenstufe wird für unbeaufsichtigten Betrieb an der realen Anlage freigegeben. Der private Feldtest beginnt erst, wenn der vollständige vereinbarte Erstumfang implementiert und qualifiziert ist.
 
 ## Phase 0: Spezifikation

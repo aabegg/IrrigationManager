@@ -1,6 +1,6 @@
 # UI und Config Flow
 
-> **Überholt für Version 2, soweit widersprüchlich:** Die verbindliche minimale Konfigurationsführung steht in `docs/17_Neukonzept.md`. Version-2-Anlagen und -Zonen werden über ihre Home-Assistant-Einstellungen neu konfiguriert; Betriebs-/Automatikfreigaben, Not-Aus, Sperrenreset und automatische Neuplanung benötigen keine Developer Tools.
+> **Historisches Archiv:** Dieses Dokument ist vollständig fachlich irrelevant. Ausschließlich `docs/17_Neukonzept.md` ist verbindlich; aus dem folgenden Version-1-UI-Entwurf darf nichts übernommen oder zur Schließung von Lücken verwendet werden.
 
 ## Leitlinien
 

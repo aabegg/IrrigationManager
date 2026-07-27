@@ -1,8 +1,10 @@
 # Neukonzept
 
-Status: Verbindlicher Implementierungsvertrag für Version 2; weitere Erweiterungsmodule bleiben offen
+Status: Einzige verbindliche Konzept- und Implementierungsquelle; weitere Erweiterungsmodule bleiben offen
 
-Dieses Dokument ist der maßgebliche Implementierungsvertrag für Version 2. Bei Widersprüchen ersetzt es die älteren Anforderungs-, Sicherheits-, UI- und Qualifikationsdokumente. Bestehende Version-1-Einträge werden bewusst destruktiv in eine gesperrte Version-2-Hülle migriert und erst nach gültiger lokaler Neukonfiguration wieder freigegeben.
+Dieses Dokument ist die einzige maßgebliche Quelle für Funktionsumfang, Verhalten, Architekturentscheidungen und Weiterentwicklung des Irrigation Managers. Es ersetzt alle älteren Anforderungen, Roadmaps, ADRs sowie die Dokumente `01` bis `16` vollständig. Diese Unterlagen bleiben ausschließlich als historisches Archiv erhalten und sind fachlich irrelevant; aus ihnen dürfen auch bei fehlendem Widerspruch keine Anforderungen, Standardwerte oder Designentscheidungen übernommen werden.
+
+Regelt dieses Dokument einen Sachverhalt nicht, gilt er als offen. Die Lücke darf nicht aus älteren Unterlagen, bestehendem Code oder bestehenden Tests geschlossen werden, sondern muss vor der Umsetzung hier entschieden und ergänzt werden. Bestehende Version-1-Einträge werden bewusst destruktiv in eine gesperrte Version-2-Hülle migriert und erst nach gültiger lokaler Neukonfiguration wieder freigegeben.
 
 ## Leitidee
 
@@ -94,7 +96,7 @@ Das Wassermengen-Modul wird im Schritt `Wassermessung` des Anlagen-Wizards konfi
 
 ### Kumulativer Volumenzähler
 
-Bei dieser Messart wird genau eine Sensor-Entity ausgewählt, deren Zustand einen fortlaufenden Wasserzähler in einer unterstützten Volumeneinheit darstellt. Die Integration normalisiert den Wert intern auf Liter und übernimmt positive Zählerdifferenzen als gemessenen Verbrauch.
+Bei dieser Messart wird genau eine Sensor-Entity ausgewählt, deren Zustand einen fortlaufenden Wasserzähler in einer unterstützten Volumeneinheit darstellt. Die Integration normalisiert den Wert intern auf Liter und übernimmt positive Zählerdifferenzen als gemessenen Verbrauch. Das konfigurierte Bewässerungsziel bleibt dabei der eingegebene Literwert; für einen kumulativen Volumenzähler wird keine künstliche Messauflösung und keine Rundung des Ziels abgeleitet.
 
 ### Impulszähler
 
@@ -202,7 +204,7 @@ Bei Mengensteuerung enthält eine konfigurierte Tageszeile:
 
 Eine mengengesteuerte Zone benötigt zusätzlich eine maximale Laufzeit als harte Sicherheitsgrenze. Ohne gültige Messung startet kein mengengesteuerter Auftrag. Fällt die Messung während des Vorgangs aus oder wird die maximale Laufzeit vor der Zielmenge erreicht, wird der Vorgang gestoppt und die gesamte Bewässerungsanlage gesperrt. Tatsächlich gelieferte Wassermenge und eine mögliche Überschreitung durch die Messauflösung werden protokolliert.
 
-Zielwassermenge, Messauflösung und maximale Laufzeit werden bei der Konfiguration auf Plausibilität geprüft. Ohne Durchflussprofil reserviert die Bewässerungsplanung für einen mengenbasierten Auftrag vorsichtshalber dessen vollständige maximale Laufzeit.
+Zielwassermenge und maximale Laufzeit werden bei der Konfiguration auf Plausibilität geprüft. Beim Impulszähler bestimmt der Umrechnungsfaktor die Liter pro Impuls; das Ziel selbst wird nicht vorab gerundet. Ohne Durchflussprofil reserviert die Bewässerungsplanung für einen mengenbasierten Auftrag vorsichtshalber dessen vollständige maximale Laufzeit.
 
 Bei aktiver Wassermessung kann ein manueller Bewässerungsauftrag unabhängig von der automatischen Steuerungsart der Zone eine Dauer oder eine Wassermenge als Ziel verwenden.
 
@@ -220,7 +222,7 @@ Das Durchflussprofil enthält:
 - Zeitpunkt der letzten Kalibrierung
 - Herkunft und Qualität der Werte
 
-Mit einem Durchflussprofil kann die Bewässerungsplanung die erwartete Dauer eines mengenbasierten Auftrags genauer bestimmen, dessen Einpassung in ein Bewässerungsfenster prüfen und eine geeignete maximale Laufzeit vorschlagen. Ohne Profil bleibt die Mengensteuerung möglich und verwendet für die Planung konservativ die konfigurierte maximale Laufzeit.
+Mit einem Durchflussprofil bestimmt die Bewässerungsplanung die erwartete Dauer eines mengenbasierten Auftrags aus Zielwassermenge und erwartetem durchschnittlichem Durchfluss und prüft damit dessen Einpassung in ein Bewässerungsfenster. Die konfigurierte maximale Laufzeit bleibt unabhängig davon die harte Sicherheitsgrenze der Ausführung. Ohne Profil bleibt die Mengensteuerung möglich und verwendet für die Planung konservativ die konfigurierte maximale Laufzeit.
 
 ### Durchfluss kalibrieren
 

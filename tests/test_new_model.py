@@ -404,6 +404,92 @@ async def test_weekly_replan_atomically_replaces_only_pending_automatic_requests
     assert all(request.target_value == 600 for request in automatic)
 
 
+async def test_weekly_volume_plan_uses_calibrated_flow_without_weakening_hard_limit(
+    hass: HomeAssistant,
+) -> None:
+    """Fit a volume order by calibrated duration while retaining its safety timeout."""
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        with_meter=True,
+        zone_overrides={
+            "control_type": "volume",
+            "volume_max_runtime": 3600,
+            "expected_flow_l_min": 10.0,
+            "flow_calibrated_at": "2026-07-25T10:00:00+00:00",
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._zone_configs[0].data["weekly_schedule"] = [
+        {
+            "weekday": weekday,
+            "start": "04:00:00" if weekday == "monday" else None,
+            "end": "04:15:00" if weekday == "monday" else None,
+            "target": 100.0 if weekday == "monday" else None,
+        }
+        for weekday in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+    ]
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+
+    report = await manager.async_plan_automatic(now=datetime(2026, 7, 26, 12, tzinfo=UTC))
+
+    request = manager._request(report["created_request_ids"][0])
+    assert request is not None
+    assert request.target_type == "volume"
+    assert request.target_value == 100.0
+    assert request.hard_time_limit_seconds == 3600
+    assert request.delivery_runtime_limit_seconds == 3600
+    assert request.resolved_inputs["planned_delivery_duration_seconds"] == 600.0
+    assert request.resolved_inputs["planning_basis"] == "calibrated_flow"
+
+
+async def test_weekly_volume_plan_without_flow_reserves_maximum_runtime(
+    hass: HomeAssistant,
+) -> None:
+    """Keep conservative window planning until the zone has a flow profile."""
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        with_meter=True,
+        zone_overrides={
+            "control_type": "volume",
+            "volume_max_runtime": 1800,
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._zone_configs[0].data["weekly_schedule"] = [
+        {
+            "weekday": weekday,
+            "start": "04:00:00" if weekday == "monday" else None,
+            "end": "05:00:00" if weekday == "monday" else None,
+            "target": 100.0 if weekday == "monday" else None,
+        }
+        for weekday in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+    ]
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+
+    report = await manager.async_plan_automatic(now=datetime(2026, 7, 26, 12, tzinfo=UTC))
+
+    request = manager._request(report["created_request_ids"][0])
+    assert request is not None
+    assert request.resolved_inputs["planned_delivery_duration_seconds"] == 1800
+    assert request.resolved_inputs["planning_basis"] == "maximum_runtime"
+
+
 async def test_zone_edit_reloads_then_replans_pending_work_from_new_config(
     hass: HomeAssistant,
 ) -> None:

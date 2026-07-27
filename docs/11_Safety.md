@@ -1,6 +1,6 @@
 # Sicherheit
 
-> **Überholt für Version 2, soweit widersprüchlich:** `docs/17_Neukonzept.md` ist bindend. Version 2 besitzt eine anlagenweite Sicherheitssperre; frühere Anforderungen an eigenständige zonale Sicherheitssperren sind nicht maßgeblich. Die bestehenden Fail-safe-Schließ-, Exklusivitäts- und Zeitbegrenzungsregeln gelten weiter, soweit das Neukonzept sie nicht ersetzt.
+> **Historisches Archiv:** Dieses Dokument ist vollständig fachlich irrelevant. Ausschließlich `docs/17_Neukonzept.md` ist verbindlich; aus den folgenden Version-1-Sicherheitsregeln darf nichts übernommen oder zur Schließung von Lücken verwendet werden.
 
 ## Sicherheitsprinzipien
 

@@ -44,7 +44,10 @@ dokumentiert. Das Frontend-Modul wird von der Integration automatisch registrier
 
 ## Projektstatus
 
-Release Candidate. Der verbindliche Umfang steht in [`docs/17_Neukonzept.md`](docs/17_Neukonzept.md).
+Release Candidate. Ausschließlich [`docs/17_Neukonzept.md`](docs/17_Neukonzept.md)
+definiert den verbindlichen Umfang und die weitere Entwicklung. Alle älteren
+Anforderungen, Roadmaps, ADRs und Dokumente `01` bis `16` sind fachlich irrelevantes
+Archivmaterial und dürfen nicht zur Ergänzung des Neukonzepts verwendet werden.
 Bestehende Einträge aus dem früheren Funktionsmodell werden absichtlich deaktiviert und
 müssen in den Einstellungen neu validiert werden. Alte Wetter-, Bedarfs-, Profil-,
 Wartungs-, Winter-, Archiv- und Sickerpausenfunktionen gehören nicht zur v2-Laufzeit.

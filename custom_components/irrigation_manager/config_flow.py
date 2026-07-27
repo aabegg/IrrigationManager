@@ -40,6 +40,7 @@ from .const import (
     CONF_CALIBRATION_MAX_DURATION,
     CONF_CALIBRATION_SETTLE_SECONDS,
     CONF_CONTROL_TYPE,
+    CONF_EXPECTED_FLOW_L_MIN,
     CONF_LITERS_PER_PULSE,
     CONF_MAIN_VALVE,
     CONF_METER_ENTITY,
@@ -59,6 +60,7 @@ from .const import (
     WEEKDAYS,
 )
 from .manager import IrrigationManager
+from .scheduler import planned_volume_duration_seconds
 
 _ACTUATOR_OWNERSHIP_LOCK = asyncio.Lock()
 
@@ -253,7 +255,11 @@ def _weekly_schedule_form_values(schedule: object) -> dict[str, object]:
 
 
 def _canonical_weekly_schedule(
-    user_input: Mapping[str, Any], *, control_type: str, volume_max_runtime: float | None
+    user_input: Mapping[str, Any],
+    *,
+    control_type: str,
+    volume_max_runtime: float | None,
+    expected_flow_l_min: float | None = None,
 ) -> tuple[list[dict[str, object]], str | None]:
     """Normalize and validate exactly seven fixed weekday slots."""
     schedule: list[dict[str, object]] = []
@@ -292,7 +298,13 @@ def _canonical_weekly_schedule(
         end_seconds = weekday_index * 86_400 + end.hour * 3600 + end.minute * 60 + end.second
         if end_seconds <= start_seconds:
             end_seconds += 86_400
-        required_seconds = target if control_type == CONTROL_TYPE_TIME else volume_max_runtime
+        required_seconds = target
+        if control_type == CONTROL_TYPE_VOLUME and volume_max_runtime is not None:
+            required_seconds = planned_volume_duration_seconds(
+                target_liters=target,
+                max_runtime_seconds=volume_max_runtime,
+                expected_flow_l_min=expected_flow_l_min,
+            )
         if required_seconds is None or required_seconds > end_seconds - start_seconds:
             return [], "schedule_target_does_not_fit"
         intervals.append((start_seconds, end_seconds))
@@ -646,6 +658,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             user_input,
             control_type=str(self._zone[CONF_CONTROL_TYPE]),
             volume_max_runtime=cast(float | None, self._zone.get(CONF_VOLUME_MAX_RUNTIME)),
+            expected_flow_l_min=cast(float | None, self._zone.get(CONF_EXPECTED_FLOW_L_MIN)),
         )
         if error is not None:
             return self.async_show_form(

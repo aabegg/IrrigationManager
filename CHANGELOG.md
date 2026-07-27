@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-rc13 - 2026-07-27
+
+### Changed
+
+- Use an accepted per-zone flow calibration to estimate the duration of automatic
+  volume-controlled orders while retaining the configured maximum runtime as their hard
+  execution limit.
+- Keep configured liter targets unchanged for cumulative and pulse meters instead of
+  rounding them to an artificial measurement resolution.
+- Make `docs/17_Neukonzept.md` the only authoritative concept and implementation source;
+  mark all older requirements, roadmaps, ADRs, and documents as historical archive material.
+
 ## 0.1.0-rc12 - 2026-07-27
 
 ### Changed

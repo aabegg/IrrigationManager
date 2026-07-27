@@ -388,6 +388,53 @@ async def test_zone_reconfigure_preserves_calibration_and_removes_only_invalid_v
     assert "volume_max_runtime" not in updated
 
 
+async def test_calibrated_flow_allows_volume_target_to_fit_by_expected_duration(
+    hass: HomeAssistant,
+) -> None:
+    """Validate a volume window against calibrated delivery time, not the hard limit."""
+    entry = await _create_v2_entry(hass, meter_type="cumulative")
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "volume",
+            "volume_max_runtime": 3600,
+            "weekly_schedule": [],
+            "expected_flow_l_min": 10.0,
+            "flow_calibrated_at": "2026-07-25T10:00:00+00:00",
+        },
+        subentry_id="zone-1",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_minimal"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "volume",
+            "volume_max_runtime": 3600,
+        },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"monday": {"start": "04:00:00", "end": "04:15:00", "target": 100}},
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.subentries[zone.subentry_id].data["weekly_schedule"][0]["target"] == 100.0
+
+
 async def test_zone_release_menu_tracks_independent_zone_states(
     hass: HomeAssistant,
 ) -> None:

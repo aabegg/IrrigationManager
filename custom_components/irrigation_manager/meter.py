@@ -2,7 +2,6 @@
 
 import math
 from dataclasses import dataclass, replace
-from decimal import ROUND_CEILING, Decimal
 
 RESET_ORIGIN_MAX_LITERS = 10.0
 RESET_MINIMUM_DROP_LITERS = 5.0
@@ -11,43 +10,6 @@ RESET_DROP_TO_NEW_VALUE_RATIO = 5.0
 
 class ImplausibleMeterRegressionError(ValueError):
     """Raised when a decrease is not sufficiently reset-like to accept."""
-
-
-@dataclass(frozen=True, slots=True)
-class RoundedMeterTarget:
-    """A volume target aligned to the smallest observable meter step."""
-
-    requested_liters: float
-    target_liters: float
-    resolution_liters: float
-
-    @property
-    def error_liters(self) -> float:
-        """Return the conservative positive rounding error."""
-        return self.target_liters - self.requested_liters
-
-    @property
-    def direction(self) -> str:
-        """Describe how the target was changed."""
-        return "exact" if self.error_liters == 0 else "up"
-
-
-def round_target_to_resolution(
-    target_liters: float, resolution_liters: float
-) -> RoundedMeterTarget:
-    """Round a positive target up to a physically observable meter increment."""
-    if not math.isfinite(target_liters) or target_liters <= 0:
-        raise ValueError("Water target must be a positive finite volume")
-    if not math.isfinite(resolution_liters) or resolution_liters <= 0:
-        raise ValueError("Water meter resolution must be a positive finite volume")
-    target = Decimal(str(target_liters))
-    resolution = Decimal(str(resolution_liters))
-    rounded = (target / resolution).to_integral_value(rounding=ROUND_CEILING) * resolution
-    return RoundedMeterTarget(
-        requested_liters=target_liters,
-        target_liters=float(rounded),
-        resolution_liters=resolution_liters,
-    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,6 @@
 # Wasserzähler und Durchfluss
 
-> **Teilweise überholt für Version 2:** Maßgeblich ist `docs/17_Neukonzept.md`. Dieses Dokument bleibt technische Hintergrundinformation für optionale Messmodule, soweit es dem Version-2-Vertrag nicht widerspricht. Ein konfigurierter Zähler macht fehlenden Zählerfortschritt bei gewöhnlicher Zeitsteuerung nicht zum Fehler; zwingend ist dieser Nachweis nur bei Mengensteuerung und Kalibrierung.
+> **Historisches Archiv:** Dieses Dokument ist vollständig fachlich irrelevant. Ausschließlich `docs/17_Neukonzept.md` ist verbindlich; aus den folgenden Version-1-Regeln darf nichts übernommen oder zur Schließung von Lücken verwendet werden.
 
 ## Unterstützte Quellen
 

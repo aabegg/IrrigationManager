@@ -1,9 +1,24 @@
 """Small deterministic helpers used by the version-2 runtime."""
 
+import math
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, time, tzinfo
 
 from .models import ManualIrrigationRequest
+
+
+def planned_volume_duration_seconds(
+    *, target_liters: float, max_runtime_seconds: float, expected_flow_l_min: float | None
+) -> float:
+    """Estimate volume delivery from a flow profile or reserve the hard limit."""
+    if (
+        expected_flow_l_min is None
+        or not math.isfinite(expected_flow_l_min)
+        or expected_flow_l_min <= 0
+    ):
+        return max_runtime_seconds
+    estimated = target_liters * 60 / expected_flow_l_min
+    return min(estimated, max_runtime_seconds)
 
 
 def resolve_local_wall_time(day: date, value: time, timezone: tzinfo | None) -> datetime:

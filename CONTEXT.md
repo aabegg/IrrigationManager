@@ -2,6 +2,12 @@
 
 Dieser Kontext beschreibt die fachlichen Begriffe einer intelligenten Gartenbewässerung und grenzt zusammengehörige Anlagen, Zonen und Bewässerungsvorgänge voneinander ab.
 
+## Verbindliche Konzeptquelle
+
+Für Funktionsumfang, Verhalten, Architekturentscheidungen und Weiterentwicklung zählt ausschließlich `docs/17_Neukonzept.md`. Alle älteren Anforderungen, Roadmaps, ADRs und Dokumente `docs/01_*` bis `docs/16_*` sind historisches Archivmaterial und fachlich irrelevant. Aus ihnen dürfen auch dann keine Anforderungen, Standardwerte oder Designentscheidungen abgeleitet werden, wenn sie dem Neukonzept nicht ausdrücklich widersprechen.
+
+Regelt das Neukonzept einen Sachverhalt nicht, gilt er als offen. Die Lücke darf nicht aus alten Dokumenten geschlossen werden, sondern muss vor der Umsetzung in `docs/17_Neukonzept.md` entschieden und ergänzt werden. Bestehender Code und bestehende Tests erweitern den Vertrag ebenfalls nicht eigenständig. Dieser `CONTEXT.md` bleibt ausschließlich für die verbindliche Domänensprache maßgeblich.
+
 ## Language
 
 **Bewässerungsanlage**:

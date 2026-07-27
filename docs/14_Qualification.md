@@ -1,6 +1,6 @@
 # Software-Qualifikation
 
-> **Qualifikationsstatus für Version 2:** `docs/17_Neukonzept.md` ist der verbindliche Vertrag. Die nachfolgenden erweiterten Version-1-Szenarien bleiben Regressionstests, sind aber keine Quelle zusätzlicher Version-2-Pflichten, insbesondere nicht für zonale Sicherheitssperren.
+> **Historisches Archiv:** Dieses Dokument ist vollständig fachlich irrelevant. Ausschließlich `docs/17_Neukonzept.md` ist verbindlich. Bestehende Regressionstests sind technische Nachweise, aber keine Quelle zusätzlicher Pflichten und dürfen keine Lücken im Neukonzept schließen.
 
 Stand: 2026-07-24
 

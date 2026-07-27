@@ -20,6 +20,7 @@ from .adapters import HomeAssistantActuators, HomeAssistantClock, HomeAssistantM
 from .const import (
     CONF_AUTOMATION_ENABLED,
     CONF_CONTROL_TYPE,
+    CONF_EXPECTED_FLOW_L_MIN,
     CONF_LITERS_PER_COUNT,
     CONF_LITERS_PER_PULSE,
     CONF_MAIN_VALVE,
@@ -55,7 +56,12 @@ from .models import (
     StoredInstallationState,
     WaterConsumptionRecord,
 )
-from .scheduler import request_priority, resolve_local_wall_time, select_manual_request
+from .scheduler import (
+    planned_volume_duration_seconds,
+    request_priority,
+    resolve_local_wall_time,
+    select_manual_request,
+)
 from .storage import IrrigationStore
 
 _FINAL_REQUEST_STATUSES = {"completed", "cancelled", "expired"}
@@ -437,7 +443,16 @@ class IrrigationManager:
                     ):
                         continue
                     expected_start = max(planning_now, start)
-                    required_duration = hard_limit or target
+                    expected_flow = self._optional_float(zone.data, CONF_EXPECTED_FLOW_L_MIN)
+                    required_duration = (
+                        planned_volume_duration_seconds(
+                            target_liters=target,
+                            max_runtime_seconds=hard_limit,
+                            expected_flow_l_min=expected_flow,
+                        )
+                        if hard_limit is not None
+                        else target
+                    )
                     if expected_start + timedelta(seconds=required_duration) > end:
                         continue
                     candidates.append(
@@ -462,7 +477,15 @@ class IrrigationManager:
                             hard_time_limit_seconds=hard_limit,
                             delivery_runtime_limit_seconds=hard_limit or target,
                             operation_deadline_at=end.isoformat(),
-                            resolved_inputs={"weekly_window_start": start.isoformat()},
+                            resolved_inputs={
+                                "weekly_window_start": start.isoformat(),
+                                "planned_delivery_duration_seconds": required_duration,
+                                "planning_basis": (
+                                    "calibrated_flow"
+                                    if expected_flow is not None and expected_flow > 0
+                                    else "maximum_runtime"
+                                ),
+                            },
                         )
                     )
 
@@ -2288,10 +2311,13 @@ class IrrigationManager:
         return cls._optional_float(data, key) or default
 
     def _request_expected_duration(self, request: ManualIrrigationRequest) -> timedelta:
+        planned_delivery_duration = self._optional_float(
+            request.resolved_inputs, "planned_delivery_duration_seconds"
+        )
         seconds = (
             request.remaining_value
             if request.target_type == "duration"
-            else request.delivery_runtime_limit_seconds or 1
+            else planned_delivery_duration or request.delivery_runtime_limit_seconds or 1
         )
         close_budget = CLEANUP_FEEDBACK_BUDGET_SECONDS * (
             2 if request.main_valve is not None else 1
