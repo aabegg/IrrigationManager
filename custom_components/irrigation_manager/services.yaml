@@ -11,10 +11,14 @@ start_manual: &manual_action
         text:
     duration: &duration
       required: false
-      example: "00:10:00"
+      example:
+        hours: 0
+        minutes: 10
+        seconds: 0
       selector:
-        text:
-          suffix: HH:MM:SS
+        duration:
+          enable_day: false
+          enable_second: true
     amount: &amount
       required: false
       selector:
@@ -26,16 +30,24 @@ start_manual: &manual_action
           mode: box
     hard_time_limit: &hard_time_limit
       required: false
-      example: "01:00:00"
+      example:
+        hours: 1
+        minutes: 0
+        seconds: 0
       selector:
-        text:
-          suffix: HH:MM:SS
+        duration:
+          enable_day: false
+          enable_second: true
     expiry:
       required: false
-      example: "01:00:00"
+      example:
+        hours: 1
+        minutes: 0
+        seconds: 0
       selector:
-        text:
-          suffix: HH:MM:SS
+        duration:
+          enable_day: false
+          enable_second: true
     start_at:
       required: false
       selector:

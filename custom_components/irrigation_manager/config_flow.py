@@ -23,6 +23,8 @@ from homeassistant.data_entry_flow import section
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    DurationSelector,
+    DurationSelectorConfig,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -31,7 +33,6 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     TextSelector,
-    TextSelectorConfig,
     TimeSelector,
 )
 
@@ -231,9 +232,9 @@ def _weekly_schedule_schema(control_type: str) -> vol.Schema:
     return vol.Schema(schema)
 
 
-def _duration_selector() -> TextSelector:
-    """Return a text selector that makes the required duration format visible."""
-    return TextSelector(TextSelectorConfig(suffix="HH:MM:SS"))
+def _duration_selector() -> DurationSelector:
+    """Return a structured duration selector with unlimited total hours."""
+    return DurationSelector(DurationSelectorConfig(enable_day=False, enable_second=True))
 
 
 def _zone_form_values(data: Mapping[str, object]) -> dict[str, object]:
@@ -246,7 +247,7 @@ def _zone_form_values(data: Mapping[str, object]) -> dict[str, object]:
 
 
 def _form_duration(value: object, *, maximum: float = 604_800) -> float:
-    """Validate one HH:MM:SS form value against its configured limit."""
+    """Validate one structured form value against its configured limit."""
     seconds = parse_duration(value)
     if seconds > maximum:
         raise ValueError("Duration exceeds its maximum")

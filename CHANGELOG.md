@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-rc15 - 2026-07-27
+
+### Changed
+
+- Replace `HH:MM:SS` text inputs with separate hour, minute, and second fields in config
+  flows, Home Assistant actions, and the zone card.
+- Keep hours unrestricted beyond 24 while continuing to store and process durations as
+  seconds internally.
+- Retain numeric seconds and legacy `HH:MM:SS` values for existing service callers.
+
 ## 0.1.0-rc14 - 2026-07-27
 
 ### Changed

@@ -41,18 +41,18 @@ def test_manual_action_requires_exactly_one_complete_target(
         )
 
 
-def test_manual_action_converts_hh_mm_ss_fields_to_seconds() -> None:
-    """Keep service-facing duration text separate from persisted numeric seconds."""
+def test_manual_action_converts_structured_duration_fields_to_seconds() -> None:
+    """Keep service-facing duration fields separate from persisted numeric seconds."""
     result = START_MANUAL_SCHEMA(
         {
             "config_entry_id": "installation-1",
             "zone_subentry_id": "zone-1",
-            "duration": "01:02:03",
-            "expiry": "02:00:00",
+            "duration": {"hours": 30, "minutes": 2, "seconds": 3},
+            "expiry": {"hours": 2, "minutes": 0, "seconds": 0},
         }
     )
 
-    assert result["duration"] == 3_723
+    assert result["duration"] == 108_123
     assert result["expiry"] == 7_200
 
     volume_result = START_MANUAL_SCHEMA(
@@ -60,7 +60,7 @@ def test_manual_action_converts_hh_mm_ss_fields_to_seconds() -> None:
             "config_entry_id": "installation-1",
             "zone_subentry_id": "zone-1",
             "amount": 10,
-            "hard_time_limit": "00:45:00",
+            "hard_time_limit": {"hours": 0, "minutes": 45, "seconds": 0},
         }
     )
     assert volume_result["hard_time_limit"] == 2_700

@@ -27,7 +27,11 @@ export const cardStyles = css`
   button:disabled { opacity: 0.45; cursor: not-allowed; }
   button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
   .form-grid { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(110px, 1fr); gap: 10px; align-items: end; }
-  label.field { display: grid; gap: 5px; color: var(--secondary-text-color); font-size: 0.8rem; }
+  label.field, .field { display: grid; gap: 5px; color: var(--secondary-text-color); font-size: 0.8rem; }
+  .field > label { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+  .duration-input { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .duration-input label { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; }
+  .duration-input label span { min-width: 24px; }
   input, select { box-sizing: border-box; width: 100%; min-height: 40px; padding: 8px 10px; color: var(--primary-text-color); background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 8px; font: inherit; }
   .error { color: var(--error-color); font-size: 0.875rem; }
   .compact .details { display: none; }

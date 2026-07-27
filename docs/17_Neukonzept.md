@@ -258,7 +258,7 @@ Jede Bewässerungszone kann optional einen Wochenplan erhalten. Der Wochenplan b
 
 Jede Tageszeile enthält optional ein Bewässerungsfenster und genau das zur Steuerungsart der Zone gehörende Bewässerungsziel: eine Bewässerungsdauer bei Zeitsteuerung oder eine Zielwassermenge bei Mengensteuerung.
 
-Alle durch den Benutzer eingegebenen Dauern und maximalen Laufzeiten werden in der Oberfläche als `Stunden:Minuten:Sekunden` (`HH:MM:SS`) erfasst. Die Integration speichert und verarbeitet diese Werte intern weiterhin als Sekunden.
+Alle durch den Benutzer eingegebenen Dauern und maximalen Laufzeiten werden in der Oberfläche über getrennte Felder für Stunden, Minuten und Sekunden erfasst. Stunden sind nicht auf 24 begrenzt. Die Integration speichert und verarbeitet diese Werte intern weiterhin als Sekunden.
 
 Dabei gelten folgende Regeln:
 

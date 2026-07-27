@@ -77,7 +77,11 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
-                "monday": {"start": "22:00:00", "end": "00:30:00", "target": "00:10:00"},
+                "monday": {
+                    "start": "22:00:00",
+                    "end": "00:30:00",
+                    "target": {"hours": 0, "minutes": 10, "seconds": 0},
+                },
             },
         )
 
@@ -128,7 +132,7 @@ async def test_creation_validates_pulse_factor_and_complete_schedule_rows(
             "name": "Beds",
             "zone_valve": "switch.beds",
             "control_type": "volume",
-            "volume_max_runtime": "00:15:00",
+            "volume_max_runtime": {"hours": 0, "minutes": 15, "seconds": 0},
         },
     )
     result = await hass.config_entries.flow.async_configure(
@@ -171,7 +175,7 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
                 "name": "Lawn",
                 "zone_valve": "switch.lawn",
                 "control_type": "volume",
-                "volume_max_runtime": "00:20:00",
+                "volume_max_runtime": {"hours": 0, "minutes": 20, "seconds": 0},
             },
         )
         assert result["step_id"] == "minimal_schedule"
@@ -424,7 +428,7 @@ async def test_calibrated_flow_allows_volume_target_to_fit_by_expected_duration(
             "name": "Lawn",
             "zone_valve": "switch.lawn",
             "control_type": "volume",
-            "volume_max_runtime": "01:00:00",
+            "volume_max_runtime": {"hours": 1, "minutes": 0, "seconds": 0},
         },
     )
     result = await hass.config_entries.subentries.async_configure(
@@ -436,8 +440,10 @@ async def test_calibrated_flow_allows_volume_target_to_fit_by_expected_duration(
     assert entry.subentries[zone.subentry_id].data["weekly_schedule"][0]["target"] == 100.0
 
 
-async def test_calibration_form_converts_hh_mm_ss_to_seconds(hass: HomeAssistant) -> None:
-    """Keep calibration input readable while passing numeric seconds to the runtime."""
+async def test_calibration_form_converts_structured_duration_to_seconds(
+    hass: HomeAssistant,
+) -> None:
+    """Keep calibration input structured while passing numeric seconds to the runtime."""
     entry = await _create_v2_entry(hass, meter_type="cumulative")
     zone = ConfigSubentry(
         data={
@@ -470,10 +476,14 @@ async def test_calibration_form_converts_hh_mm_ss_to_seconds(hass: HomeAssistant
     duration_marker = next(
         marker for marker in result["data_schema"].schema if str(marker) == "duration"
     )
-    assert duration_marker.default() == "00:01:00"
+    assert duration_marker.default() == {"hours": 0, "minutes": 1, "seconds": 0}
 
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {"duration": "00:02:03", "confirm_supervision": True}
+        result["flow_id"],
+        {
+            "duration": {"hours": 0, "minutes": 2, "seconds": 3},
+            "confirm_supervision": True,
+        },
     )
 
     manager.async_start_calibration.assert_awaited_once_with(

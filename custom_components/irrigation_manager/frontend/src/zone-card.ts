@@ -2,6 +2,7 @@ import { LitElement, html, nothing, type TemplateResult } from "lit";
 
 import {
   DOMAIN,
+  durationValue,
   entity,
   errorMessage,
   formatDuration,
@@ -12,6 +13,7 @@ import {
   resolveZoneConfig,
   statusIcon,
   stringAttribute,
+  type DurationValue,
 } from "./helpers";
 import { displayState, localize, translatedValue } from "./localize";
 import { cardStyles } from "./styles";
@@ -46,8 +48,8 @@ export class IrrigationManagerZoneCard extends LitElement {
   private _config!: ZoneCardConfig;
   private _targetMode: "duration" | "amount" = "duration";
   private _targetValue = 600;
-  private _durationValue = "00:10:00";
-  private _hardLimit = "01:00:00";
+  private _durationValue = durationValue(600);
+  private _hardLimit = durationValue(3600);
   private _busy = false;
   private _error?: string;
   private _manualOpen = false;
@@ -164,6 +166,37 @@ export class IrrigationManagerZoneCard extends LitElement {
     this._error = undefined;
   }
 
+  private durationFields(
+    testId: string,
+    value: DurationValue,
+    maximum: number,
+    update: (value: DurationValue) => void,
+  ): TemplateResult {
+    const field = (key: keyof DurationValue, label: string, max?: number) => html`
+      <label>
+        <input
+          data-testid=${`${testId}-${key}`}
+          type="number"
+          min="0"
+          max=${max ?? nothing}
+          step="1"
+          .value=${String(value[key])}
+          @input=${(event: Event) => {
+            update({ ...value, [key]: Number((event.target as HTMLInputElement).value) });
+          }}
+        />
+        <span>${label}</span>
+      </label>
+    `;
+    return html`
+      <div class="duration-input" title=${`${localize(this.hass, "maximum")}: ${formatDuration(maximum)}`}>
+        ${field("hours", "h")}
+        ${field("minutes", "min", 59)}
+        ${field("seconds", "s", 59)}
+      </div>
+    `;
+  }
+
   private async loadHistory(offset = 0): Promise<void> {
     const context = this.context();
     if (!context) return;
@@ -257,8 +290,8 @@ export class IrrigationManagerZoneCard extends LitElement {
               <div class="dialog-header"><h2 id="manual-title">${localize(this.hass, "manual_water")}</h2><button class="icon-button" aria-label=${localize(this.hass, "close")} @click=${() => { this._manualOpen = false; }}>×</button></div>
               <div class="form-grid">
                 <label class="field"><span>${localize(this.hass, "target")}</span><select data-testid="target-mode" .value=${this._targetMode} @change=${(event: Event) => { this._targetMode = (event.target as HTMLSelectElement).value as "duration" | "amount"; }}><option value="duration">${localize(this.hass, "duration_mode")}</option>${zone?.attributes.volume_control_available === true ? html`<option value="amount">${localize(this.hass, "amount_mode")}</option>` : nothing}</select></label>
-                <label class="field"><span>${this._targetMode === "duration" ? localize(this.hass, "duration") : localize(this.hass, "amount")}</span>${this._targetMode === "duration" ? html`<input data-testid="manual-target" type="text" placeholder="HH:MM:SS" pattern="[0-9]+:[0-5][0-9]:[0-5][0-9]([.][0-9]+)?" title=${`${localize(this.hass, "maximum")}: ${formatDuration(maxDuration)}`} .value=${this._durationValue} @input=${(event: Event) => { this._durationValue = (event.target as HTMLInputElement).value; }} /><span>HH:MM:SS</span>` : html`<input data-testid="manual-target" type="number" min="0.001" max="1000000" step="0.1" .value=${String(this._targetValue)} @input=${(event: Event) => { this._targetValue = Number((event.target as HTMLInputElement).value); }} /><span>${localize(this.hass, "liters")}</span>`}</label>
-                ${this._targetMode === "amount" ? html`<label class="field"><span>${localize(this.hass, "hard_limit")}</span><input data-testid="hard-limit" type="text" placeholder="HH:MM:SS" pattern="[0-9]+:[0-5][0-9]:[0-5][0-9]([.][0-9]+)?" title=${`${localize(this.hass, "maximum")}: ${formatDuration(maxVolumeRuntime)}`} .value=${this._hardLimit} @input=${(event: Event) => { this._hardLimit = (event.target as HTMLInputElement).value; }} /><span>HH:MM:SS</span></label>` : nothing}
+                 <div class="field"><span>${this._targetMode === "duration" ? localize(this.hass, "duration") : localize(this.hass, "amount")}</span>${this._targetMode === "duration" ? this.durationFields("manual-target", this._durationValue, maxDuration, (value) => { this._durationValue = value; }) : html`<label><input data-testid="manual-target" type="number" min="0.001" max="1000000" step="0.1" .value=${String(this._targetValue)} @input=${(event: Event) => { this._targetValue = Number((event.target as HTMLInputElement).value); }} /><span>${localize(this.hass, "liters")}</span></label>`}</div>
+                 ${this._targetMode === "amount" ? html`<div class="field"><span>${localize(this.hass, "hard_limit")}</span>${this.durationFields("hard-limit", this._hardLimit, maxVolumeRuntime, (value) => { this._hardLimit = value; })}</div>` : nothing}
                 ${zone?.attributes.active_execution === true ? html`<label class="field"><span>${localize(this.hass, "active_execution_choice")}</span><select data-testid="conflict-policy" .value=${this._conflictPolicy} @change=${(event: Event) => { this._conflictPolicy = (event.target as HTMLSelectElement).value as "stop_active" | "priority_next"; }}><option value="stop_active">${localize(this.hass, "stop_active_start_now")}</option><option value="priority_next">${localize(this.hass, "finish_then_priority")}</option></select></label>` : nothing}
               </div>
               ${this._error ? html`<div class="error" role="alert">${this._error}</div>` : nothing}

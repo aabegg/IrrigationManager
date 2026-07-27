@@ -10,11 +10,30 @@ import type {
 export const DOMAIN = "irrigation_manager";
 export const INVALID_STATES = new Set(["unknown", "unavailable"]);
 
-export function parseDuration(value: string): number | undefined {
-  const match = /^(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)$/.exec(value.trim());
-  if (!match) return undefined;
-  const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+export interface DurationValue {
+  hours: number;
+  minutes: number;
+  seconds: number;
+}
+
+export function parseDuration(value: DurationValue): number | undefined {
+  const { hours, minutes, seconds: remainingSeconds } = value;
+  if (
+    ![hours, minutes, remainingSeconds].every(Number.isFinite)
+    || hours < 0
+    || minutes < 0
+    || minutes >= 60
+    || remainingSeconds < 0
+    || remainingSeconds >= 60
+  ) return undefined;
+  const seconds = hours * 3600 + minutes * 60 + remainingSeconds;
   return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+}
+
+export function durationValue(seconds: number): DurationValue {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return { hours, minutes, seconds: seconds - hours * 3600 - minutes * 60 };
 }
 
 export function formatDuration(seconds: number): string {
