@@ -1,5 +1,7 @@
 """Version 2 config-flow behavior tests for Irrigation Manager."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -385,6 +387,19 @@ async def test_zone_reconfigure_preserves_calibration_and_removes_only_invalid_v
     )
     result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.ABORT
+    reason = result["reason"]
+    translations = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "custom_components"
+            / "irrigation_manager"
+            / "translations"
+            / "de.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert translations["config_subentries"]["zone"]["abort"][reason] == (
+        "Die Bewässerungszone wurde erfolgreich gespeichert."
+    )
     updated = entry.subentries[zone.subentry_id].data
     assert updated["expected_flow_l_min"] == 12.5
     assert updated["min_flow"] == 10.0

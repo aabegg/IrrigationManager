@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-rc16 - 2026-07-27
+
+### Fixed
+
+- Show a localized success message after saving an irrigation-zone configuration instead
+  of the raw `reconfigure_successful` translation key.
+
 ## 0.1.0-rc15 - 2026-07-27
 
 ### Changed
