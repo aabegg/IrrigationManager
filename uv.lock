@@ -1030,7 +1030,7 @@ wheels = [
 
 [[package]]
 name = "home-assistant-irrigation-manager"
-version = "0.1.0rc14"
+version = "0.1.0rc15"
 source = { virtual = "." }
 
 [package.dev-dependencies]
