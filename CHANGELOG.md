@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.0-rc17 - 2026-07-27
+
+### Added
+
+- Add optional plant and site profiles with multiple subareas and transparent qualitative
+  recommendations for water need, soil behavior, and partial-delivery suitability.
+- Add one shared zone baseline with optional weekday overrides while retaining manual-only
+  zones without an automatic target.
+
+### Changed
+
+- Split installation and zone configuration into focused settings areas for hardware,
+  extensions, profiles, baseline, and weekly schedule.
+- Migrate existing weekday targets losslessly to the shared-baseline model.
+- Replan pending automatic orders after configuration changes without changing active
+  irrigation executions or manual orders.
+
+### Fixed
+
+- Preserve dormant subareas when plant profiles are disabled and re-enabled.
+- Reject baseline changes and invalid stored schedules whose complete target no longer fits
+  inside the configured irrigation window.
+
 ## 0.1.0-rc16 - 2026-07-27
 
 ### Fixed

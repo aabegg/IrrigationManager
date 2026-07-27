@@ -53,6 +53,12 @@ _Avoid_: Pflichtlauf
 **Bewässerungsziel**:
 Das zonenspezifische Abschaltkriterium eines Bewässerungsvorgangs. Es ist entweder eine zu liefernde Wassermenge oder eine auszuführende Laufzeit.
 
+**Basissoll**:
+Das bestätigte Zeit- oder Mengenziel einer Bewässerungszone für einen fälligen Wochenplantermin vor saisonalen und wetterabhängigen Korrekturen. Einzelne Wochentage können ein ausdrücklich abweichendes Basissoll besitzen.
+
+**Saisonales Basissoll**:
+Das mit dem für den Termin geltenden saisonalen Faktor korrigierte Basissoll. Es ist die Rückfallgrundlage, wenn eine wetterabhängige Berechnung deaktiviert ist oder nicht belastbar durchgeführt werden kann.
+
 **Mengensteuerung**:
 Eine Bewässerung, die beim Erreichen der am Wasserzähler gemessenen Zielmenge endet. Ein maximales Zeitlimit begrenzt den Vorgang unabhängig vom Messwert.
 
@@ -82,6 +88,15 @@ _Avoid_: Deaktiviert
 **Durchflussprofil**:
 Der für eine Zone erwartete normale Durchflussbereich. Er wird manuell erfasst oder durch einen wiederholbaren Kalibrierungslauf bestimmt und dient der Mengenplanung sowie der Erkennung von Abweichungen.
 
+**Pflanzenprofil**:
+Eine nachvollziehbare Sammlung typischer Bedarfs- und Wurzeleigenschaften einer Pflanzenkategorie. Ein Pflanzenprofil liefert Vorschlagswerte, verändert ein bestätigtes Basissoll aber nicht selbstständig.
+
+**Bodenprofil**:
+Eine Beschreibung der für Bewässerung relevanten Speicher- und Versickerungseigenschaften des Bodens einer Teilfläche.
+
+**Ausbringungsprofil**:
+Eine Beschreibung der Art, Effizienz, Verteilung und Rate, mit der eine Teilfläche innerhalb ihrer Bewässerungszone Wasser erhält.
+
 **Referenzverdunstung**:
 Der wetterabhängig geschätzte Wasserverlust einer standardisierten Referenzfläche. Sie ist noch keinem konkreten Pflanzenbestand oder einer Zone zugeordnet.
 _Avoid_: Verdunstung, Wasserbedarf
@@ -89,3 +104,12 @@ _Avoid_: Verdunstung, Wasserbedarf
 **Pflanzenverdunstung**:
 Der aus Referenzverdunstung und zonenspezifischen Pflanzen- sowie Standortfaktoren abgeleitete Wasserverlust einer Zone.
 _Avoid_: ET-Wert
+
+**Wasserbilanz**:
+Die fortgeschriebene Gegenüberstellung von Pflanzenverdunstung, wirksamem Niederschlag und wirksamer Bewässerung einer Zone. Ihr Ergebnis ist das geschätzte aktuelle Wasserdefizit.
+
+**Wetterbedingte Aufschiebung**:
+Der persistente Zustand eines fälligen automatischen Bewässerungsauftrags, der wegen ausreichend erwarteten Regens bis zu einer begrenzten erneuten Bedarfsprüfung zurückgestellt, aber noch nicht übersprungen wurde.
+
+**Nachholfrist**:
+Der begrenzte Zeitraum nach einem regulären Wochenplantermin, innerhalb dessen ein wetterbedingt aufgeschobener Bewässerungsauftrag in einem zulässigen Nachholfenster erneut bewertet und gegebenenfalls ausgeführt werden darf.

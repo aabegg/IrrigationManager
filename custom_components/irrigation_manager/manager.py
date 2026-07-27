@@ -19,6 +19,7 @@ from homeassistant.util import dt as dt_util
 from .adapters import HomeAssistantActuators, HomeAssistantClock, HomeAssistantMeter
 from .const import (
     CONF_AUTOMATION_ENABLED,
+    CONF_BASE_TARGET,
     CONF_CONTROL_TYPE,
     CONF_EXPECTED_FLOW_L_MIN,
     CONF_LITERS_PER_COUNT,
@@ -37,6 +38,7 @@ from .const import (
     METER_TYPE_CUMULATIVE,
     METER_TYPE_PULSE,
     SUBENTRY_TYPE_ZONE,
+    WEEKDAYS,
 )
 from .coordinator import IrrigationCoordinator
 from .executor import (
@@ -63,6 +65,7 @@ from .scheduler import (
     select_manual_request,
 )
 from .storage import IrrigationStore
+from .zone_config import effective_schedule_target
 
 _FINAL_REQUEST_STATUSES = {"completed", "cancelled", "expired"}
 _OPEN_REQUEST_STATUSES = {"pending", "executing"}
@@ -162,6 +165,7 @@ class IrrigationManager:
         self._dispatcher_task: asyncio.Task[None] | None = None
         self._automatic_planner_task: asyncio.Task[None] | None = None
         self._pending_reload_task: asyncio.Task[None] | None = None
+        self._config_reload_pending = False
         self._calibration_task: asyncio.Task[ExecutionResult] | None = None
         self._cancelled_calibrations: set[str] = set()
         self._automatic_planning_in_progress = False
@@ -343,6 +347,8 @@ class IrrigationManager:
         """Coalesce one reload and apply it when no execution owns old config."""
         if self._shutting_down or self._pending_reload_task is not None:
             return
+        self._config_reload_pending = True
+        self._queue_event.set()
         self._pending_reload_task = self._hass.async_create_task(
             self._async_reload_when_idle(),
             "Irrigation Manager deferred config reload",
@@ -362,6 +368,7 @@ class IrrigationManager:
         finally:
             if self._pending_reload_task is current:
                 self._pending_reload_task = None
+                self._config_reload_pending = False
 
     def _is_complete_idle(self) -> bool:
         return (
@@ -413,17 +420,30 @@ class IrrigationManager:
                     or len(schedule) != 7
                 ):
                     continue
+                if any(
+                    not isinstance(row, Mapping) or row.get("weekday") != WEEKDAYS[index]
+                    for index, row in enumerate(schedule)
+                ):
+                    raise HomeAssistantError(f"Invalid weekly schedule for zone {zone.title}")
                 for offset in range(-1, 14):
                     day = local_now.date() + timedelta(days=offset)
                     row = schedule[day.weekday()]
-                    if not isinstance(row, Mapping) or row.get("target") is None:
+                    if not isinstance(row, Mapping):
+                        raise HomeAssistantError(f"Invalid weekly schedule for zone {zone.title}")
+                    start_value = row.get("start")
+                    end_value = row.get("end")
+                    if start_value is None and end_value is None:
                         continue
+                    if start_value is None or end_value is None:
+                        raise HomeAssistantError(f"Incomplete weekly window for zone {zone.title}")
                     try:
-                        start_time = time.fromisoformat(str(row["start"]))
-                        end_time = time.fromisoformat(str(row["end"]))
-                        target = float(cast(float, row["target"]))
-                    except KeyError, TypeError, ValueError:
-                        continue
+                        start_time = time.fromisoformat(str(start_value))
+                        end_time = time.fromisoformat(str(end_value))
+                        target, uses_override = effective_schedule_target(zone.data, row)
+                    except (TypeError, ValueError) as err:
+                        raise HomeAssistantError(
+                            f"Invalid weekly target for zone {zone.title}: {err}"
+                        ) from err
                     start = resolve_local_wall_time(day, start_time, dt_util.DEFAULT_TIME_ZONE)
                     end = resolve_local_wall_time(day, end_time, dt_util.DEFAULT_TIME_ZONE)
                     if end <= start:
@@ -453,6 +473,10 @@ class IrrigationManager:
                         if hard_limit is not None
                         else target
                     )
+                    if start + timedelta(seconds=required_duration) > end:
+                        raise HomeAssistantError(
+                            f"Weekly target for zone {zone.title} does not fit its window"
+                        )
                     if expected_start + timedelta(seconds=required_duration) > end:
                         continue
                     candidates.append(
@@ -478,6 +502,10 @@ class IrrigationManager:
                             delivery_runtime_limit_seconds=hard_limit or target,
                             operation_deadline_at=end.isoformat(),
                             resolved_inputs={
+                                "base_target": zone.data.get(CONF_BASE_TARGET),
+                                "day_target_override": row.get("target"),
+                                "used_day_target_override": uses_override,
+                                "effective_target": target,
                                 "weekly_window_start": start.isoformat(),
                                 "planned_delivery_duration_seconds": required_duration,
                                 "planning_basis": (
@@ -744,7 +772,7 @@ class IrrigationManager:
                         now=datetime.now(UTC),
                         requests=self._stored_state.manual_requests,
                     )
-                    if self._automatic_planning_in_progress:
+                    if self._automatic_planning_in_progress or self._config_reload_pending:
                         selected = None
                     if selected is not None and not self._request_released(selected):
                         selected = None

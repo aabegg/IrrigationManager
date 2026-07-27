@@ -15,7 +15,7 @@ Mindestversion. Dort wird deshalb bewusst kein nicht standardkonformer Schlüsse
 - ein Konfigurationseintrag je physischer Bewässerungsanlage
 - beliebig viele sequenziell ausgeführte Bewässerungszonen
 - optionales Hauptventil
-- einfache Wochenpläne mit genau einem Bewässerungsfenster und Ziel pro Wochentag
+- einfache Wochenpläne mit gemeinsamem Basissoll, einem Bewässerungsfenster pro Wochentag und optionalen Tagesabweichungen
 - getrennte Betriebs- und Automatikfreigaben für Anlage und Zonen
 - zeit- oder mengengesteuerte Bewässerung
 - optionale kumulative oder impulsbasierte Wassermessung
@@ -23,6 +23,7 @@ Mindestversion. Dort wird deshalb bewusst kein nicht standardkonformer Schlüsse
 - Historie vergangener Bewässerungsvorgänge
 - anlagenweiter Not-Aus und persistente Sicherheitssperre
 - optionale Durchflusskalibrierung aus der Wassermessung
+- optionales Pflanzen- und Standortmodell mit Teilflächen und qualitativer Empfehlung
 - fertige Dashboard-Karten und offene Rohdaten
 - sichere und nachvollziehbare Ventilsteuerung
 
@@ -50,7 +51,9 @@ Anforderungen, Roadmaps, ADRs und Dokumente `01` bis `16` sind fachlich irreleva
 Archivmaterial und dürfen nicht zur Ergänzung des Neukonzepts verwendet werden.
 Bestehende Einträge aus dem früheren Funktionsmodell werden absichtlich deaktiviert und
 müssen in den Einstellungen neu validiert werden. Alte Wetter-, Bedarfs-, Profil-,
-Wartungs-, Winter-, Archiv- und Sickerpausenfunktionen gehören nicht zur v2-Laufzeit.
+Wartungs-, Winter-, Archiv- und Sickerpausenkonfigurationen werden nicht übernommen.
+Das neue Pflanzen- und Standortmodell ist davon unabhängig, rein optional und verändert
+ein bestätigtes Basissoll niemals automatisch.
 
 Die Messschicht unterstützt kumulative Volumenzähler und explizit umgerechnete
 Impulszähler. Der abgeglichene physische Zählerstand kann in den Anlageneinstellungen

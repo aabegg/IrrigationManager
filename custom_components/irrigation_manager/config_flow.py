@@ -38,6 +38,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_AUTOMATION_ENABLED,
+    CONF_BASE_TARGET,
     CONF_CALIBRATION_CONFIRMATION_INTERVAL,
     CONF_CALIBRATION_MAX_DURATION,
     CONF_CALIBRATION_SETTLE_SECONDS,
@@ -49,7 +50,13 @@ from .const import (
     CONF_METER_TYPE,
     CONF_NEEDS_RECONFIGURATION,
     CONF_OPERATION_ENABLED,
+    CONF_PLANT_SITE_MODULE_ENABLED,
+    CONF_SEASONAL_MODULE_ENABLED,
+    CONF_SOAK_MODULE_ENABLED,
+    CONF_SUBAREAS,
+    CONF_USE_PLANT_SITE_MODEL,
     CONF_VOLUME_MAX_RUNTIME,
+    CONF_WEATHER_MODULE_ENABLED,
     CONF_WEEKLY_SCHEDULE,
     CONF_ZONE_VALVE,
     CONTROL_TYPE_TIME,
@@ -63,7 +70,17 @@ from .const import (
 )
 from .duration import format_duration, parse_duration
 from .manager import IrrigationManager
+from .profiles import (
+    APPLICATION_PROFILE_OPTIONS,
+    DEVELOPMENT_STAGE_OPTIONS,
+    EXPOSURE_OPTIONS,
+    PLANT_PROFILE_OPTIONS,
+    SOIL_PROFILE_OPTIONS,
+    ProfileRecommendation,
+    recommend_profiles,
+)
 from .scheduler import planned_volume_duration_seconds
+from .zone_config import positive_number
 
 _ACTUATOR_OWNERSHIP_LOCK = asyncio.Lock()
 
@@ -189,6 +206,213 @@ def _meter_details_schema(meter_type: str) -> vol.Schema:
     return vol.Schema(schema)
 
 
+def _extensions_schema() -> vol.Schema:
+    """Expose only extension modules completed in the current stage."""
+    return vol.Schema(
+        {vol.Required(CONF_PLANT_SITE_MODULE_ENABLED, default=False): BooleanSelector()}
+    )
+
+
+def _target_selector(control_type: str) -> DurationSelector | NumberSelector:
+    if control_type == CONTROL_TYPE_TIME:
+        return _duration_selector()
+    return NumberSelector(
+        NumberSelectorConfig(
+            min=0.001,
+            max=1_000_000,
+            step=1,
+            mode=NumberSelectorMode.BOX,
+            unit_of_measurement=UnitOfVolume.LITERS,
+        )
+    )
+
+
+def _baseline_schema(control_type: str) -> vol.Schema:
+    return vol.Schema({vol.Optional(CONF_BASE_TARGET): _target_selector(control_type)})
+
+
+def _canonical_target(value: object, control_type: str) -> float:
+    target = parse_duration(value) if control_type == CONTROL_TYPE_TIME else positive_number(value)
+    if target is None or target <= 0 or not math.isfinite(target):
+        raise ValueError("Target must be positive")
+    return float(target)
+
+
+def _set_optional_baseline(
+    data: dict[str, Any], user_input: Mapping[str, Any], control_type: str
+) -> None:
+    value = user_input.get(CONF_BASE_TARGET)
+    if value is None:
+        data.pop(CONF_BASE_TARGET, None)
+        return
+    data[CONF_BASE_TARGET] = _canonical_target(value, control_type)
+
+
+def _plant_usage_schema(default: bool = False) -> vol.Schema:
+    return vol.Schema({vol.Required(CONF_USE_PLANT_SITE_MODEL, default=default): BooleanSelector()})
+
+
+def _reconfigure_plant_schema(default: bool, has_subareas: bool) -> vol.Schema:
+    schema: dict[object, object] = {
+        vol.Required(CONF_USE_PLANT_SITE_MODEL, default=default): BooleanSelector()
+    }
+    if has_subareas:
+        schema[vol.Optional("replace_subareas", default=False)] = BooleanSelector()
+    return vol.Schema(schema)
+
+
+def _subarea_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required("name"): TextSelector(),
+            vol.Required("area_m2"): NumberSelector(
+                NumberSelectorConfig(min=0.01, step=0.1, mode=NumberSelectorMode.BOX)
+            ),
+            vol.Required("plant_profile"): _choice(list(PLANT_PROFILE_OPTIONS), "plant_profile"),
+            vol.Required("development_stage"): _choice(
+                list(DEVELOPMENT_STAGE_OPTIONS), "development_stage"
+            ),
+            vol.Required("exposure"): _choice(list(EXPOSURE_OPTIONS), "exposure"),
+            vol.Required("soil_profile"): _choice(list(SOIL_PROFILE_OPTIONS), "soil_profile"),
+            vol.Required("application_profile"): _choice(
+                list(APPLICATION_PROFILE_OPTIONS), "application_profile"
+            ),
+            vol.Optional("advanced"): section(
+                vol.Schema(
+                    {
+                        vol.Optional("slope_percent"): NumberSelector(
+                            NumberSelectorConfig(min=0, step=1, mode=NumberSelectorMode.BOX)
+                        ),
+                        vol.Optional("mulched", default=False): BooleanSelector(),
+                        vol.Optional("relative_application_rate"): NumberSelector(
+                            NumberSelectorConfig(min=0.01, step=0.01, mode=NumberSelectorMode.BOX)
+                        ),
+                    }
+                ),
+                {"collapsed": True},
+            ),
+            vol.Required("add_another", default=False): BooleanSelector(),
+        }
+    )
+
+
+def _accept_subarea(target: list[dict[str, object]], user_input: Mapping[str, Any]) -> bool:
+    """Append one normalized subarea and return whether another was requested."""
+    subarea = {
+        key: value for key, value in user_input.items() if key not in {"add_another", "advanced"}
+    }
+    advanced = user_input.get("advanced")
+    if isinstance(advanced, Mapping):
+        subarea.update(advanced)
+    subarea["id"] = uuid4().hex
+    target.append(subarea)
+    return user_input.get("add_another") is True
+
+
+def _recommendation_placeholders(
+    language: str, recommendation: ProfileRecommendation | None
+) -> dict[str, str]:
+    if recommendation is None:
+        return {"recommendation": ""}
+    if language == "de":
+        levels = {"low": "niedrig", "medium": "mittel", "high": "hoch"}
+        tendencies = {
+            "small_frequent": "eher kleine, häufigere Gaben",
+            "balanced": "ausgewogene Gaben",
+            "deep_infrequent": "eher tiefe, seltenere Gaben",
+        }
+        messages = {
+            "missing_name": "Name fehlt",
+            "missing_or_invalid_area": "Fläche fehlt oder ist ungültig",
+            "missing_plant_profile": "Pflanzenprofil fehlt",
+            "custom_plant_profile": "benutzerdefiniertes Pflanzenprofil ist nicht klassifiziert",
+            "unknown_plant_profile": "Pflanzenprofil ist unbekannt",
+            "missing_soil_profile": "Bodenprofil fehlt",
+            "custom_soil_profile": "benutzerdefiniertes Bodenprofil ist nicht klassifiziert",
+            "unknown_soil_profile": "Bodenprofil ist unbekannt",
+            "missing_application_profile": "Ausbringungsprofil fehlt",
+            "custom_application_profile": (
+                "benutzerdefiniertes Ausbringungsprofil ist nicht klassifiziert"
+            ),
+            "unknown_application_profile": "Ausbringungsprofil ist unbekannt",
+            "missing_or_unknown_development_stage": "Entwicklungszustand fehlt oder ist unbekannt",
+            "missing_or_unknown_exposure": "Exposition fehlt oder ist unbekannt",
+            "no_subareas": "keine Teilfläche vorhanden",
+            "subarea_conflicts": "Teilflächen unterscheiden sich deutlich",
+            "complete_known_profiles": "alle Teilflächen verwenden vollständige Katalogprofile",
+            "different_plant_water_need": "stark unterschiedlicher Pflanzenwasserbedarf",
+            "different_soil_storage": "stark unterschiedliche Bodenspeicherung",
+            "different_relative_application_rates": "unterschiedliche relative Ausbringungsraten",
+            "invalid_mulch_ignored": "ungültige Mulchangabe wurde ignoriert",
+            "invalid_slope_ignored": "ungültige Hangneigung wurde ignoriert",
+            "invalid_relative_application_rate_ignored": (
+                "ungültige Ausbringungsrate wurde ignoriert"
+            ),
+        }
+        text = (
+            f"Qualität: {levels[recommendation.quality]}; relativer Wasserbedarf: "
+            f"{levels[recommendation.water_need]}; Trockenheitsempfindlichkeit: "
+            f"{levels[recommendation.drought_sensitivity]}; Speicher: "
+            f"{levels[recommendation.soil_storage]}; Versickerung: "
+            f"{levels[recommendation.infiltration]}; Eignung für Teilgaben: "
+            f"{levels[recommendation.soak_suitability]}; "
+            f"{tendencies[recommendation.watering_tendency]}."
+        )
+        details = "; ".join(messages.get(item, item) for item in recommendation.reasons)
+        text = f"{text} Gründe: {details}."
+        if recommendation.conflicts:
+            details = "; ".join(messages.get(item, item) for item in recommendation.conflicts)
+            text = f"{text} Konflikte: {details}."
+        if recommendation.warnings:
+            details = "; ".join(messages.get(item, item) for item in recommendation.warnings)
+            text = f"{text} Hinweise: {details}."
+    else:
+        messages = {
+            "missing_name": "name is missing",
+            "missing_or_invalid_area": "area is missing or invalid",
+            "missing_plant_profile": "plant profile is missing",
+            "custom_plant_profile": "custom plant profile is not classified",
+            "unknown_plant_profile": "plant profile is unknown",
+            "missing_soil_profile": "soil profile is missing",
+            "custom_soil_profile": "custom soil profile is not classified",
+            "unknown_soil_profile": "soil profile is unknown",
+            "missing_application_profile": "application profile is missing",
+            "custom_application_profile": "custom application profile is not classified",
+            "unknown_application_profile": "application profile is unknown",
+            "missing_or_unknown_development_stage": "development stage is missing or unknown",
+            "missing_or_unknown_exposure": "exposure is missing or unknown",
+            "no_subareas": "no subarea is available",
+            "subarea_conflicts": "subareas differ materially",
+            "complete_known_profiles": "all subareas use complete catalog profiles",
+            "different_plant_water_need": "materially different plant water need",
+            "different_soil_storage": "materially different soil storage",
+            "different_relative_application_rates": "different relative application rates",
+            "invalid_mulch_ignored": "invalid mulch input was ignored",
+            "invalid_slope_ignored": "invalid slope was ignored",
+            "invalid_relative_application_rate_ignored": "invalid application rate was ignored",
+        }
+        text = (
+            f"Quality: {recommendation.quality}; relative water need: "
+            f"{recommendation.water_need}; drought sensitivity: "
+            f"{recommendation.drought_sensitivity}; storage: "
+            f"{recommendation.soil_storage}; infiltration: "
+            f"{recommendation.infiltration}; soak suitability: "
+            f"{recommendation.soak_suitability}; "
+            f"tendency: {recommendation.watering_tendency}."
+        )
+        details = "; ".join(messages.get(item, item) for item in recommendation.reasons)
+        text = f"{text} Reasons: {details}."
+        if recommendation.conflicts:
+            details = "; ".join(messages.get(item, item) for item in recommendation.conflicts)
+            text = f"{text} Conflicts: {details}."
+        if recommendation.warnings:
+            text = (
+                f"{text} Notes: "
+                f"{'; '.join(messages.get(item, item) for item in recommendation.warnings)}."
+            )
+    return {"recommendation": text}
+
+
 def _minimal_zone_schema(has_meter: bool) -> vol.Schema:
     schema: dict[object, object] = {
         vol.Required(CONF_NAME): TextSelector(),
@@ -213,19 +437,7 @@ def _weekly_schedule_schema(control_type: str) -> vol.Schema:
                 {
                     vol.Optional("start"): TimeSelector(),
                     vol.Optional("end"): TimeSelector(),
-                    vol.Optional("target"): (
-                        _duration_selector()
-                        if control_type == CONTROL_TYPE_TIME
-                        else NumberSelector(
-                            NumberSelectorConfig(
-                                min=0.001,
-                                max=1_000_000,
-                                step=1,
-                                mode=NumberSelectorMode.BOX,
-                                unit_of_measurement=UnitOfVolume.LITERS,
-                            )
-                        )
-                    ),
+                    vol.Optional("target"): _target_selector(control_type),
                 }
             )
         )
@@ -277,6 +489,7 @@ def _canonical_weekly_schedule(
     user_input: Mapping[str, Any],
     *,
     control_type: str,
+    base_target: float | None,
     volume_max_runtime: float | None,
     expected_flow_l_min: float | None = None,
 ) -> tuple[list[dict[str, object]], str | None]:
@@ -291,28 +504,28 @@ def _canonical_weekly_schedule(
         start_value = row_input.get("start")
         end_value = row_input.get("end")
         target_value = row_input.get("target")
-        present = (
-            start_value not in (None, ""),
-            end_value not in (None, ""),
-            target_value is not None,
-        )
-        if any(present) and not all(present):
+        has_start = start_value not in (None, "")
+        has_end = end_value not in (None, "")
+        has_override = target_value is not None
+        if has_start != has_end:
             return [], "schedule_row_incomplete"
-        if not any(present):
+        if not has_start:
+            if has_override:
+                return [], "schedule_row_incomplete"
             schedule.append({"weekday": weekday, "start": None, "end": None, "target": None})
             continue
+        if base_target is None:
+            return [], "schedule_baseline_required"
         try:
             start = time.fromisoformat(str(start_value))
             end = time.fromisoformat(str(end_value))
         except TypeError, ValueError:
             return [], "schedule_row_invalid"
         try:
-            if control_type == CONTROL_TYPE_TIME:
-                target = parse_duration(target_value)
-            elif not isinstance(target_value, int | float):
-                raise ValueError
-            else:
-                target = float(target_value)
+            target_override = (
+                _canonical_target(target_value, control_type) if has_override else None
+            )
+            target = target_override if target_override is not None else base_target
         except TypeError, ValueError:
             return [], "schedule_target_invalid"
         if target <= 0 or not math.isfinite(target):
@@ -338,7 +551,7 @@ def _canonical_weekly_schedule(
                 "weekday": weekday,
                 "start": start.isoformat(),
                 "end": end.isoformat(),
-                "target": target,
+                "target": target_override,
             }
         )
     cyclic = [*intervals, *((start + week_seconds, end + week_seconds) for start, end in intervals)]
@@ -377,13 +590,15 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create one v2 irrigation installation with its mandatory first zone."""
 
     VERSION = 2
-    MINOR_VERSION = 1
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         """Initialize wizard state."""
         self._installation: dict[str, Any] = {}
         self._first_zone: dict[str, Any] = {}
         self._meter_type = METER_TYPE_NONE
+        self._subareas: list[dict[str, object]] = []
+        self._recommendation: ProfileRecommendation | None = None
 
     @override
     @staticmethod
@@ -432,7 +647,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             self._meter_type = str(user_input[CONF_METER_TYPE])
             if self._meter_type == METER_TYPE_NONE:
                 self._installation[CONF_METER_TYPE] = METER_TYPE_NONE
-                return await self.async_step_installation_zone()
+                return await self.async_step_installation_extensions()
             return await self.async_step_installation_meter_details()
         return self.async_show_form(
             step_id="installation_meter", data_schema=schema, last_step=False
@@ -453,9 +668,31 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                     last_step=False,
                 )
             self._installation.update(meter)
-            return await self.async_step_installation_zone()
+            return await self.async_step_installation_extensions()
         return self.async_show_form(
             step_id="installation_meter_details", data_schema=schema, last_step=False
+        )
+
+    async def async_step_installation_extensions(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose completed optional modules without collecting their details."""
+        if user_input is not None:
+            self._installation.update(
+                {
+                    CONF_PLANT_SITE_MODULE_ENABLED: bool(
+                        user_input[CONF_PLANT_SITE_MODULE_ENABLED]
+                    ),
+                    CONF_SEASONAL_MODULE_ENABLED: False,
+                    CONF_WEATHER_MODULE_ENABLED: False,
+                    CONF_SOAK_MODULE_ENABLED: False,
+                }
+            )
+            return await self.async_step_installation_zone()
+        return self.async_show_form(
+            step_id="installation_extensions",
+            data_schema=_extensions_schema(),
+            last_step=False,
         )
 
     async def async_step_installation_zone(
@@ -496,9 +733,77 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             }
             if max_runtime is not None:
                 self._first_zone[CONF_VOLUME_MAX_RUNTIME] = max_runtime
-            return await self.async_step_installation_schedule()
+            if self._installation[CONF_PLANT_SITE_MODULE_ENABLED]:
+                return await self.async_step_installation_zone_plant()
+            self._first_zone[CONF_USE_PLANT_SITE_MODEL] = False
+            self._first_zone[CONF_SUBAREAS] = []
+            return await self.async_step_installation_baseline()
         return self.async_show_form(
             step_id="installation_zone", data_schema=schema, last_step=False
+        )
+
+    async def async_step_installation_zone_plant(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose whether the first zone uses plant and site profiles."""
+        if user_input is not None:
+            enabled = bool(user_input[CONF_USE_PLANT_SITE_MODEL])
+            self._first_zone[CONF_USE_PLANT_SITE_MODEL] = enabled
+            if not enabled:
+                self._first_zone[CONF_SUBAREAS] = []
+                return await self.async_step_installation_baseline()
+            self._subareas = []
+            return await self.async_step_installation_subarea()
+        return self.async_show_form(
+            step_id="installation_zone_plant",
+            data_schema=_plant_usage_schema(),
+            last_step=False,
+        )
+
+    async def async_step_installation_subarea(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect one subarea and repeat only when explicitly requested."""
+        if user_input is not None:
+            if _accept_subarea(self._subareas, user_input):
+                return self.async_show_form(
+                    step_id="installation_subarea",
+                    data_schema=_subarea_schema(),
+                    last_step=False,
+                )
+            self._first_zone[CONF_SUBAREAS] = list(self._subareas)
+            self._recommendation = recommend_profiles(self._subareas)
+            return await self.async_step_installation_baseline()
+        return self.async_show_form(
+            step_id="installation_subarea", data_schema=_subarea_schema(), last_step=False
+        )
+
+    async def async_step_installation_baseline(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm the common target without applying profile data automatically."""
+        control_type = str(self._first_zone[CONF_CONTROL_TYPE])
+        schema = _baseline_schema(control_type)
+        if user_input is not None:
+            try:
+                _set_optional_baseline(self._first_zone, user_input, control_type)
+            except ValueError:
+                return self.async_show_form(
+                    step_id="installation_baseline",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "schedule_target_invalid"},
+                    description_placeholders=_recommendation_placeholders(
+                        self.hass.config.language, self._recommendation
+                    ),
+                )
+            return await self.async_step_installation_schedule()
+        return self.async_show_form(
+            step_id="installation_baseline",
+            data_schema=schema,
+            description_placeholders=_recommendation_placeholders(
+                self.hass.config.language, self._recommendation
+            ),
+            last_step=False,
         )
 
     async def async_step_installation_schedule(
@@ -513,6 +818,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         schedule, error = _canonical_weekly_schedule(
             user_input,
             control_type=str(self._first_zone[CONF_CONTROL_TYPE]),
+            base_target=positive_number(self._first_zone.get(CONF_BASE_TARGET)),
             volume_max_runtime=cast(float | None, self._first_zone.get(CONF_VOLUME_MAX_RUNTIME)),
         )
         if error is not None:
@@ -563,6 +869,8 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self._calibration_previous_proposal_id: str | None = None
         self._calibration_proposal: dict[str, object] | None = None
         self._calibration_supervision_renewed = False
+        self._subareas: list[dict[str, object]] = []
+        self._recommendation: ProfileRecommendation | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Start the minimal zone form directly."""
@@ -609,8 +917,70 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             }
             if max_runtime is not None:
                 self._zone[CONF_VOLUME_MAX_RUNTIME] = max_runtime
-            return await self.async_step_minimal_schedule()
+            if self._get_entry().data.get(CONF_PLANT_SITE_MODULE_ENABLED) is True:
+                return await self.async_step_plant_usage()
+            self._zone[CONF_USE_PLANT_SITE_MODEL] = False
+            self._zone[CONF_SUBAREAS] = []
+            return await self.async_step_baseline()
         return self.async_show_form(step_id="minimal", data_schema=schema, last_step=False)
+
+    async def async_step_plant_usage(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Choose whether a new zone uses the available profile module."""
+        if user_input is not None:
+            enabled = bool(user_input[CONF_USE_PLANT_SITE_MODEL])
+            self._zone[CONF_USE_PLANT_SITE_MODEL] = enabled
+            if not enabled:
+                self._zone[CONF_SUBAREAS] = []
+                return await self.async_step_baseline()
+            self._subareas = []
+            return await self.async_step_subarea()
+        return self.async_show_form(
+            step_id="plant_usage", data_schema=_plant_usage_schema(), last_step=False
+        )
+
+    async def async_step_subarea(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect repeated subareas for a new zone."""
+        if user_input is not None:
+            if _accept_subarea(self._subareas, user_input):
+                return self.async_show_form(
+                    step_id="subarea", data_schema=_subarea_schema(), last_step=False
+                )
+            self._zone[CONF_SUBAREAS] = list(self._subareas)
+            self._recommendation = recommend_profiles(self._subareas)
+            return await self.async_step_baseline()
+        return self.async_show_form(step_id="subarea", data_schema=_subarea_schema())
+
+    async def async_step_baseline(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Confirm one common target for a new zone."""
+        control_type = str(self._zone[CONF_CONTROL_TYPE])
+        schema = _baseline_schema(control_type)
+        if user_input is not None:
+            try:
+                _set_optional_baseline(self._zone, user_input, control_type)
+            except ValueError:
+                return self.async_show_form(
+                    step_id="baseline",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "schedule_target_invalid"},
+                    description_placeholders=_recommendation_placeholders(
+                        self.hass.config.language, self._recommendation
+                    ),
+                )
+            return await self.async_step_minimal_schedule()
+        return self.async_show_form(
+            step_id="baseline",
+            data_schema=schema,
+            description_placeholders=_recommendation_placeholders(
+                self.hass.config.language, self._recommendation
+            ),
+            last_step=False,
+        )
 
     async def async_step_minimal_schedule(
         self, user_input: dict[str, Any] | None = None
@@ -624,6 +994,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         schedule, error = _canonical_weekly_schedule(
             user_input,
             control_type=str(self._zone[CONF_CONTROL_TYPE]),
+            base_target=positive_number(self._zone.get(CONF_BASE_TARGET)),
             volume_max_runtime=cast(float | None, self._zone.get(CONF_VOLUME_MAX_RUNTIME)),
         )
         if error is not None:
@@ -645,7 +1016,15 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Offer zone configuration, releases, and documented flow calibration."""
-        options = ["reconfigure_minimal", "releases"]
+        options = [
+            "reconfigure_minimal",
+            "reconfigure_plant",
+            "reconfigure_baseline",
+            "reconfigure_schedule",
+            "releases",
+        ]
+        if self._get_entry().data.get(CONF_PLANT_SITE_MODULE_ENABLED) is not True:
+            options.remove("reconfigure_plant")
         if self._get_entry().data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
             options.append("calibration")
         return self.async_show_menu(step_id="reconfigure", menu_options=options)
@@ -656,6 +1035,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         """Edit a zone's minimal v2 configuration."""
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry()
+        previous_control_type = str(subentry.data.get(CONF_CONTROL_TYPE, CONTROL_TYPE_TIME))
         has_meter = entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE
         schema = _minimal_zone_schema(has_meter)
         if user_input is None:
@@ -701,6 +1081,57 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             self._zone[CONF_VOLUME_MAX_RUNTIME] = max_runtime
         else:
             self._zone.pop(CONF_VOLUME_MAX_RUNTIME, None)
+        if (
+            previous_control_type == control_type
+            and subentry.data.get(CONF_NEEDS_RECONFIGURATION) is not True
+        ):
+            async with _ACTUATOR_OWNERSHIP_LOCK:
+                if self._valve_is_configured(
+                    str(self._zone[CONF_ZONE_VALVE]),
+                    excluding_subentry_id=subentry.subentry_id,
+                ):
+                    return self.async_abort(reason="actuator_already_owned")
+                return self.async_update_and_abort(
+                    entry,
+                    subentry,
+                    title=str(self._zone[CONF_NAME]),
+                    data=self._zone,
+                )
+        return await self.async_step_reconfigure_minimal_baseline()
+
+    async def async_step_reconfigure_minimal_baseline(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Confirm the baseline while completing the atomic legacy reconfiguration path."""
+        control_type = str(self._zone[CONF_CONTROL_TYPE])
+        schema = _baseline_schema(control_type)
+        if user_input is None:
+            suggested: dict[str, object] = {}
+            subentry = self._get_reconfigure_subentry()
+            existing = (
+                self._zone.get(CONF_BASE_TARGET)
+                if subentry.data.get(CONF_CONTROL_TYPE) == control_type
+                else None
+            )
+            if isinstance(existing, int | float):
+                suggested[CONF_BASE_TARGET] = (
+                    format_duration(float(existing))
+                    if control_type == CONTROL_TYPE_TIME
+                    else existing
+                )
+            return self.async_show_form(
+                step_id="reconfigure_minimal_baseline",
+                data_schema=self.add_suggested_values_to_schema(schema, suggested),
+                last_step=False,
+            )
+        try:
+            _set_optional_baseline(self._zone, user_input, control_type)
+        except ValueError:
+            return self.async_show_form(
+                step_id="reconfigure_minimal_baseline",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "schedule_target_invalid"},
+            )
         return await self.async_step_reconfigure_minimal_schedule()
 
     async def async_step_reconfigure_minimal_schedule(
@@ -710,12 +1141,17 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         subentry = self._get_reconfigure_subentry()
         schema = _weekly_schedule_schema(str(self._zone[CONF_CONTROL_TYPE]))
         if user_input is None:
+            existing_schedule = (
+                subentry.data.get(CONF_WEEKLY_SCHEDULE)
+                if subentry.data.get(CONF_CONTROL_TYPE) == self._zone[CONF_CONTROL_TYPE]
+                else None
+            )
             return self.async_show_form(
                 step_id="reconfigure_minimal_schedule",
                 data_schema=self.add_suggested_values_to_schema(
                     schema,
                     _weekly_schedule_form_values(
-                        subentry.data.get(CONF_WEEKLY_SCHEDULE),
+                        existing_schedule,
                         control_type=str(self._zone[CONF_CONTROL_TYPE]),
                     ),
                 ),
@@ -724,6 +1160,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         schedule, error = _canonical_weekly_schedule(
             user_input,
             control_type=str(self._zone[CONF_CONTROL_TYPE]),
+            base_target=positive_number(self._zone.get(CONF_BASE_TARGET)),
             volume_max_runtime=cast(float | None, self._zone.get(CONF_VOLUME_MAX_RUNTIME)),
             expected_flow_l_min=cast(float | None, self._zone.get(CONF_EXPECTED_FLOW_L_MIN)),
         )
@@ -747,6 +1184,161 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 title=str(self._zone[CONF_NAME]),
                 data=self._zone,
             )
+
+    async def async_step_reconfigure_baseline(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Edit only the shared baseline."""
+        subentry = self._get_reconfigure_subentry()
+        data = dict(subentry.data)
+        control_type = str(data[CONF_CONTROL_TYPE])
+        schema = _baseline_schema(control_type)
+        if user_input is None:
+            value = data.get(CONF_BASE_TARGET)
+            suggested = {
+                CONF_BASE_TARGET: (
+                    format_duration(float(cast(float, value)))
+                    if control_type == CONTROL_TYPE_TIME and isinstance(value, int | float)
+                    else value
+                )
+            }
+            return self.async_show_form(
+                step_id="reconfigure_baseline",
+                data_schema=self.add_suggested_values_to_schema(schema, suggested),
+                last_step=True,
+            )
+        try:
+            _set_optional_baseline(data, user_input, control_type)
+        except ValueError:
+            return self.async_show_form(
+                step_id="reconfigure_baseline",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "schedule_target_invalid"},
+                last_step=True,
+            )
+        schedule, error = _canonical_weekly_schedule(
+            _weekly_schedule_form_values(data.get(CONF_WEEKLY_SCHEDULE), control_type=control_type),
+            control_type=control_type,
+            base_target=positive_number(data.get(CONF_BASE_TARGET)),
+            volume_max_runtime=cast(float | None, data.get(CONF_VOLUME_MAX_RUNTIME)),
+            expected_flow_l_min=cast(float | None, data.get(CONF_EXPECTED_FLOW_L_MIN)),
+        )
+        if error is not None:
+            return self.async_show_form(
+                step_id="reconfigure_baseline",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+                last_step=True,
+            )
+        data[CONF_WEEKLY_SCHEDULE] = schedule
+        return self.async_update_and_abort(self._get_entry(), subentry, data=data)
+
+    async def async_step_reconfigure_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Edit only weekly windows and day overrides."""
+        subentry = self._get_reconfigure_subentry()
+        data = dict(subentry.data)
+        control_type = str(data[CONF_CONTROL_TYPE])
+        baseline = positive_number(data.get(CONF_BASE_TARGET))
+        if baseline is None:
+            return self.async_abort(reason="reconfiguration_required")
+        schema = _weekly_schedule_schema(control_type)
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_schedule",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema,
+                    _weekly_schedule_form_values(
+                        data.get(CONF_WEEKLY_SCHEDULE), control_type=control_type
+                    ),
+                ),
+                last_step=True,
+            )
+        schedule, error = _canonical_weekly_schedule(
+            user_input,
+            control_type=control_type,
+            base_target=baseline,
+            volume_max_runtime=cast(float | None, data.get(CONF_VOLUME_MAX_RUNTIME)),
+            expected_flow_l_min=cast(float | None, data.get(CONF_EXPECTED_FLOW_L_MIN)),
+        )
+        if error is not None:
+            return self.async_show_form(
+                step_id="reconfigure_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+                last_step=True,
+            )
+        data[CONF_WEEKLY_SCHEDULE] = schedule
+        return self.async_update_and_abort(self._get_entry(), subentry, data=data)
+
+    async def async_step_reconfigure_plant(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Replace or disable the profile data without touching other zone settings."""
+        subentry = self._get_reconfigure_subentry()
+        if user_input is None:
+            existing_subareas = subentry.data.get(CONF_SUBAREAS)
+            return self.async_show_form(
+                step_id="reconfigure_plant",
+                data_schema=_reconfigure_plant_schema(
+                    bool(subentry.data.get(CONF_USE_PLANT_SITE_MODEL, False)),
+                    isinstance(existing_subareas, list) and bool(existing_subareas),
+                ),
+                last_step=False,
+            )
+        if user_input[CONF_USE_PLANT_SITE_MODEL] is not True:
+            data = {**subentry.data, CONF_USE_PLANT_SITE_MODEL: False}
+            return self.async_update_and_abort(self._get_entry(), subentry, data=data)
+        existing_subareas = subentry.data.get(CONF_SUBAREAS)
+        if (
+            isinstance(existing_subareas, list)
+            and existing_subareas
+            and user_input.get("replace_subareas") is not True
+        ):
+            self._subareas = [dict(item) for item in existing_subareas if isinstance(item, Mapping)]
+            self._recommendation = recommend_profiles(self._subareas)
+            return await self.async_step_reconfigure_plant_review()
+        self._subareas = []
+        return await self.async_step_reconfigure_subarea()
+
+    async def async_step_reconfigure_subarea(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect replacement subareas before one atomic profile update."""
+        if user_input is not None:
+            if _accept_subarea(self._subareas, user_input):
+                return self.async_show_form(
+                    step_id="reconfigure_subarea",
+                    data_schema=_subarea_schema(),
+                    last_step=False,
+                )
+            self._recommendation = recommend_profiles(self._subareas)
+            return await self.async_step_reconfigure_plant_review()
+        return self.async_show_form(
+            step_id="reconfigure_subarea", data_schema=_subarea_schema(), last_step=False
+        )
+
+    async def async_step_reconfigure_plant_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Show the qualitative result before storing replacement profiles."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_plant_review",
+                data_schema=vol.Schema({}),
+                description_placeholders=_recommendation_placeholders(
+                    self.hass.config.language, self._recommendation
+                ),
+                last_step=True,
+            )
+        subentry = self._get_reconfigure_subentry()
+        data = {
+            **subentry.data,
+            CONF_USE_PLANT_SITE_MODEL: True,
+            CONF_SUBAREAS: list(self._subareas),
+        }
+        return self.async_update_and_abort(self._get_entry(), subentry, data=data)
 
     async def async_step_releases(
         self, user_input: dict[str, Any] | None = None
@@ -1057,12 +1649,145 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         locked = (
             snapshot is not None and getattr(snapshot, "installation_safety_lock", None) is not None
         )
-        options = ["configuration", "releases", "replan"]
+        options = (
+            ["configuration"]
+            if self._requires_reconfiguration()
+            else [
+                "configuration_basics",
+                "configuration_main_valve_only",
+                "configuration_meter_only",
+            ]
+        )
+        options.extend(["extensions", "releases", "replan"])
         if locked:
             options.append("reset_safety")
         if self.config_entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
             options.append("physical_meter_correction")
         return self.async_show_menu(step_id="init", menu_options=options)
+
+    async def async_step_configuration_basics(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit only the installation name."""
+        schema = _installation_basics_schema()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="configuration_basics",
+                data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.data),
+                last_step=True,
+            )
+        data = {**self.config_entry.data, CONF_NAME: user_input[CONF_NAME]}
+        self.hass.config_entries.async_update_entry(
+            self.config_entry, title=str(user_input[CONF_NAME]), data=data
+        )
+        return self.async_create_entry(data={})
+
+    async def async_step_configuration_main_valve_only(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit only the optional main valve."""
+        schema = _installation_main_valve_schema()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="configuration_main_valve_only",
+                data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.data),
+                last_step=True,
+            )
+        data = {**self.config_entry.data, CONF_MAIN_VALVE: user_input.get(CONF_MAIN_VALVE)}
+        candidate = _owned_endpoints(data, ())
+        async with _ACTUATOR_OWNERSHIP_LOCK:
+            if _ownership_conflicts(
+                self.hass,
+                candidate,
+                excluding_entry_id=self.config_entry.entry_id,
+                exclude_installation=True,
+            ):
+                return self.async_abort(reason="actuator_already_owned")
+            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+        return self.async_create_entry(data={})
+
+    async def async_step_configuration_meter_only(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the measurement type without traversing unrelated settings."""
+        schema = _meter_type_schema()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="configuration_meter_only",
+                data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.data),
+                last_step=False,
+            )
+        self._meter_type = str(user_input[CONF_METER_TYPE])
+        if self._meter_type == METER_TYPE_NONE:
+            if self._has_volume_zones():
+                return self.async_show_form(
+                    step_id="configuration_meter_only",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "meter_required_by_volume_zones"},
+                )
+            data = {**self.config_entry.data, CONF_METER_TYPE: METER_TYPE_NONE}
+            data.pop(CONF_METER_ENTITY, None)
+            data.pop(CONF_LITERS_PER_PULSE, None)
+            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+            return self.async_create_entry(data={})
+        return await self.async_step_configuration_meter_only_details()
+
+    async def async_step_configuration_meter_only_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit only the source fields for the selected measurement type."""
+        schema = _meter_details_schema(self._meter_type)
+        if user_input is None:
+            suggested = dict(self.config_entry.data)
+            if self._meter_type == METER_TYPE_PULSE:
+                suggested["pulse_factor_mode"] = "liters_per_pulse"
+                suggested["pulse_factor"] = self.config_entry.data.get(CONF_LITERS_PER_PULSE)
+            return self.async_show_form(
+                step_id="configuration_meter_only_details",
+                data_schema=self.add_suggested_values_to_schema(schema, suggested),
+                last_step=True,
+            )
+        meter, error = _meter_data({CONF_METER_TYPE: self._meter_type, **user_input})
+        if error is not None:
+            return self.async_show_form(
+                step_id="configuration_meter_only_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+                last_step=True,
+            )
+        data = {**self.config_entry.data, **meter}
+        if self._meter_type != METER_TYPE_PULSE:
+            data.pop(CONF_LITERS_PER_PULSE, None)
+        self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+        return self.async_create_entry(data={})
+
+    async def async_step_extensions(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Enable or disable completed comfort modules without deleting zone data."""
+        schema = _extensions_schema()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="extensions",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema,
+                    {
+                        CONF_PLANT_SITE_MODULE_ENABLED: bool(
+                            self.config_entry.data.get(CONF_PLANT_SITE_MODULE_ENABLED, False)
+                        )
+                    },
+                ),
+                last_step=True,
+            )
+        data = {
+            **self.config_entry.data,
+            CONF_PLANT_SITE_MODULE_ENABLED: bool(user_input[CONF_PLANT_SITE_MODULE_ENABLED]),
+        }
+        data.setdefault(CONF_SEASONAL_MODULE_ENABLED, False)
+        data.setdefault(CONF_WEATHER_MODULE_ENABLED, False)
+        data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
+        self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+        return self.async_create_entry(data={})
 
     async def async_step_releases(
         self, user_input: dict[str, Any] | None = None

@@ -116,6 +116,132 @@ async def _setup_v2_installation(
     return entry, zone
 
 
+async def test_stage1_migration_preserves_targets_as_day_overrides(
+    hass: HomeAssistant,
+) -> None:
+    """Use the first old target as baseline without changing any old target."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={"name": "Garden", "meter_type": "none"},
+        unique_id="stage1-migration",
+        version=2,
+        minor_version=1,
+    )
+    entry.add_to_hass(hass)
+    schedule = [
+        {
+            "weekday": weekday,
+            "start": "04:00:00" if weekday in {"monday", "friday"} else None,
+            "end": "05:00:00" if weekday in {"monday", "friday"} else None,
+            "target": 300.0 if weekday == "monday" else 600.0 if weekday == "friday" else None,
+        }
+        for weekday in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+    ]
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "weekly_schedule": schedule,
+        },
+        subentry_id="zone-stage1",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="zone-stage1",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    assert await async_migrate_entry(hass, entry)
+
+    assert entry.minor_version == 2
+    assert entry.data["plant_site_module_enabled"] is False
+    migrated = entry.subentries[zone.subentry_id].data
+    assert migrated["base_target"] == 300.0
+    assert migrated["weekly_schedule"][0]["target"] == 300.0
+    assert migrated["weekly_schedule"][4]["target"] == 600.0
+    assert migrated["use_plant_site_model"] is False
+    assert migrated["subareas"] == []
+
+
+async def test_stage1_migration_handles_empty_and_equal_target_schedules(
+    hass: HomeAssistant,
+) -> None:
+    """Leave an empty baseline unset and preserve every equal legacy override."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={"name": "Garden", "meter_type": "none"},
+        unique_id="stage1-migration-edges",
+        version=2,
+        minor_version=1,
+    )
+    entry.add_to_hass(hass)
+    empty_zone = ConfigSubentry(
+        data={
+            "name": "Empty",
+            "zone_valve": "switch.empty",
+            "control_type": "time",
+            "weekly_schedule": [],
+        },
+        subentry_id="empty-zone",
+        subentry_type="zone",
+        title="Empty",
+        unique_id="empty-zone",
+    )
+    equal_zone = ConfigSubentry(
+        data={
+            "name": "Equal",
+            "zone_valve": "switch.equal",
+            "control_type": "time",
+            "weekly_schedule": [
+                {"weekday": "monday", "start": "04:00:00", "end": "05:00:00", "target": 300.0},
+                {"weekday": "friday", "start": "04:00:00", "end": "05:00:00", "target": 300.0},
+            ],
+        },
+        subentry_id="equal-zone",
+        subentry_type="zone",
+        title="Equal",
+        unique_id="equal-zone",
+    )
+    hass.config_entries.async_add_subentry(entry, empty_zone)
+    hass.config_entries.async_add_subentry(entry, equal_zone)
+
+    assert await async_migrate_entry(hass, entry)
+
+    migrated_empty = entry.subentries[empty_zone.subentry_id].data
+    migrated_equal = entry.subentries[equal_zone.subentry_id].data
+    assert "base_target" not in migrated_empty
+    assert migrated_equal["base_target"] == 300.0
+    assert [item["target"] for item in migrated_equal["weekly_schedule"]] == [300.0, 300.0]
+
+
+async def test_common_baseline_resolves_without_day_override(hass: HomeAssistant) -> None:
+    """Plan a window from the common baseline and record its provenance."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    manager._zone_configs[0].data["base_target"] = 700.0
+    manager._zone_configs[0].data["weekly_schedule"][0]["target"] = None
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+
+    report = await manager.async_plan_automatic(now=datetime(2026, 7, 26, 12, tzinfo=UTC))
+
+    request = manager._request(report["created_request_ids"][0])
+    assert request is not None
+    assert request.target_value == 700.0
+    assert request.resolved_inputs["base_target"] == 700.0
+    assert request.resolved_inputs["day_target_override"] is None
+    assert request.resolved_inputs["used_day_target_override"] is False
+
+
 async def test_minimal_wizard_creates_installation_and_first_zone(
     hass: HomeAssistant,
     mock_setup_entry: None,
@@ -141,9 +267,18 @@ async def test_minimal_wizard_creates_installation_and_first_zone(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"meter_type": "none"}
         )
+        assert result["step_id"] == "installation_extensions"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"plant_site_module_enabled": False}
+        )
         assert result["step_id"] == "installation_zone"
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"name": "Lawn", "zone_valve": "switch.lawn"}
+        )
+        assert result["step_id"] == "installation_baseline"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"base_target": {"hours": 0, "minutes": 30, "seconds": 0}},
         )
         assert result["step_id"] == "installation_schedule"
         result = await hass.config_entries.flow.async_configure(
@@ -152,7 +287,6 @@ async def test_minimal_wizard_creates_installation_and_first_zone(
                 "monday": {
                     "start": "22:00:00",
                     "end": "00:30:00",
-                    "target": {"hours": 0, "minutes": 30, "seconds": 0},
                 },
             },
         )
@@ -166,18 +300,23 @@ async def test_minimal_wizard_creates_installation_and_first_zone(
         "meter_type": "none",
         "operation_enabled": True,
         "automation_enabled": True,
+        "plant_site_module_enabled": False,
+        "seasonal_module_enabled": False,
+        "weather_module_enabled": False,
+        "soak_module_enabled": False,
     }
     zone = next(iter(entry.subentries.values()))
     assert zone.unique_id == "zone-v2"
     assert zone.data["control_type"] == "time"
     assert zone.data["operation_enabled"] is True
     assert zone.data["automation_enabled"] is True
+    assert zone.data["base_target"] == 1800
     assert len(zone.data["weekly_schedule"]) == 7
     assert zone.data["weekly_schedule"][0] == {
         "weekday": "monday",
         "start": "22:00:00",
         "end": "00:30:00",
-        "target": 1800.0,
+        "target": None,
     }
     assert zone.data["weekly_schedule"][1] == {
         "weekday": "tuesday",
@@ -206,7 +345,9 @@ async def test_weekly_schedule_rejects_partial_and_overlapping_rows(
         {"name": "Garden"},
         {},
         {"meter_type": "none"},
+        {"plant_site_module_enabled": False},
         {"name": "Lawn", "zone_valve": "switch.lawn"},
+        {"base_target": {"hours": 0, "minutes": 10, "seconds": 0}},
     ):
         result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
 
@@ -277,7 +418,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
     assert await async_migrate_entry(hass, entry)
 
     assert entry.version == 2
-    assert entry.minor_version == 1
+    assert entry.minor_version == 2
     assert entry.data == {
         "name": "Legacy garden",
         "main_valve": "switch.main",
@@ -287,6 +428,10 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
         "operation_enabled": False,
         "automation_enabled": False,
         "needs_reconfiguration": True,
+        "plant_site_module_enabled": False,
+        "seasonal_module_enabled": False,
+        "weather_module_enabled": False,
+        "soak_module_enabled": False,
     }
     assert dict(entry.subentries[zone.subentry_id].data) == {
         "name": "Lawn",
@@ -307,6 +452,8 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
             )
         ],
         "needs_reconfiguration": True,
+        "use_plant_site_model": False,
+        "subareas": [],
     }
 
 
@@ -363,7 +510,7 @@ async def test_v2_minor_migration_removes_only_retired_entity_unique_ids(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 1
+    assert entry.minor_version == 2
     assert registry.async_get("sensor.renamed_zone_status") is not None
     assert all(registry.async_get(entity_id) is None for entity_id in retired)
 
@@ -531,6 +678,26 @@ async def test_zone_edit_reloads_then_replans_pending_work_from_new_config(
         result = await hass.config_entries.subentries.async_configure(
             result["flow_id"],
             {"name": "Lawn", "zone_valve": "switch.new_lawn", "control_type": "time"},
+        )
+        assert result["type"] is FlowResultType.ABORT
+        result = await hass.config_entries.subentries.async_init(
+            (entry.entry_id, "zone"),
+            context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+        )
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"], {"next_step_id": "reconfigure_baseline"}
+        )
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            {"base_target": {"hours": 0, "minutes": 5, "seconds": 0}},
+        )
+        assert result["type"] is FlowResultType.ABORT
+        result = await hass.config_entries.subentries.async_init(
+            (entry.entry_id, "zone"),
+            context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+        )
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"], {"next_step_id": "reconfigure_schedule"}
         )
         result = await hass.config_entries.subentries.async_configure(
             result["flow_id"],
@@ -849,12 +1016,8 @@ async def test_v2_config_edits_do_not_overwrite_disabled_durable_releases(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "configuration"}
+        result["flow_id"], {"next_step_id": "configuration_meter_only"}
     )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"name": "Garden"}
-    )
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     assert "automation_enabled" not in {str(key) for key in result["data_schema"].schema}
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"meter_type": "none"}
@@ -874,6 +1037,14 @@ async def test_v2_config_edits_do_not_overwrite_disabled_durable_releases(
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {"name": "Lawn", "zone_valve": "switch.lawn", "control_type": "time"},
+    )
+    assert result["type"] is FlowResultType.ABORT
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_schedule"}
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
@@ -1054,7 +1225,7 @@ async def test_no_meter_exposes_runtime_contract_without_water_entities(
     entry, zone = await _setup_v2_installation(hass)
     registry = er.async_get(hass)
 
-    assert entry.minor_version == 1
+    assert entry.minor_version == 2
     assert (
         registry.async_get_entity_id("sensor", DOMAIN, "installation-v2-runtime_water_total")
         is None
@@ -1194,6 +1365,11 @@ async def test_v2_subentry_flow_adds_another_minimal_zone(hass: HomeAssistant) -
         result["flow_id"],
         {"name": "Beds", "zone_valve": "switch.beds", "control_type": "time"},
     )
+    assert result["step_id"] == "baseline"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"base_target": {"hours": 0, "minutes": 10, "seconds": 0}},
+    )
     assert result["step_id"] == "minimal_schedule"
     result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
 
@@ -1226,18 +1402,14 @@ async def test_options_block_meter_removal_while_volume_zone_exists(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "configuration"}
+        result["flow_id"], {"next_step_id": "configuration_meter_only"}
     )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"name": "Garden"}
-    )
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
-    assert result["step_id"] == "configuration_meter"
+    assert result["step_id"] == "configuration_meter_only"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"meter_type": "none"}
     )
 
-    assert result["step_id"] == "configuration_meter"
+    assert result["step_id"] == "configuration_meter_only"
     assert result["errors"] == {"base": "meter_required_by_volume_zones"}
     await hass.async_block_till_done()
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -1294,6 +1466,7 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
     options = await hass.config_entries.options.async_init(entry.entry_id)
     assert options["menu_options"] == [
         "configuration",
+        "extensions",
         "releases",
         "replan",
     ]
@@ -1330,6 +1503,10 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
             "zone_valve": "switch.lawn",
             "control_type": "time",
         },
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"base_target": {"hours": 0, "minutes": 10, "seconds": 0}},
     )
     invalid = await hass.config_entries.subentries.async_configure(
         result["flow_id"],

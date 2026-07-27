@@ -1,6 +1,7 @@
 """Irrigation Manager integration."""
 
 import logging
+import math
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -11,6 +12,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_AUTOMATION_ENABLED,
+    CONF_BASE_TARGET,
     CONF_CONTROL_TYPE,
     CONF_LITERS_PER_COUNT,
     CONF_LITERS_PER_PULSE,
@@ -19,8 +21,14 @@ from .const import (
     CONF_METER_TYPE,
     CONF_NEEDS_RECONFIGURATION,
     CONF_OPERATION_ENABLED,
+    CONF_PLANT_SITE_MODULE_ENABLED,
     CONF_RAW_METER,
+    CONF_SEASONAL_MODULE_ENABLED,
+    CONF_SOAK_MODULE_ENABLED,
+    CONF_SUBAREAS,
+    CONF_USE_PLANT_SITE_MODEL,
     CONF_WATER_METER,
+    CONF_WEATHER_MODULE_ENABLED,
     CONF_WEEKLY_SCHEDULE,
     CONF_ZONE_VALVE,
     CONTROL_TYPE_TIME,
@@ -43,6 +51,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 LOGGER = logging.getLogger(__name__)
 
 ENTITY_SURFACE_MINOR_VERSION = 1
+CONFIG_MINOR_VERSION = 2
 METER_INSTALLATION_ENTITY_SUFFIXES = frozenset(
     {"water_total", "unassigned_water_total", "water_today", "water_month", "physical_meter"}
 )
@@ -112,10 +121,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
     """Set up one irrigation installation from a config entry."""
     if entry.version == 2 and entry.minor_version < ENTITY_SURFACE_MINOR_VERSION:
         _remove_legacy_entity_surface(hass, entry)
-        hass.config_entries.async_update_entry(
-            entry,
-            minor_version=ENTITY_SURFACE_MINOR_VERSION,
-        )
     if entry.data.get(CONF_METER_TYPE, METER_TYPE_NONE) == METER_TYPE_NONE:
         _remove_disabled_meter_entities(hass, entry)
     store = IrrigationStore(hass, entry.entry_id)
@@ -194,6 +199,10 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_OPERATION_ENABLED: False,
             CONF_AUTOMATION_ENABLED: False,
             CONF_NEEDS_RECONFIGURATION: True,
+            CONF_PLANT_SITE_MODULE_ENABLED: False,
+            CONF_SEASONAL_MODULE_ENABLED: False,
+            CONF_WEATHER_MODULE_ENABLED: False,
+            CONF_SOAK_MODULE_ENABLED: False,
         }
         if isinstance(entry.data.get(CONF_MAIN_VALVE), str):
             migrated_data[CONF_MAIN_VALVE] = entry.data[CONF_MAIN_VALVE]
@@ -203,17 +212,19 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.data.get(CONF_LITERS_PER_COUNT), int | float
         ):
             migrated_data[CONF_LITERS_PER_PULSE] = float(entry.data[CONF_LITERS_PER_COUNT])
-        empty_schedule = [
-            {"weekday": weekday, "start": None, "end": None, "target": None} for weekday in WEEKDAYS
-        ]
         for subentry in entry.get_subentries_of_type("zone"):
             zone_data: dict[str, object] = {
                 "name": subentry.data.get("name", subentry.title),
                 CONF_CONTROL_TYPE: CONTROL_TYPE_TIME,
                 CONF_OPERATION_ENABLED: False,
                 CONF_AUTOMATION_ENABLED: False,
-                CONF_WEEKLY_SCHEDULE: empty_schedule,
+                CONF_WEEKLY_SCHEDULE: [
+                    {"weekday": weekday, "start": None, "end": None, "target": None}
+                    for weekday in WEEKDAYS
+                ],
                 CONF_NEEDS_RECONFIGURATION: True,
+                CONF_USE_PLANT_SITE_MODEL: False,
+                CONF_SUBAREAS: [],
             }
             if isinstance(subentry.data.get(CONF_ZONE_VALVE), str):
                 zone_data[CONF_ZONE_VALVE] = subentry.data[CONF_ZONE_VALVE]
@@ -222,17 +233,45 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry,
             data=migrated_data,
             version=2,
-            minor_version=ENTITY_SURFACE_MINOR_VERSION,
+            minor_version=CONFIG_MINOR_VERSION,
         )
         _remove_legacy_entity_surface(hass, entry)
         return True
     if entry.version != 2:
         return False
-    if entry.minor_version < ENTITY_SURFACE_MINOR_VERSION:
+    original_minor = entry.minor_version
+    if original_minor < ENTITY_SURFACE_MINOR_VERSION:
         _remove_legacy_entity_surface(hass, entry)
+    if original_minor < CONFIG_MINOR_VERSION:
+        migrated_data = dict(entry.data)
+        migrated_data.setdefault(CONF_PLANT_SITE_MODULE_ENABLED, False)
+        migrated_data.setdefault(CONF_SEASONAL_MODULE_ENABLED, False)
+        migrated_data.setdefault(CONF_WEATHER_MODULE_ENABLED, False)
+        migrated_data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
+        for subentry in entry.get_subentries_of_type("zone"):
+            zone_data = dict(subentry.data)
+            zone_data.setdefault(CONF_USE_PLANT_SITE_MODEL, False)
+            zone_data.setdefault(CONF_SUBAREAS, [])
+            if CONF_BASE_TARGET not in zone_data:
+                schedule = zone_data.get(CONF_WEEKLY_SCHEDULE)
+                if isinstance(schedule, list):
+                    for row in schedule:
+                        if not isinstance(row, dict):
+                            continue
+                        target = row.get("target")
+                        if (
+                            isinstance(target, int | float)
+                            and not isinstance(target, bool)
+                            and math.isfinite(target)
+                            and target > 0
+                        ):
+                            zone_data[CONF_BASE_TARGET] = float(target)
+                            break
+            hass.config_entries.async_update_subentry(entry, subentry, data=zone_data)
         hass.config_entries.async_update_entry(
             entry,
-            minor_version=ENTITY_SURFACE_MINOR_VERSION,
+            data=migrated_data,
+            minor_version=CONFIG_MINOR_VERSION,
         )
     return True
 

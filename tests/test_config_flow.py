@@ -68,9 +68,14 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
             ({"name": "Garden"}, "installation_hardware"),
             ({"main_valve": "switch.main"}, "installation_meter"),
             ({"meter_type": "cumulative"}, "installation_meter_details"),
-            ({"meter_entity": "sensor.water"}, "installation_zone"),
+            ({"meter_entity": "sensor.water"}, "installation_extensions"),
+            ({"plant_site_module_enabled": False}, "installation_zone"),
             (
                 {"name": "Lawn", "zone_valve": "switch.lawn", "control_type": "time"},
+                "installation_baseline",
+            ),
+            (
+                {"base_target": {"hours": 0, "minutes": 10, "seconds": 0}},
                 "installation_schedule",
             ),
         ):
@@ -82,7 +87,6 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
                 "monday": {
                     "start": "22:00:00",
                     "end": "00:30:00",
-                    "target": {"hours": 0, "minutes": 10, "seconds": 0},
                 },
             },
         )
@@ -96,10 +100,15 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
         "main_valve": "switch.main",
         "meter_type": "cumulative",
         "meter_entity": "sensor.water",
+        "plant_site_module_enabled": False,
+        "seasonal_module_enabled": False,
+        "weather_module_enabled": False,
+        "soak_module_enabled": False,
     }
     zone = next(iter(result["result"].subentries.values()))
     assert len(zone.data["weekly_schedule"]) == 7
-    assert zone.data["weekly_schedule"][0]["target"] == 600
+    assert zone.data["base_target"] == 600
+    assert zone.data["weekly_schedule"][0]["target"] is None
 
 
 async def test_creation_validates_pulse_factor_and_complete_schedule_rows(
@@ -128,6 +137,10 @@ async def test_creation_validates_pulse_factor_and_complete_schedule_rows(
             "pulse_factor": 4,
         },
     )
+    assert result["step_id"] == "installation_extensions"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"plant_site_module_enabled": False}
+    )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {
@@ -137,6 +150,8 @@ async def test_creation_validates_pulse_factor_and_complete_schedule_rows(
             "volume_max_runtime": {"hours": 0, "minutes": 15, "seconds": 0},
         },
     )
+    assert result["step_id"] == "installation_baseline"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"base_target": 10})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"monday": {"start": "04:00:00", "target": 10}}
     )
@@ -161,6 +176,278 @@ async def test_meter_wizard_only_asks_fields_relevant_to_selected_type(
     assert {str(key) for key in result["data_schema"].schema} == {"meter_entity"}
 
 
+async def test_plant_module_collects_subarea_and_keeps_baseline_explicit(
+    hass: HomeAssistant,
+    mock_setup_entry: None,
+) -> None:
+    """Collect qualitative profile data without deriving the confirmed baseline."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "create"}
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"name": "Garden"})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"meter_type": "none"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"plant_site_module_enabled": True}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"name": "Beds", "zone_valve": "switch.beds", "control_type": "time"},
+    )
+    assert result["step_id"] == "installation_zone_plant"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"use_plant_site_model": True}
+    )
+
+    with patch("custom_components.irrigation_manager.config_flow.uuid4") as uuid4:
+        uuid4.side_effect = [
+            type("Id", (), {"hex": "subarea-1"})(),
+            type("Id", (), {"hex": "installation-1"})(),
+            type("Id", (), {"hex": "zone-1"})(),
+        ]
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "name": "Sunny bed",
+                "area_m2": 12,
+                "plant_profile": "perennials",
+                "development_stage": "established",
+                "exposure": "sunny",
+                "soil_profile": "loamy",
+                "application_profile": "dripline",
+                "advanced": {"mulched": True},
+                "add_another": False,
+            },
+        )
+        assert result["step_id"] == "installation_baseline"
+        assert "Quality: high" in result["description_placeholders"]["recommendation"]
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"base_target": {"hours": 0, "minutes": 20, "seconds": 0}},
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "monday": {
+                    "start": "05:00:00",
+                    "end": "06:00:00",
+                    "target": {"hours": 0, "minutes": 30, "seconds": 0},
+                }
+            },
+        )
+
+    zone = next(iter(result["result"].subentries.values()))
+    assert zone.data["base_target"] == 1200
+    assert zone.data["weekly_schedule"][0]["target"] == 1800
+    assert zone.data["subareas"] == [
+        {
+            "id": "subarea-1",
+            "name": "Sunny bed",
+            "area_m2": 12.0,
+            "plant_profile": "perennials",
+            "development_stage": "established",
+            "exposure": "sunny",
+            "soil_profile": "loamy",
+            "application_profile": "dripline",
+            "mulched": True,
+        }
+    ]
+
+
+async def test_disabling_plant_module_preserves_zone_profiles(hass: HomeAssistant) -> None:
+    """Keep profile configuration dormant while the installation module is disabled."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "plant_site_module_enabled": True}
+    )
+    zone = ConfigSubentry(
+        data={
+            "name": "Beds",
+            "zone_valve": "switch.beds",
+            "control_type": "time",
+            "base_target": 600,
+            "use_plant_site_model": True,
+            "subareas": [{"id": "subarea-1", "name": "Beds"}],
+            "weekly_schedule": [],
+        },
+        subentry_id="zone-1",
+        subentry_type="zone",
+        title="Beds",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "extensions"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"plant_site_module_enabled": False}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["plant_site_module_enabled"] is False
+    assert entry.subentries[zone.subentry_id].data["use_plant_site_model"] is True
+    assert entry.subentries[zone.subentry_id].data["subareas"] == [
+        {"id": "subarea-1", "name": "Beds"}
+    ]
+
+
+async def test_zone_profile_disable_and_reenable_preserves_subareas(
+    hass: HomeAssistant,
+) -> None:
+    """Re-enable dormant zone profiles unless replacement was explicitly requested."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "plant_site_module_enabled": True}
+    )
+    subareas = [{"id": "subarea-1", "name": "Beds"}]
+    zone = ConfigSubentry(
+        data={
+            "name": "Beds",
+            "zone_valve": "switch.beds",
+            "control_type": "time",
+            "base_target": 600,
+            "use_plant_site_model": True,
+            "subareas": subareas,
+            "weekly_schedule": [],
+        },
+        subentry_id="zone-1",
+        subentry_type="zone",
+        title="Beds",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_plant"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"use_plant_site_model": False, "replace_subareas": False}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.subentries[zone.subentry_id].data["subareas"] == subareas
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_plant"}
+    )
+    assert {str(key) for key in result["data_schema"].schema} == {
+        "use_plant_site_model",
+        "replace_subareas",
+    }
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"use_plant_site_model": True, "replace_subareas": False}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure_plant_review"
+    assert "Reasons:" in result["description_placeholders"]["recommendation"]
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.subentries[zone.subentry_id].data["use_plant_site_model"] is True
+    assert entry.subentries[zone.subentry_id].data["subareas"] == subareas
+
+
+async def test_baseline_reconfiguration_rejects_existing_window_that_no_longer_fits(
+    hass: HomeAssistant,
+) -> None:
+    """Keep baseline and schedule atomic when a shared target exceeds a window."""
+    entry = await _create_v2_entry(hass)
+    zone = ConfigSubentry(
+        data={
+            "name": "Beds",
+            "zone_valve": "switch.beds",
+            "control_type": "time",
+            "base_target": 600,
+            "weekly_schedule": [
+                {
+                    "weekday": "monday",
+                    "start": "04:00:00",
+                    "end": "04:10:00",
+                    "target": None,
+                }
+            ],
+        },
+        subentry_id="zone-1",
+        subentry_type="zone",
+        title="Beds",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_baseline"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"base_target": {"hours": 0, "minutes": 20, "seconds": 0}},
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "schedule_target_does_not_fit"}
+    assert entry.subentries[zone.subentry_id].data["base_target"] == 600
+
+
+async def test_manual_only_zone_can_be_created_without_baseline(
+    hass: HomeAssistant,
+) -> None:
+    """A zone needs a baseline only when it receives an automatic window."""
+    entry = await _create_v2_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"name": "Manual", "zone_valve": "switch.manual", "control_type": "time"},
+    )
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+    assert result["step_id"] == "minimal_schedule"
+
+    with patch("custom_components.irrigation_manager.config_flow.uuid4") as uuid4:
+        uuid4.return_value.hex = "manual-zone"
+        result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    zone = next(iter(entry.subentries.values()))
+    assert "base_target" not in zone.data
+    assert all(row["start"] is None for row in zone.data["weekly_schedule"])
+
+
+async def test_automatic_window_requires_baseline(hass: HomeAssistant) -> None:
+    """Reject an automatic window until the zone has a confirmed common baseline."""
+    entry = await _create_v2_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"name": "Automatic", "zone_valve": "switch.auto", "control_type": "time"},
+    )
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"monday": {"start": "04:00:00", "end": "05:00:00"}},
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "schedule_baseline_required"}
+
+
 async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssistant) -> None:
     """Add and edit a zone without any guided, expert, profile, or safety path."""
     entry = await _create_v2_entry(hass, meter_type="cumulative")
@@ -180,6 +467,10 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
                 "volume_max_runtime": {"hours": 0, "minutes": 20, "seconds": 0},
             },
         )
+        assert result["step_id"] == "baseline"
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"], {"base_target": 25}
+        )
         assert result["step_id"] == "minimal_schedule"
         assert result["last_step"] is True
         assert [str(key) for key in result["data_schema"].schema] == list(WEEKDAYS)
@@ -193,7 +484,7 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
         result = await hass.config_entries.subentries.async_configure(
             result["flow_id"],
             {
-                "friday": {"start": "05:00:00", "end": "06:00:00", "target": 25},
+                "friday": {"start": "05:00:00", "end": "06:00:00"},
             },
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -204,17 +495,26 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
         (entry.entry_id, "zone"),
         context={"source": "reconfigure", "subentry_id": zone.subentry_id},
     )
-    assert result["menu_options"] == ["reconfigure_minimal", "releases", "calibration"]
+    assert result["menu_options"] == [
+        "reconfigure_minimal",
+        "reconfigure_baseline",
+        "reconfigure_schedule",
+        "releases",
+        "calibration",
+    ]
 
 
-async def test_installation_configuration_is_atomic_multistep_wizard(
+async def test_installation_configuration_areas_are_directly_editable(
     hass: HomeAssistant,
 ) -> None:
-    """Collect every installation setting before one final persisted update."""
+    """Edit basis, main valve, and water measurement without unrelated steps."""
     entry = await _create_v2_entry(hass, meter_type="cumulative")
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["menu_options"] == [
-        "configuration",
+        "configuration_basics",
+        "configuration_main_valve_only",
+        "configuration_meter_only",
+        "extensions",
         "releases",
         "replan",
         "physical_meter_correction",
@@ -231,25 +531,31 @@ async def test_installation_configuration_is_atomic_multistep_wizard(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "configuration"}
+        result["flow_id"], {"next_step_id": "configuration_basics"}
     )
-    assert result["step_id"] == "configuration"
-    assert result["last_step"] is False
+    assert result["step_id"] == "configuration_basics"
+    assert result["last_step"] is True
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"name": "Back garden"}
     )
-    assert result["step_id"] == "configuration_main_valve"
-    assert result["last_step"] is False
-    assert entry.title == "Garden"
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.title == "Back garden"
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "configuration_main_valve_only"}
+    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"main_valve": "switch.main"}
     )
-    assert result["step_id"] == "configuration_meter"
-    assert result["last_step"] is False
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "configuration_meter_only"}
+    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"meter_type": "pulse"}
     )
-    assert result["step_id"] == "configuration_meter_details"
+    assert result["step_id"] == "configuration_meter_only_details"
     assert result["last_step"] is True
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -336,16 +642,11 @@ async def test_meter_cannot_be_removed_from_volume_controlled_installation(
     )
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "configuration"}
+        result["flow_id"], {"next_step_id": "configuration_meter_only"}
     )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"name": "Garden"}
-    )
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"meter_type": "none"}
     )
-    assert result["last_step"] is False
     assert result["errors"] == {"base": "meter_required_by_volume_zones"}
 
 
@@ -384,6 +685,9 @@ async def test_zone_reconfigure_preserves_calibration_and_removes_only_invalid_v
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {"name": "Lawn", "zone_valve": "switch.lawn", "control_type": "time"},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"base_target": {"hours": 0, "minutes": 10, "seconds": 0}}
     )
     result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.ABORT
@@ -445,6 +749,25 @@ async def test_calibrated_flow_allows_volume_target_to_fit_by_expected_duration(
             "control_type": "volume",
             "volume_max_runtime": {"hours": 1, "minutes": 0, "seconds": 0},
         },
+    )
+    assert result["type"] is FlowResultType.ABORT
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_baseline"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"base_target": 50}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_schedule"}
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
@@ -615,7 +938,10 @@ async def test_init_menu_tracks_release_and_safety_state(hass: HomeAssistant) ->
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["menu_options"] == [
-        "configuration",
+        "configuration_basics",
+        "configuration_main_valve_only",
+        "configuration_meter_only",
+        "extensions",
         "releases",
         "replan",
         "reset_safety",

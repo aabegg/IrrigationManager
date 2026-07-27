@@ -1,6 +1,6 @@
 # Neukonzept
 
-Status: Einzige verbindliche Konzept- und Implementierungsquelle; weitere Erweiterungsmodule bleiben offen
+Status: Einzige verbindliche Konzept- und Implementierungsquelle; nicht in diesem Dokument festgelegte Erweiterungsmodule bleiben offen
 
 Dieses Dokument ist die einzige maßgebliche Quelle für Funktionsumfang, Verhalten, Architekturentscheidungen und Weiterentwicklung des Irrigation Managers. Es ersetzt alle älteren Anforderungen, Roadmaps, ADRs sowie die Dokumente `01` bis `16` vollständig. Diese Unterlagen bleiben ausschließlich als historisches Archiv erhalten und sind fachlich irrelevant; aus ihnen dürfen auch bei fehlendem Widerspruch keine Anforderungen, Standardwerte oder Designentscheidungen übernommen werden.
 
@@ -48,12 +48,16 @@ Der Wizard beginnt mit:
 1. **Basisinformationen:** Erfassung der Bezeichnung der Bewässerungsanlage.
 2. **Hauptventil:** Erklärung des optionalen Hauptventils und optionale Auswahl seiner Home-Assistant-Entity.
 3. **Wassermessung:** Erklärung der optionalen Wassermessung und Auswahl der Messart sowie ihrer Home-Assistant-Entity.
+4. **Optionale Erweiterungen:** Kompakte Auswahl der verfügbaren Erweiterungsmodule. Die Detailkonfiguration erfolgt nur für ausgewählte Module im jeweils fachlich passenden Anlagen- oder Zonenschritt.
+5. **Erste Bewässerungszone:** Erfassung der ersten Zone anhand des dynamisch aus den gewählten Modulen aufgebauten Zonen-Wizards.
 
 Der Hauptventil-Schritt beginnt mit einem kurzen Text, der fragt, ob die Anlage ein Hauptventil besitzt, und dessen Verwendung erklärt. Darunter befindet sich ein optionales Entity-Auswahlfeld. Ein leeres Auswahlfeld bedeutet, dass die Anlage kein Hauptventil verwendet; ein zusätzliches Ja-/Nein-Feld ist nicht erforderlich.
 
 Der Wassermessungs-Schritt bietet die Auswahl `Keine Wassermessung`, `Kumulativer Volumenzähler` und `Impulszähler`. Abhängig von der Messart werden nur die dazugehörenden Felder angezeigt. Beim Impulszähler weist ein Erklärungstext darauf hin, dass spätere Ablesungen des physischen Wasserzählers für eine Langzeitkalibrierung und einen verbesserten Umrechnungsfaktor verwendet werden können.
 
 Spätere Einstellungen des Hauptventil-Moduls werden im selben Schritt ergänzt. Dazu können bei Bedarf eine Öffnungs- und eine Schliesswartezeit gehören, ohne die Basisinformationen oder andere Module mit technischen Details zu überladen.
+
+Der Schritt `Optionale Erweiterungen` zeigt für jedes verfügbare Modul eine eigene Checkbox und einen kurzen Erklärungstext. Er enthält keine umfangreiche Detailkonfiguration. Ein Modul wird in diesem Schritt erst auswählbar, wenn seine jeweilige Ausbaustufe vollständig nutzbar ist. Dadurch zeigt der Wizard keine wirkungslosen oder nur teilweise implementierten Fähigkeiten an.
 
 Nach der Ersteinrichtung sind die einzelnen Konfigurationsbereiche direkt über die Anlageneinstellungen erreichbar. Eine Änderung des Hauptventils soll nicht das erneute Durchlaufen des gesamten Einrichtungs-Wizards erfordern.
 
@@ -192,15 +196,15 @@ Bei aktiver Wassermessung erhält die Zonenkonfiguration die Auswahl:
 
 Die gewählte Steuerungsart gilt für die automatische Bewässerung der gesamten Zone und wird nicht pro Wochentag gewechselt. Dadurch behält der Wochenplan seine einfache Struktur.
 
-Bei Zeitsteuerung enthält eine konfigurierte Tageszeile:
+Bei Zeitsteuerung besitzt die Zone eine gemeinsame Basisdauer. Eine konfigurierte Tageszeile enthält:
 
 - ein Bewässerungsfenster
-- eine Bewässerungsdauer
+- optional eine ausdrücklich abweichende Bewässerungsdauer
 
-Bei Mengensteuerung enthält eine konfigurierte Tageszeile:
+Bei Mengensteuerung besitzt die Zone eine gemeinsame Basiswassermenge. Eine konfigurierte Tageszeile enthält:
 
 - ein Bewässerungsfenster
-- eine Zielwassermenge
+- optional eine ausdrücklich abweichende Zielwassermenge
 
 Eine mengengesteuerte Zone benötigt zusätzlich eine maximale Laufzeit als harte Sicherheitsgrenze. Ohne gültige Messung startet kein mengengesteuerter Auftrag. Fällt die Messung während des Vorgangs aus oder wird die maximale Laufzeit vor der Zielmenge erreicht, wird der Vorgang gestoppt und die gesamte Bewässerungsanlage gesperrt. Tatsächlich gelieferte Wassermenge und eine mögliche Überschreitung durch die Messauflösung werden protokolliert.
 
@@ -254,18 +258,20 @@ Ein direkter Durchflusssensor ist für die Kalibrierung nicht erforderlich. Der 
 
 ## Einfache automatische Bewässerung
 
-Jede Bewässerungszone kann optional einen Wochenplan erhalten. Der Wochenplan besteht in Datenhaltung und Benutzeroberfläche aus genau einer Zeile pro Wochentag.
+Jede Bewässerungszone kann optional einen Wochenplan erhalten. Der Wochenplan besteht in Datenhaltung und Benutzeroberfläche aus genau einer Zeile pro Wochentag. Die Zone besitzt ein gemeinsames Basissoll pro fälligem Termin. Eine Tageszeile kann dieses Basissoll ausdrücklich überschreiben.
 
-Jede Tageszeile enthält optional ein Bewässerungsfenster und genau das zur Steuerungsart der Zone gehörende Bewässerungsziel: eine Bewässerungsdauer bei Zeitsteuerung oder eine Zielwassermenge bei Mengensteuerung.
+Das Basissoll gehört zur Steuerungsart der Zone: Es ist eine Bewässerungsdauer bei Zeitsteuerung oder eine Zielwassermenge bei Mengensteuerung. Jede Tageszeile enthält optional ein Bewässerungsfenster sowie optional ein abweichendes Ziel derselben Steuerungsart.
+
+Eine rein manuell verwendete Zone darf ohne Basissoll gespeichert werden. Sobald mindestens ein automatisches Bewässerungsfenster vorhanden ist, muss die Zone ein bestätigtes positives Basissoll besitzen; ein Tagesziel ersetzt diese Voraussetzung nicht.
 
 Alle durch den Benutzer eingegebenen Dauern und maximalen Laufzeiten werden in der Oberfläche über getrennte Felder für Stunden, Minuten und Sekunden erfasst. Stunden sind nicht auf 24 begrenzt. Die Integration speichert und verarbeitet diese Werte intern weiterhin als Sekunden.
 
 Dabei gelten folgende Regeln:
 
-- Sind beide Angaben leer, erfolgt an diesem Wochentag keine automatische Bewässerung.
-- Sind Bewässerungsfenster und Bewässerungsziel vorhanden, wird für diesen Wochentag genau ein automatischer Bewässerungsauftrag erzeugt.
-- Ist nur eine der beiden Angaben vorhanden, ist die Konfiguration ungültig.
-- Das Bewässerungsziel muss größer als null sein.
+- Ist kein Bewässerungsfenster vorhanden, erfolgt an diesem Wochentag keine automatische Bewässerung.
+- Ist ein Bewässerungsfenster vorhanden, wird für diesen Wochentag genau ein automatischer Bewässerungsauftrag mit dem Basissoll oder dem ausdrücklich abweichenden Tagesziel erzeugt.
+- Ein abweichendes Tagesziel ohne Bewässerungsfenster ist ungültig.
+- Basissoll und abweichende Tagesziele müssen größer als null sein.
 - Der vollständige Bewässerungsvorgang muss innerhalb des Bewässerungsfensters ausgeführt werden können.
 - Ein Bewässerungsfenster darf über Mitternacht reichen und gehört zu dem Wochentag, an dem es beginnt.
 - Bewässerungsfenster benachbarter Wochentage derselben Zone dürfen sich nicht überschneiden.
@@ -407,6 +413,435 @@ Ohne Wasserzähler arbeitet die Anlage zeitgesteuert. Wiederholte Bewässerungen
 
 Laufzeiten können erfasst und ausgewertet werden. Ein tatsächlicher Wasserverbrauch kann ohne eine Messquelle nicht angegeben werden. Wassermessung, Mengensteuerung und Wasserverbrauchsstatistiken gehören deshalb nicht zu den Startvoraussetzungen, sondern bleiben optionale Erweiterungen.
 
+## Gemeinsamer Vertrag der Erweiterungsmodule
+
+Die folgenden vier Erweiterungsmodule werden unabhängig voneinander in den Anlageneinstellungen geführt:
+
+- Pflanzen- und Standortmodell
+- saisonale Korrektur
+- wetterabhängige Bewässerung
+- Teilgaben und Sickerpausen
+
+Jedes vollständig implementierte Modul besitzt genau eine anlagenweite Checkbox. Die Checkbox bestimmt, ob das Modul für die Anlage verfügbar ist. Jede Zone entscheidet zusätzlich, ob sie ein anlagenweit verfügbares Modul tatsächlich verwendet. Deaktivierte oder für eine Zone nicht verwendete Module dürfen den einfachen zeit- oder mengengesteuerten Grundbetrieb nicht voraussetzen oder einschränken.
+
+Für alle vier Module gilt:
+
+- Ein Modul ist standardmässig deaktiviert.
+- Das Deaktivieren löscht weder die Anlagen- noch die Zonenkonfiguration des Moduls.
+- Das erneute Aktivieren stellt die zuvor gespeicherte Konfiguration wieder bereit.
+- Ein bereits aktiver Bewässerungsvorgang behält seinen beim Start festgelegten Berechnungs- und Ausführungssnapshot und wird durch eine Moduländerung weder umgerechnet noch gestoppt.
+- Noch nicht begonnene automatische Bewässerungsaufträge werden nach einer Moduländerung anhand der dann wirksamen Konfiguration atomar neu geplant.
+- Manuelle Bewässerungsaufträge werden nicht nachträglich durch Pflanzen-, Saison- oder Wetterdaten verändert.
+- Ein fehlendes, deaktiviertes oder fehlerhaftes Komfortmodul setzt keine Sicherheitssperre und verhindert keine Bewässerung anhand des verbleibenden Basissolls.
+- Modulfehler und verwendete Rückfallwerte werden sichtbar protokolliert und dürfen nicht stillschweigend verborgen werden.
+
+Die Rückfallwirkung ist festgelegt:
+
+| Deaktiviertes oder nicht verwendetes Modul | Rückfallverhalten |
+|---|---|
+| Pflanzen- und Standortmodell | Es wird keine Empfehlung erzeugt; das bestätigte Basissoll bleibt unverändert. |
+| Saisonale Korrektur | Der wirksame saisonale Faktor ist `1,0`. |
+| Wetterabhängige Bewässerung | Das saisonale Basissoll beziehungsweise ohne Saisonmodul das Basissoll wird verwendet. |
+| Teilgaben und Sickerpausen | Das vollständige Bewässerungsziel wird zusammenhängend ausgeführt. |
+
+Zwischen den Modulen bestehen keine harten Deaktivierungsabhängigkeiten. Eine saisonale Kurve kann manuell ohne Pflanzenmodell gepflegt werden. Das Wettermodul kann ein manuell festgelegtes Basissoll korrigieren. Teilgaben funktionieren unabhängig von Pflanzen- und Wetterdaten.
+
+## Dynamische Konfigurationsführung der Zone
+
+Der Zonen-Wizard bleibt auch mit Erweiterungsmodulen schrittweise und übersichtlich. Schritte eines anlagenweit deaktivierten Moduls werden nicht angezeigt. Umfangreiche oder erklärungsbedürftige Angaben erhalten einen kurzen Hilfetext; selten benötigte Fachwerte werden in einem ausdrücklich optionalen Bereich `Erweiterte Angaben` zusammengefasst.
+
+Der vollständige Zielaufbau des Zonen-Wizards ist:
+
+1. **Basis:** Bezeichnung, Zonenventil, Steuerungsart und bei Mengensteuerung die maximale Laufzeit.
+2. **Pflanzen und Standort:** Optionale Erfassung einer oder mehrerer Teilflächen, wenn das Pflanzen- und Standortmodell anlagenweit verfügbar ist und für die Zone verwendet werden soll.
+3. **Empfehlung und Basissoll:** Anzeige der aus den vorhandenen Daten ableitbaren Empfehlung sowie ausdrückliche Festlegung oder Bestätigung des gemeinsamen Basissolls.
+4. **Modulverwendung:** Kompakte zonenspezifische Auswahl der anlagenweit verfügbaren Saison-, Wetter- und Teilgabenmodule.
+5. **Moduldetails:** Je ein eigener, nur bei Verwendung angezeigter Schritt für saisonale Kurve, Wetterverhalten und Teilgaben.
+6. **Wochenplan:** Bewässerungsfenster pro Wochentag und nur bei Bedarf ein vom gemeinsamen Basissoll abweichendes Tagesziel.
+
+Der erste Basisschritt erklärt kurz, dass Zeit- und Mengensteuerung das Abschaltkriterium des Bewässerungsvorgangs festlegen. Bedarfs- und Mindestbewässerung sind davon getrennte Bewässerungsmodi und bestimmen, ob und in welchem Umfang ein zulässiger Termin tatsächlich genutzt wird.
+
+Nach der Ersteinrichtung sind Basis, Pflanzen und Standort, Basissoll, saisonale Kurve, Wetterverhalten, Teilgaben und Wochenplan einzeln über die Zoneneinstellungen erreichbar. Die Änderung eines Bereichs erfordert nicht das erneute Durchlaufen des gesamten Zonen-Wizards.
+
+## Optionales Pflanzen- und Standortmodell
+
+Das Pflanzen- und Standortmodell dient zunächst der nachvollziehbaren Erfassung und Empfehlung. Es verändert ein bereits bestätigtes Basissoll niemals selbstständig. Ein Vorschlag wird erst durch ausdrückliche Bestätigung in die Zonenkonfiguration übernommen.
+
+### Teilflächen
+
+Eine homogene Zone besitzt genau eine Teilfläche. Bestehen innerhalb derselben hydraulisch nicht separat schaltbaren Zone deutlich unterschiedliche Pflanzenbestände, Flächen oder Ausbringungsraten, können mehrere Teilflächen erfasst werden. Der Wizard erfasst zunächst eine Teilfläche und bietet anschliessend wahlweise `Weitere Teilfläche hinzufügen` oder `Fortfahren` an.
+
+Die grundlegenden Angaben einer Teilfläche sind:
+
+- Bezeichnung
+- bewässerte Fläche
+- Pflanzenprofil
+- Entwicklungszustand, beispielsweise neu angepflanzt oder etabliert
+- Exposition, beispielsweise sonnig, halbschattig oder schattig
+- Bodenprofil
+- Ausbringungsprofil
+
+Erweiterte optionale Angaben sind:
+
+- Hangneigung in Prozent
+- Mulch oder andere Bodenabdeckung als Ja-/Nein-Angabe
+- relative Ausbringungsrate innerhalb der Zone als positiver Faktor
+
+Eine bekannte absolute Ausbringungsrate und fachkundig überschriebene Pflanzen- oder Bodenwerte werden erst in einer späteren Ausbaustufe bearbeitbar. Sie benötigen zuvor festgelegte Einheiten, Wertebereiche und eine nachvollziehbare Abgrenzung von Katalogwerten.
+
+Die Oberfläche erklärt mindestens:
+
+- weshalb die Fläche für eine spätere Umrechnung von Millimeter Wasser in Liter benötigt wird
+- dass alle Teilflächen derselben Zone gleichzeitig bewässert werden
+- dass die Bodenart primär Wasserspeicherung und Versickerung beeinflusst und nicht beliebig als Verdunstungsmultiplikator verwendet wird
+- dass Katalogwerte Empfehlungen und gemessene beziehungsweise kalibrierte Werte vorzuziehen sind
+- dass stark unterschiedliche Teilflächen zu unvermeidbarer Über- oder Unterversorgung führen können
+
+### Pflanzenprofile
+
+Der erste Ausbau verwendet überschaubare, nachvollziehbare Pflanzenkategorien statt einer vermeintlich vollständigen botanischen Artendatenbank. Vorgesehen sind mindestens Rasen, Hecken und Gehölze, Stauden, Gemüse, Kübelpflanzen, Jungpflanzen, Bodendecker und ein benutzerdefiniertes Profil.
+
+Ein Pflanzenprofil kann Vorschlagswerte liefern für:
+
+- relativen Pflanzenfaktor
+- typische Wurzeltiefe
+- tolerierbare Ausschöpfung des pflanzenverfügbaren Bodenwassers
+- Empfindlichkeit gegenüber Trockenstress
+- eine spätere saisonale Monatskurve
+- eine Tendenz zu häufigeren kleinen oder selteneren tieferen Bewässerungsgaben
+
+Jeder Katalogwert benötigt eine dokumentierte Herkunft, eine Version und eine fachlich vertretbare Bandbreite. Benutzerdefinierte Überschreibungen bleiben als solche erkennbar und ersetzen den Katalog nicht global.
+
+Die erste Katalogversion verwendet ausschliesslich die qualitativen Stufen `niedrig`, `mittel` und `hoch`. Sie ordnet Pflanzenkategorien relativen Wasserbedarf und Trockenheitsempfindlichkeit zu. Bodenprofile verwenden dieselben Stufen für Speicherfähigkeit und Versickerung. Ausbringungsprofile verwenden sie für Effizienz und Eignung für Sickerpausen. Die Stufen sind keine numerischen Faktoren und dürfen nicht zur automatischen Berechnung eines absoluten Bewässerungsziels verwendet werden.
+
+Die fachliche Einordnung wird mit öffentlich nachvollziehbaren Quellen zu Pflanzenkoeffizienten, Wurzeltiefen, Bodenwasserspeicherung, Versickerung und Bewässerungseffizienz belegt. Die konkrete Quellenliste und Katalogversion werden gemeinsam mit dem Katalog im Repository geführt. Breite Sammelkategorien wie Stauden oder Gehölze bleiben ausdrücklich grobe Ausgangswerte und weisen auf mögliche Abweichungen einzelner Arten hin.
+
+Die qualitative Katalogversion `1.0.0` stützt ihre grundsätzliche Einordnung auf:
+
+- FAO Irrigation and Drainage Paper 56, `Crop evapotranspiration - Guidelines for computing crop water requirements`: https://www.fao.org/4/x0490e/x0490e00.htm
+- US EPA WaterSense, `Watering Tips`: https://www.epa.gov/watersense/watering-tips
+
+Die FAO-Quelle begründet die Trennung von Referenzverdunstung, Pflanzenfaktor, Entwicklungszustand, Bodenwasser und Bewässerungsplanung. Die EPA-Quelle begründet die qualitative Berücksichtigung von Pflanzenart, Sonne beziehungsweise Schatten, Boden, Ausbringungsart sowie die Eignung von Sickerpausen bei tonreichen oder geneigten Flächen. Die groben Sammelprofile ersetzen keine artspezifische oder lokale Fachberatung.
+
+Katalogversion `1.0.0` verwendet folgende redaktionelle Einordnung. Die Werte sind ordinale Hinweise und keine Messwerte oder Berechnungsfaktoren:
+
+| Pflanzenprofil | relativer Wasserbedarf | Trockenheitsempfindlichkeit | Gabetendenz |
+|---|---|---|---|
+| Rasen | hoch | hoch | klein und häufig |
+| Hecke/Gehölz | mittel | niedrig | tief und selten |
+| Stauden | mittel | mittel | ausgewogen |
+| Gemüse | hoch | hoch | klein und häufig |
+| Kübel | hoch | hoch | klein und häufig |
+| Jungpflanzen | hoch | hoch | klein und häufig |
+| Bodendecker | niedrig | niedrig | tief und selten |
+
+| Bodenprofil | Speicherfähigkeit | Versickerung |
+|---|---|---|
+| sandig | niedrig | hoch |
+| sandiger Lehm | mittel | hoch |
+| lehmig | hoch | mittel |
+| tonreich | hoch | niedrig |
+
+| Ausbringungsprofil | Eignung für Teilgaben |
+|---|---|
+| Tropfschlauch | niedrig |
+| Sprinkler/Regner | hoch |
+| Mikrobewässerung | mittel |
+
+Sonne erhöht und Schatten reduziert den relativen Wasserbedarf um jeweils eine Stufe. Ein neuer Bestand erhöht Wasserbedarf und Trockenheitsempfindlichkeit um eine Stufe; Mulch reduziert den Wasserbedarf um eine Stufe. Alle Verschiebungen bleiben auf die drei Katalogstufen begrenzt. Niedrige Bodenspeicherung verschiebt die Gabetendenz in Richtung kleiner und häufiger, hohe Speicherung in Richtung tiefer und seltener. Jede positive Hangneigung sowie niedrige Versickerung erhöhen die Eignung für Teilgaben um eine Stufe; hohe Versickerung reduziert sie um eine Stufe.
+
+Für mehrere Teilflächen verwendet die Empfehlung jeweils die höchste Stufe für Wasserbedarf, Trockenheitsempfindlichkeit und Teilgabeneignung. Speicherfähigkeit, Versickerung und Gabetendenz werden als gerundete mittlere Ordinalstufe zusammengeführt. Ein Konflikt liegt vor, wenn Wasserbedarf oder Speicherfähigkeit zwischen niedrig und hoch streuen oder wenn angegebene relative Ausbringungsraten voneinander abweichen. Vollständige bekannte Katalogprofile ohne Konflikt ergeben hohe Empfehlungsqualität, Konflikte mittlere und fehlende, unbekannte, benutzerdefinierte oder ungültige Pflichtangaben niedrige Qualität. Diese Regeln erzeugen weiterhin kein absolutes Bewässerungsziel.
+
+### Boden- und Ausbringungsprofile
+
+Der erste Ausbau verwendet mindestens sandige, lehmig-sandige, lehmige, tonige und benutzerdefinierte Bodenprofile. Sie können Vorschlagswerte für pflanzenverfügbaren Wasserspeicher, Versickerung und Eignung für Sickerpausen liefern.
+
+Das Ausbringungsprofil unterscheidet mindestens Tropfschlauch, Sprinkler beziehungsweise Regner, Mikrobewässerung und ein benutzerdefiniertes Profil. Es kann Vorschläge für Ausbringungseffizienz, Niederschlagsrate, Verteilungsqualität und sinnvolle Teilgabengrösse liefern. Ein gemessener oder kalibrierter Wert hat Vorrang vor einem Katalogwert.
+
+### Erste relative Empfehlung
+
+Die erste Ausbaustufe des Pflanzen- und Standortmodells verwendet noch keine Wetterdaten und keine manuell vorgegebene klimatische Referenzverdunstung. Sie darf deshalb keine vermeintlich genaue absolute Wassermenge, Laufzeit oder Anzahl Termine pro Woche behaupten.
+
+Sie zeigt stattdessen:
+
+- relative Pflanzenverdunstung
+- relative Trockenheitsempfindlichkeit
+- erwartete Speicherfähigkeit und Versickerung des Bodens
+- Tendenz zu häufigeren kleinen oder selteneren tieferen Gaben
+- Eignung für Sickerpausen
+- Konflikte zwischen mehreren Teilflächen
+- Vollständigkeit und Qualität der Eingaben
+
+Die Empfehlungsqualität besitzt ebenfalls die drei Stufen `niedrig`, `mittel` und `hoch`. Ein vollständig mit bekannten Katalogprofilen beschriebenes homogenes Gebiet kann `hoch` erreichen. Benutzerdefinierte oder fehlende Profile, stark abweichende Teilflächen sowie nicht zur Ausbringungsart passende Angaben reduzieren die Qualität nachvollziehbar. Die Empfehlung nennt die Gründe ihrer Qualitätsstufe.
+
+Der Benutzer legt das gemeinsame Basissoll weiterhin selbst fest. Die Oberfläche erklärt, dass eine spätere Referenzverdunstung und belastbare Ausbringungs- oder Durchflussdaten für eine absolute Empfehlung benötigt werden.
+
+### Spätere absolute Empfehlung
+
+Sobald eine geeignete Referenzverdunstung verfügbar ist, kann die Pflanzenverdunstung einer Teilfläche aus Referenzverdunstung, Pflanzenfaktor und Standortkorrektur abgeleitet werden. Ein Millimeter benötigtes Wasser auf einem Quadratmeter entspricht einem Liter. Eine Bruttowassermenge berücksichtigt zusätzlich die Ausbringungseffizienz.
+
+Bodenprofil, Wurzeltiefe und tolerierbare Ausschöpfung bestimmen den nutzbaren Speicher und damit eine fachliche Empfehlung für Gabenhöhe und Abstand zwischen zulässigen Terminen. Bei mehreren Teilflächen muss die gleichzeitig erfolgende Wasserverteilung berücksichtigt werden. Die kritischste Teilfläche kann das notwendige Gesamtziel bestimmen; eine dadurch erwartete Überversorgung anderer Teilflächen wird sichtbar ausgewiesen.
+
+Ohne Wasserzähler kann eine Wassermenge nur dann in eine Laufzeit umgerechnet werden, wenn ein belastbarer erwarteter Durchfluss oder eine absolute Ausbringungsrate vorhanden ist. Fehlt dieser Wert, zeigt die Oberfläche den geschätzten Wasserbedarf, erzeugt aber keine vermeintlich genaue Laufzeit.
+
+## Optionale saisonale Korrektur
+
+Die saisonale Korrektur besitzt pro verwendender Zone zwölf Monatsfaktoren. Zwischen den Monatsstützpunkten wird anhand des lokalen Datums täglich linear interpoliert, damit Monatsgrenzen keine sprunghaften Zieländerungen verursachen.
+
+Das saisonale Basissoll wird bestimmt als:
+
+`Basissoll des fälligen Termins × interpolierter Monatsfaktor`
+
+Dabei gelten folgende Regeln:
+
+- Ohne konfigurierten Wert gilt für jeden Monat `1,0`.
+- Das Pflanzenprofil kann eine Monatskurve vorschlagen, übernimmt sie aber niemals automatisch.
+- Eine vorgeschlagene oder geänderte Kurve wird mit einer Zielvorschau angezeigt und erst nach ausdrücklicher Bestätigung gespeichert.
+- Faktor, Ausgangssoll und saisonales Basissoll werden im Berechnungssnapshot jedes automatischen Bewässerungsauftrags festgehalten.
+- Ist das Modul anlagenweit deaktiviert oder für die Zone nicht verwendet, gilt Faktor `1,0`.
+- Passt ein durch die saisonale Korrektur vergrössertes Ziel nicht vollständig in sein Bewässerungsfenster, wird kein stillschweigend verkürzter Auftrag erzeugt. Die Planung weist den Termin als nicht einplanbar aus und nennt die Ursache.
+
+Die saisonale Korrektur kann ohne Pflanzenmodell manuell verwendet werden. Änderungen der Monatskurve lösen eine atomare Neuberechnung noch nicht begonnener automatischer Bewässerungsaufträge aus.
+
+## Optionale wetterabhängige Bewässerung
+
+Das Wettermodul umfasst sowohl die Erfassung geeigneter Wetterquellen der Anlage als auch deren optionale Berücksichtigung pro Zone. Es wird anlagenweit mit einer Checkbox deaktiviert oder aktiviert. Jede Zone besitzt zusätzlich die Auswahl `Wetterdaten für diese Zone berücksichtigen`.
+
+### Einbindung über Home Assistant
+
+Wetterdienste und lokale Wetterstationen werden im ersten Ausbau nicht direkt mit eigenen Anbieterzugängen in den Irrigation Manager integriert. Sie werden zuerst als Home-Assistant-Integration eingerichtet und anschliessend über ihre Entities ausgewählt.
+
+Damit können insbesondere:
+
+- lokale Ecowitt-Sensoren als gewöhnliche Regen-, Solar-, Wind-, Temperatur-, Feuchte- oder Bodenfeuchte-Entities verwendet werden
+- Wetterdienste über standardisierte `weather`-Entities eingebunden werden
+- Prognosen über die Home-Assistant-Schnittstelle für Wettervorhersagen abgerufen werden
+- Anbieter ausgetauscht werden, ohne Pflanzen- oder Planungsmodell anzupassen
+
+Ein direkter Anbieteradapter wird erst erwogen, wenn eine fachlich notwendige Information nachweislich nicht über Home Assistant bereitgestellt werden kann.
+
+### Quellenrollen und Qualität
+
+Die Anlagenkonfiguration ordnet Entities fachlichen Rollen zu. Vorgesehen sind mindestens:
+
+- gemessener Niederschlag
+- aktueller Regen beziehungsweise Regenrate
+- direkte Referenzverdunstung
+- Temperatur
+- Luftfeuchtigkeit oder Taupunkt
+- Wind
+- Solarstrahlung
+- Wetterprognose
+
+Bodenfeuchte gehört fachlich zur betroffenen Zone oder Teilfläche und wird dort optional zugeordnet.
+
+Der erste Ausbau verwendet pro Rolle genau eine primäre Quelle. Mehrere Quellen können später als ausdrücklich priorisierte Fallback-Liste ergänzt werden. Prognosen verschiedener Anbieter werden nicht ungeprüft gemittelt.
+
+Jeder verwendete Wetterwert besitzt mindestens:
+
+- normalisierte Einheit
+- Mess- oder Prognosezeitpunkt
+- Herkunft
+- Aktualität
+- Qualitätsstatus
+- gegebenenfalls den Grund seiner Ablehnung
+
+Die Oberfläche unterscheidet mindestens `verfügbar`, `veraltet`, `nicht verfügbar`, `unplausibel`, `unvollständig` und `Ersatzwert verwendet`.
+
+Für die Referenzverdunstung gilt folgende fachliche Priorität:
+
+1. Ein geeigneter direkter Referenzverdunstungssensor wird verwendet.
+2. Bei vollständig verfügbaren lokalen Messgrössen kann die Referenzverdunstung nach einem dokumentierten fachlichen Modell berechnet werden.
+3. Eine vereinfachte Berechnung darf nur mit sichtbar geringerer Qualität verwendet werden.
+4. Ist keine belastbare Bestimmung möglich, wird die Wetterkorrektur ausfallsicher ignoriert und das saisonale Basissoll verwendet.
+
+Die konkrete Berechnungsmethode, erforderliche Messgrössen, Aktualitätsgrenzen und Plausibilitätsbereiche werden vor der entsprechenden Implementierungsstufe in diesem Dokument festgelegt. Sie dürfen nicht aus historischen Dokumenten oder bestehendem Altcode übernommen werden.
+
+### Wasserbilanz
+
+Eine wetterabhängig bewässerte Zone führt eine nachvollziehbare Wasserbilanz. Sie wird grundsätzlich fortgeschrieben als:
+
+`bisheriges Wasserdefizit + Pflanzenverdunstung - wirksamer Niederschlag - wirksame Bewässerung`
+
+Die Wasserbilanz speichert tägliche Beiträge, verwendete Quellen, Qualität und Korrekturen. Sie speichert nicht unbegrenzt sämtliche rohen Sensormeldungen. Negative oder unplausible Beiträge werden nicht stillschweigend akzeptiert.
+
+Gemessener Niederschlag und tatsächlich zugeordnete Bewässerung sind gegenüber Prognosen vorrangig. Eine Prognose verändert den abgeschlossenen historischen Wasserhaushalt nicht, sondern beeinflusst ausschliesslich noch nicht begonnene automatische Bewässerungsaufträge.
+
+### Bewässerungsmodi
+
+Die wetterabhängige Planung ergänzt die von der Steuerungsart unabhängige Auswahl:
+
+- **Bedarfsbewässerung:** Ein fälliger Wochenplantermin ist eine zulässige Gelegenheit. Liegt kein ausreichender Wasserbedarf vor, wird er mit protokolliertem Grund übersprungen. Liegt Bedarf vor, wird das Ziel anhand der Wasserbilanz bis zu den festgelegten Grenzen bestimmt.
+- **Mindestbewässerung:** Ein fälliger Termin garantiert mindestens das konfigurierte Mindestziel. Wetter und Wasserbilanz können ein grösseres Ziel begründen, reduzieren es aber nicht unter das Mindestziel.
+
+Zeit- und Mengensteuerung bleiben das jeweilige Abschaltkriterium. Beide Bewässerungsmodi können mit beiden Steuerungsarten kombiniert werden, sofern eine Mengensteuerung durch die Wassermessung der Anlage verfügbar ist.
+
+Bei deaktiviertem Wettermodul, nicht optierter Zone, fehlenden Quellen oder einer nicht belastbaren Wetterberechnung wird das saisonale Basissoll verwendet. Die letzte erfolgreiche Wetterkorrektur darf nicht als eingefrorener Faktor weiterwirken.
+
+### Wetterbedingte Aufschiebung und Nachholen
+
+Eine Regenprognose löscht einen fälligen Bewässerungsauftrag nicht sofort endgültig. Ist ausreichend Regen angekündigt, wird der Auftrag wetterbedingt aufgeschoben und bis zu einer konfigurierten Nachholfrist wiederholt neu bewertet.
+
+Die Zonenkonfiguration enthält dafür:
+
+- Prognosen berücksichtigen
+- maximale Nachholfrist
+- Nachholfenster an den Folgetagen
+- Mindestprognosemenge für eine Aufschiebung
+- Mindestwahrscheinlichkeit für eine Aufschiebung
+- maximale nachzuholende Zielmenge beziehungsweise Laufzeit
+
+Die Standardwerte und zulässigen Bereiche dieser Angaben werden vor der Implementierung der Prognosestufe in diesem Dokument festgelegt.
+
+Für eine freitags zwischen `05:00` und `08:00` geplante Heckenbewässerung mit zwei Tagen Nachholfrist gilt beispielhaft:
+
+1. Am Freitag wird ausreichend Regen prognostiziert und der Auftrag wird als `wetterbedingt aufgeschoben` erhalten.
+2. Tatsächlich gemessener Regen wird der Wasserbilanz gutgeschrieben.
+3. Bleibt der Regen aus, wird der Bedarf im konfigurierten Nachholfenster am Samstag erneut geprüft.
+4. Besteht weiterhin Bedarf, wird am Samstag bewässert.
+5. Fällt genügend Regen, wird der Auftrag mit nachvollziehbarem Abschlussgrund ohne Bewässerung abgeschlossen.
+6. Eine neue Prognose darf die Bewässerung nicht unbegrenzt über die Nachholfrist hinaus verschieben.
+
+Wird das Wettermodul während einer wetterbedingten Aufschiebung deaktiviert, bleibt der Auftrag erhalten und wird im nächsten zulässigen Nachholfenster anhand des saisonalen Basissolls neu eingeplant. Eine Aufschiebung ist persistenter Zustand und muss einen Neustart überstehen.
+
+### Bodenfeuchterückmeldung
+
+Ein Bodenfeuchtesensor ist eine spätere optionale Eingabe des Wettermoduls pro Zone oder Teilfläche. Seine Verwendung besitzt eine eigene zonenspezifische Checkbox und kann unabhängig von anderen Wetterquellen beendet werden. Ein einzelner Sensorwert ersetzt die Wasserbilanz nicht ungeprüft, sondern dient nach festgelegter Kalibrierung und Plausibilisierung als Rückmeldung oder Korrektur.
+
+Die Sensortypen, Kalibrierung, räumliche Zuordnung, Schwellwerte und Ausfallstrategie werden vor dieser Implementierungsstufe in diesem Dokument festgelegt.
+
+## Optionales Modul für Teilgaben und Sickerpausen
+
+Teilgaben und Sickerpausen sind insbesondere sinnvoll, wenn die Ausbringungsrate die Versickerungsfähigkeit des Bodens übersteigt, beispielsweise bei Regnern auf schwerem oder geneigtem Boden. Bei langsam ausbringenden Tropfschläuchen können sie unnötig sein. Pflanzen-, Boden- und Ausbringungsprofile dürfen eine Empfehlung erzeugen, aktivieren das Modul aber niemals automatisch.
+
+Eine verwendende Zone konfiguriert mindestens:
+
+- maximale Dauer oder Wassermenge einer Teilgabe passend zur Steuerungsart
+- minimale Dauer der Sickerpause
+- maximale Anzahl Teilgaben
+- maximale Gesamtlebensdauer des Bewässerungsvorgangs einschliesslich Sickerpausen
+
+Der Bewässerungsvorgang bleibt die gemeinsame fachliche Klammer aller Teilgaben. Ziel, Ergebnis, tatsächlich gelieferte Wassermenge und tatsächliche Laufzeit werden über alle Teilgaben gemeinsam geführt.
+
+Für die Ausführung gelten:
+
+- Während einer Sickerpause bleibt das Restziel erhalten.
+- Zonen- und Hauptventil werden während der Sickerpause geschlossen.
+- Andere Zonen derselben Anlage dürfen während der Sickerpause bewässert werden.
+- Teilgaben werden nicht als voneinander unabhängige Bewässerungsaufträge dargestellt.
+- Not-Aus, Anlagen- oder Zonendeaktivierung und ausdrücklicher Abbruch beenden den gesamten Bewässerungsvorgang kontrolliert.
+- Ein Neustart stellt offene Teilgaben, Restziel und laufende Sickerpause aus dem persistenten Zustand wieder her, ohne ein Ventil ungeprüft geöffnet zu lassen.
+- Die harte maximale Lieferlaufzeit einer Mengensteuerung begrenzt die aufsummierte Ventilöffnungszeit und schliesst bewässerungsfreie Sickerpausen nicht ein.
+- Die maximale Gesamtlebensdauer begrenzt den gesamten Vorgang einschliesslich Sickerpausen.
+- Der vollständige Vorgang muss einschliesslich Teilgaben und Sickerpausen innerhalb seines zulässigen Ausführungszeitraums liegen.
+
+Sickerpausen werden nicht als blockierendes Warten innerhalb des vorhandenen Ventil-Executors umgesetzt. Die Ausführungssteuerung benötigt einen persistenten übergeordneten Bewässerungsvorgang mit einzeln disponierbaren Teilgaben, damit andere Zonen während der Pause weiterarbeiten können.
+
+## Berechnungs- und Planungsschnittstelle
+
+Pflanzenmodell, saisonale Korrektur und Wettermodul bestimmen das Ziel eines noch nicht begonnenen automatischen Bewässerungsauftrags über eine gemeinsame fachliche Zielauflösung. Diese kann genau eines der Ergebnisse liefern:
+
+- ausführen mit einem festgelegten Zeit- oder Mengenziel
+- mit nachvollziehbarem Grund überspringen
+- bis zu einem festgelegten Zeitpunkt und einer festen Nachholfrist aufschieben
+
+Jeder erzeugte automatische Bewässerungsauftrag besitzt einen unveränderlichen Berechnungssnapshot. Dieser enthält, soweit verfügbar:
+
+- Basissoll oder abweichendes Tagesziel
+- saisonalen Faktor und saisonales Basissoll
+- verwendete Wetterquellen und deren Zeitstempel
+- Referenz- und Pflanzenverdunstung
+- wirksamen Niederschlag
+- vorheriges und resultierendes Wasserdefizit
+- endgültiges Bewässerungsziel
+- verwendete Rückfallstrategie
+- Qualitätsstufe und Warnungen
+
+Die Zielauflösung wird vor der Queue- und Fenstereinteilung durchgeführt. Die anschliessende Bewässerungsplanung prüft, ob das aufgelöste Ziel beziehungsweise alle Teilgaben vollständig in den zulässigen Zeitraum passen. Aktive Bewässerungsvorgänge werden von einer Neuberechnung niemals verändert.
+
+## Stufenweise Umsetzung der Erweiterungsmodule
+
+Jede Ausbaustufe muss für sich vollständig nutzbar, migrierbar, testbar und deaktivierbar sein. Ein Modulschalter wird im regulären Wizard erst auswählbar, wenn die zugehörige Stufe den beschriebenen Grundvertrag erfüllt.
+
+### Stufe 1: Modulgrundlage, Profile und relatives Basissoll
+
+- gemeinsamen Modul- und Deaktivierungsvertrag in Konfiguration und Planung abbilden
+- Anlagenwizard um den kompakten Schritt `Optionale Erweiterungen` ergänzen
+- Anlagen- und Zoneneinstellungen in direkt erreichbare Fachbereiche aufteilen
+- gemeinsames Basissoll pro Zone und optionale Tagesabweichungen einführen
+- bestehende Tagesziele verhaltensgleich migrieren, indem sie als ausdrückliche Tagesabweichungen erhalten bleiben
+- Pflanzen-, Boden-, Standort- und Ausbringungsprofile erfassen
+- eine oder mehrere Teilflächen pro Zone unterstützen
+- relative Empfehlungen mit Qualitätsangabe und Hilfetexten anzeigen
+- keine automatische Änderung des Basissolls und keine absolute Empfehlung ohne klimatische Grundlage vornehmen
+
+Für die Migration bestehender Version-2-Zonen wird das erste vorhandene positive Tagesziel in Wochentagsreihenfolge als gemeinsames Basissoll übernommen. Sämtliche bisherigen Tagesziele bleiben unabhängig von Gleichheit oder Wiederholung als ausdrückliche Tagesabweichungen erhalten, sodass sich kein bestehender Auftrag ändert. Besitzt eine bestehende Zone kein einziges Tagesziel, bleibt ihr Basissoll zunächst leer; sie kann weiterhin manuell verwendet werden und benötigt erst vor dem Speichern eines neuen automatischen Bewässerungsfensters ein positives Basissoll. Die Migration erfindet für eine leere Zone keinen Wert und setzt allein deshalb keine Sicherheitssperre.
+
+### Stufe 2: Saisonale Korrektur
+
+- zwölf Monatsfaktoren und tägliche lineare Interpolation implementieren
+- manuelle Kurve unabhängig vom Pflanzenmodell erlauben
+- Vorschlagskurven aus Pflanzenprofilen nur nach Bestätigung übernehmen
+- Zielvorschau, Berechnungssnapshot und atomare Neuplanung ergänzen
+- deaktivierte Saisonkorrektur nachweislich als Faktor `1,0` behandeln
+
+### Stufe 3: Wetterquellen und Diagnose
+
+- Home-Assistant-Sensoren und `weather`-Entities nach Quellenrollen auswählen
+- Einheiten, Aktualität, Plausibilität und Qualitätsstatus normalisieren
+- Quellenzustand und verwendete Fallbacks in Einstellungen und Diagnose anzeigen
+- den anlagenweiten Laufzeit-Modulschalter und die zonenspezifische Wetterverwendung bis zur vollständigen Wasserbilanz der Stufe 4 noch nicht freigeben
+- noch keine automatische Zielkorrektur aktivieren, bevor Wasserbilanz und Ausfallregeln vollständig implementiert sind
+
+### Stufe 4: Gemessener Niederschlag und Wasserbilanz
+
+- tägliche Wasserbilanz pro optierter Zone persistent führen
+- gemessenen Niederschlag und zugeordnete Bewässerung verrechnen
+- Bedarfs- und Mindestbewässerung ohne prognosebedingte Aufschiebung einführen
+- Wetterausfall auf das saisonale Basissoll zurückfallen lassen
+- alle Berechnungsgrundlagen im Auftragssnapshot protokollieren
+
+### Stufe 5: Prognosen und Nachholstrategie
+
+- Wetterprognosen über die Home-Assistant-Wetterschnittstelle beziehen
+- Aufschieben, erneute Bewertung und Abschluss innerhalb einer Nachholfrist implementieren
+- separate Nachholfenster berücksichtigen
+- wetterbedingt aufgeschobene Aufträge persistent und neustartsicher führen
+- das Freitag-Regen-Samstag-Nachholen-Szenario vollständig abdecken
+
+### Stufe 6: Bodenfeuchterückmeldung
+
+- optionale Sensorzuordnung pro Zone oder Teilfläche einführen
+- Kalibrierung, Aktualität und Plausibilität festlegen
+- Bodenfeuchte nur als nachvollziehbare Rückmeldung oder Korrektur der Wasserbilanz verwenden
+- ein unabhängiges Deaktivieren der Bodenfeuchterückmeldung ohne Verlust der Sensorkonfiguration ermöglichen
+
+### Stufe 7: Teilgaben und Sickerpausen
+
+- persistenten Bewässerungsvorgang mit disponierbaren Teilgaben modellieren
+- andere Zonen während Sickerpausen ausführen
+- Restziel, Gesamtmessung, Abbruch und Wiederanlauf über mehrere Teilgaben sicherstellen
+- Planungsprüfung um Pausen und maximale Gesamtlebensdauer erweitern
+- Cards und Verlauf um aktuellen Teilgaben- beziehungsweise Sickerzustand ergänzen
+
+## Übergreifende Abnahmekriterien der Erweiterungen
+
+Jede Ausbaustufe prüft mindestens:
+
+- Aktivieren und Deaktivieren ohne Verlust der Modulkonfiguration
+- unveränderten Grundbetrieb bei deaktiviertem Modul
+- unveränderte aktive Bewässerungsvorgänge bei Moduländerungen
+- atomare Neuberechnung ausschliesslich noch nicht begonnener automatischer Bewässerungsaufträge
+- unveränderte manuelle Bewässerungsaufträge
+- verständliche Hilfetexte und Ausblendung nicht benötigter Wizard-Schritte
+- stabile Einheiten und Ablehnung ungültiger oder nicht endlicher Werte
+- nachvollziehbare Qualität, Quellen und Rückfallstrategie
+- verhaltensgleiche Migration vorhandener Anlagen und Wochenpläne
+- Neustartverhalten aller persistenten Zwischenzustände
+- Einhaltung von Betriebsfreigabe, Automatikfreigabe, Sicherheitssperre und Not-Aus
+
+Für die Wetterstufen kommen mindestens Tests für veraltete, fehlende und unplausible Quellen, Wetterausfall während einer Aufschiebung, lokale Tagesgrenzen und das Nachholen nach ausgebliebenem Regen hinzu. Für Teilgaben kommen mindestens Konkurrenz mit anderen Zonen, Neustart während einer Sickerpause, kumulierte Mengen- und Laufzeitgrenzen sowie Abbruch in jeder Phase hinzu.
+
 ## Noch nicht festgelegt
 
-Alle weiteren Eigenschaften der Bewässerungsanlage und der Bewässerungszone sowie zusätzliche Module werden in den folgenden Schritten festgelegt.
+Offen bleiben alle Eigenschaften der Bewässerungsanlage und Bewässerungszone, die in diesem Dokument nicht ausdrücklich geregelt sind. Für spätere Erweiterungsstufen sind insbesondere numerische Katalogwerte und Wertebereiche, Aktualitätsgrenzen, Prognoseschwellen, Standard-Nachholfristen, Bodenfeuchte-Kalibrierung und die genaue vereinfachte Referenzverdunstungsberechnung vor ihrer jeweiligen Implementierungsstufe noch verbindlich festzulegen.
