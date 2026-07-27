@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-rc12 - 2026-07-27
+
+### Changed
+
+- Move installation operation and automatic-irrigation controls into a dedicated
+  `Status and control` settings dialog with safety-lock-aware status text.
+- Remove emergency stop from the installation settings while retaining it in the
+  installation card and service API.
+
 ## 0.1.0-rc11 - 2026-07-27
 
 ### Added

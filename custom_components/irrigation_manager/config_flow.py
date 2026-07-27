@@ -70,6 +70,13 @@ def _localized_enabled(language: str, enabled: bool) -> str:
     return "Enabled" if enabled else "Disabled"
 
 
+def _localized_installation_status(language: str, enabled: bool, locked: bool) -> str:
+    """Give the safety lock precedence over the operation release."""
+    if locked:
+        return "Sicherheitssperre" if language == "de" else "Safety lock"
+    return _localized_enabled(language, enabled)
+
+
 def _owned_endpoints(
     installation: Mapping[str, object], zones: Sequence[Mapping[str, object]]
 ) -> set[str]:
@@ -964,6 +971,22 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         """Expose configuration and actions appropriate to the current state."""
         manager = self._manager()
         snapshot = manager.snapshot() if manager is not None else None
+        locked = (
+            snapshot is not None and getattr(snapshot, "installation_safety_lock", None) is not None
+        )
+        options = ["configuration", "releases", "replan"]
+        if locked:
+            options.append("reset_safety")
+        if self.config_entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
+            options.append("physical_meter_correction")
+        return self.async_show_menu(step_id="init", menu_options=options)
+
+    async def async_step_releases(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Expose installation operation and automatic irrigation controls."""
+        manager = self._manager()
+        snapshot = manager.snapshot() if manager is not None else None
         operation_enabled = (
             snapshot.operation_enabled
             if snapshot is not None
@@ -977,7 +1000,7 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         locked = (
             snapshot is not None and getattr(snapshot, "installation_safety_lock", None) is not None
         )
-        options = ["configuration"]
+        options: list[str] = []
         if operation_enabled:
             options.append("deactivate_installation")
         else:
@@ -986,17 +1009,14 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             options.append("disable_automatic")
         else:
             options.append("enable_automatic")
-        options.extend(["replan", "reset_safety" if locked else "emergency_stop"])
-        if self.config_entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
-            options.append("physical_meter_correction")
         return self.async_show_menu(
-            step_id="init",
+            step_id="releases",
             menu_options=options,
             description_placeholders={
                 "installation_status": (
-                    self._localized_status("safety_lock")
-                    if locked
-                    else _localized_enabled(self.hass.config.language, operation_enabled)
+                    _localized_installation_status(
+                        self.hass.config.language, operation_enabled, locked
+                    )
                 ),
                 "automatic_status": _localized_enabled(
                     self.hass.config.language, automation_enabled
@@ -1119,39 +1139,6 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             for zone in self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
         )
 
-    def _localized_status(self, status: str) -> str:
-        """Return a compact localized status for menu placeholders."""
-        translations = {
-            "de": {
-                "idle": "Bereit",
-                "watering": "Bewässerung läuft",
-                "error": "Fehler",
-                "safety_lock": "Sicherheitssperre",
-                "emergency_stop": "Not-Aus",
-                "disabled": "Anlage deaktiviert",
-                "automatic_disabled": "Automatikfreigabe entzogen",
-                "needs_reconfiguration": "Neukonfiguration erforderlich",
-                "automatic_enabled": "erteilt",
-                "automatic_not_enabled": "entzogen",
-                "unavailable": "nicht verfügbar",
-            },
-            "en": {
-                "idle": "Ready",
-                "watering": "Irrigation active",
-                "error": "Error",
-                "safety_lock": "Safety lock",
-                "emergency_stop": "Emergency stop",
-                "disabled": "Installation deactivated",
-                "automatic_disabled": "Automatic irrigation disabled",
-                "needs_reconfiguration": "Reconfiguration required",
-                "automatic_enabled": "enabled",
-                "automatic_not_enabled": "Automatic irrigation disabled",
-                "unavailable": "unavailable",
-            },
-        }
-        language = "de" if self.hass.config.language == "de" else "en"
-        return translations[language].get(status, status.replace("_", " "))
-
     def _localized_result(self, key: str, **values: object) -> str:
         """Render a localized human action result without exposing technical data."""
         messages = {
@@ -1170,7 +1157,6 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                     "Die automatische Bewässerung wurde deaktiviert und der aktive automatische "
                     "Bewässerungsvorgang gestoppt."
                 ),
-                "emergency": "Not-Aus wurde ausgelöst. Die Anlage ist jetzt sicherheitsgesperrt.",
                 "reset": "Die Sicherheitssperre wurde nach bestätigter Prüfung zurückgesetzt.",
                 "replan": (
                     "Bewässerungsplanung neu berechnet: {created} erstellt, "
@@ -1189,7 +1175,6 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                     "Automatic irrigation was disabled and the active automatic execution was "
                     "stopped."
                 ),
-                "emergency": "Emergency stop was activated. The installation is now safety locked.",
                 "reset": "The safety lock was reset after the inspection was confirmed.",
                 "replan": (
                     "Replanning completed: {created} created, {replaced} replaced, "
@@ -1264,16 +1249,6 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         await manager.async_set_installation_automation(enabled=False, stop_active=stop_active)
         result_key = "automatic_disabled_stopped" if stop_active else "automatic_disabled"
         return await self._show_action_result(self._localized_result(result_key))
-
-    async def async_step_emergency_stop(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Execute the emergency stop immediately."""
-        manager = self._manager()
-        if manager is None:
-            return self.async_abort(reason="installation_not_loaded")
-        await manager.async_emergency_stop()
-        return await self._show_action_result(self._localized_result("emergency"))
 
     async def async_step_reset_safety(
         self, user_input: dict[str, Any] | None = None

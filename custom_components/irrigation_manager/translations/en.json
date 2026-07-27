@@ -58,7 +58,8 @@
   },
   "options": {
     "step": {
-      "init": {"title": "Irrigation Manager settings", "description": "Installation status: {installation_status}\nAutomatic irrigation: {automatic_status}", "menu_options": {"configuration": "Configure installation", "activate_installation": "Activate installation", "deactivate_installation": "Deactivate installation", "enable_automatic": "Enable automatic irrigation", "disable_automatic": "Disable automatic irrigation", "replan": "Replan automatic irrigation", "emergency_stop": "Emergency stop", "reset_safety": "Reset safety lock", "physical_meter_correction": "Correct physical meter"}},
+      "init": {"title": "Irrigation Manager settings", "menu_options": {"configuration": "Configure installation", "releases": "Status and control", "replan": "Replan automatic irrigation", "reset_safety": "Reset safety lock", "physical_meter_correction": "Correct physical meter"}},
+      "releases": {"title": "Status and control", "description": "Installation status: {installation_status}\nAutomatic irrigation: {automatic_status}", "menu_options": {"activate_installation": "Activate installation", "deactivate_installation": "Deactivate installation", "enable_automatic": "Enable automatic irrigation", "disable_automatic": "Disable automatic irrigation"}},
       "configuration": {"title": "Configure installation", "description": "Review the irrigation installation name. All changes are saved together only after the final step.", "data": {"name": "Name"}},
       "configuration_main_valve": {"title": "Optional main valve", "description": "Select the installation's shared main valve. Leave this empty when only individual zone valves are switched.", "data": {"main_valve": "Main valve"}},
       "configuration_meter": {"title": "Water measurement", "description": "Choose no water measurement, a cumulative volume sensor, or a pulse meter.", "data": {"meter_type": "Measurement type"}},

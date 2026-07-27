@@ -34,10 +34,16 @@ def _snapshot(**overrides: object) -> SimpleNamespace:
         "operation_enabled": True,
         "automation_enabled": True,
         "installation_safety_lock": None,
-        "status": "idle",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+async def _open_installation_releases(hass: HomeAssistant, entry: MockConfigEntry):
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
 
 
 async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
@@ -202,17 +208,21 @@ async def test_installation_configuration_is_atomic_multistep_wizard(
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["menu_options"] == [
         "configuration",
-        "deactivate_installation",
-        "disable_automatic",
+        "releases",
         "replan",
-        "emergency_stop",
         "physical_meter_correction",
     ]
+    assert result["description_placeholders"] is None
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
+    assert result["menu_options"] == ["deactivate_installation", "disable_automatic"]
     assert set(result["description_placeholders"]) == {
         "installation_status",
         "automatic_status",
     }
 
+    result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "configuration"}
     )
@@ -267,8 +277,14 @@ async def test_configuration_is_prominent_during_required_reconfiguration(
     )
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["menu_options"][0] == "configuration"
-    assert "activate_installation" in result["menu_options"]
-    assert "enable_automatic" in result["menu_options"]
+    assert "releases" in result["menu_options"]
+    assert "activate_installation" not in result["menu_options"]
+    assert "enable_automatic" not in result["menu_options"]
+    releases = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
+    assert releases["menu_options"] == ["activate_installation", "enable_automatic"]
+    result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "configuration"}
     )
@@ -284,8 +300,10 @@ async def test_configuration_is_prominent_during_required_reconfiguration(
     assert "needs_reconfiguration" not in entry.data
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert "activate_installation" in result["menu_options"]
-    assert "enable_automatic" in result["menu_options"]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
+    assert result["menu_options"] == ["activate_installation", "enable_automatic"]
 
 
 async def test_meter_cannot_be_removed_from_volume_controlled_installation(
@@ -436,7 +454,7 @@ async def test_installation_actions_and_physical_meter_correction_use_manager(
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_installation_releases(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "disable_automatic"}
     )
@@ -472,7 +490,6 @@ async def test_init_menu_tracks_release_and_safety_state(hass: HomeAssistant) ->
         operation_enabled=False,
         automation_enabled=False,
         installation_safety_lock="Leak detected",
-        status="safety_lock",
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
 
@@ -480,18 +497,22 @@ async def test_init_menu_tracks_release_and_safety_state(hass: HomeAssistant) ->
 
     assert result["menu_options"] == [
         "configuration",
-        "activate_installation",
-        "enable_automatic",
+        "releases",
         "replan",
         "reset_safety",
     ]
+    assert result["description_placeholders"] is None
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
+    assert result["menu_options"] == ["activate_installation", "enable_automatic"]
     assert result["description_placeholders"] == {
         "installation_status": "Safety lock",
         "automatic_status": "Disabled",
     }
 
 
-async def test_replan_and_safety_actions_return_localized_summaries(
+async def test_replan_returns_localized_summary_without_emergency_stop_setting(
     hass: HomeAssistant,
 ) -> None:
     """Summarize action outcomes without JSON or internal response keys."""
@@ -501,10 +522,10 @@ async def test_replan_and_safety_actions_return_localized_summaries(
     manager.async_plan_automatic = AsyncMock(
         return_value={"created": 3, "replaced": 2, "removed": 1, "horizon_days": 14}
     )
-    manager.async_emergency_stop = AsyncMock()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert "emergency_stop" not in result["menu_options"]
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "replan"}
     )
@@ -512,13 +533,6 @@ async def test_replan_and_safety_actions_return_localized_summaries(
         "Replanning completed: 3 created, 2 replaced, 1 removed."
     )
     manager.async_plan_automatic.assert_awaited_once_with()
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "emergency_stop"}
-    )
-    assert "safety locked" in result["description_placeholders"]["result"]
-    manager.async_emergency_stop.assert_awaited_once_with()
 
 
 async def test_activation_and_lock_reset_call_only_the_selected_manager_action(
@@ -533,14 +547,14 @@ async def test_activation_and_lock_reset_call_only_the_selected_manager_action(
     manager.async_reset_safety_lock = AsyncMock()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_installation_releases(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "activate_installation"}
     )
     manager.async_set_installation_operation.assert_awaited_once_with(enabled=True)
     manager.async_set_installation_automation.assert_not_awaited()
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_installation_releases(hass, entry)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "enable_automatic"}
     )
@@ -582,7 +596,7 @@ async def test_installation_activation_explains_required_reconfiguration(
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
 
     for action in ("activate_installation", "enable_automatic"):
-        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await _open_installation_releases(hass, entry)
         result = await hass.config_entries.options.async_configure(
             result["flow_id"], {"next_step_id": action}
         )
@@ -599,17 +613,22 @@ async def test_action_results_and_status_are_german_when_ha_is_german(
     hass.config.language = "de"
     entry = await _create_v2_entry(hass)
     manager = Mock()
-    manager.snapshot.return_value = _snapshot(status="disabled", operation_enabled=False)
+    manager.snapshot.return_value = _snapshot(operation_enabled=False)
     manager.async_plan_automatic = AsyncMock(
         return_value={"created": 2, "replaced": 1, "removed": 3}
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["description_placeholders"] is None
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
     assert result["description_placeholders"] == {
         "installation_status": "Deaktiviert",
         "automatic_status": "Aktiviert",
     }
+    result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "replan"}
     )

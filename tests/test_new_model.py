@@ -1185,10 +1185,8 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
     options = await hass.config_entries.options.async_init(entry.entry_id)
     assert options["menu_options"] == [
         "configuration",
-        "activate_installation",
-        "enable_automatic",
+        "releases",
         "replan",
-        "emergency_stop",
     ]
     options = await hass.config_entries.options.async_configure(
         options["flow_id"], {"next_step_id": "configuration"}
@@ -1239,14 +1237,17 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
     assert "needs_reconfiguration" not in entry.subentries[zone.subentry_id].data
 
 
-async def test_v2_settings_actions_control_releases_emergency_reset_and_replan(
+async def test_v2_settings_separate_release_controls_reset_and_replan(
     hass: HomeAssistant,
 ) -> None:
-    """Expose operational controls with immediate Not-Aus and confirmed reset."""
+    """Expose release controls separately while retaining reset and replanning."""
     entry, _ = await _setup_v2_installation(hass)
     manager = entry.runtime_data.manager
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "deactivate_installation"}
     )
@@ -1257,20 +1258,20 @@ async def test_v2_settings_actions_control_releases_emergency_reset_and_replan(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "releases"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "disable_automatic"}
     )
     assert result["description_placeholders"]["result"] == ("Automatic irrigation was disabled.")
     assert manager.snapshot().automation_enabled is False
 
     await manager.async_set_installation_operation(enabled=True)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "emergency_stop"}
-    )
+    await manager.async_emergency_stop()
     assert manager.snapshot().emergency_stop is True
-    assert result["step_id"] == "action_result"
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert "emergency_stop" not in result["menu_options"]
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "reset_safety"}
     )
@@ -1322,6 +1323,9 @@ async def test_automation_disable_actions_ask_how_to_handle_active_execution(
         if scope == "installation":
             result = await hass.config_entries.options.async_init(entry.entry_id)
             result = await hass.config_entries.options.async_configure(
+                result["flow_id"], {"next_step_id": "releases"}
+            )
+            result = await hass.config_entries.options.async_configure(
                 result["flow_id"], {"next_step_id": "disable_automatic"}
             )
             configure = hass.config_entries.options.async_configure
@@ -1363,6 +1367,9 @@ async def test_automation_disable_does_not_ask_without_relevant_active_execution
     entry, zone = await _setup_v2_installation(hass)
     if scope == "installation":
         result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "releases"}
+        )
         result = await hass.config_entries.options.async_configure(
             result["flow_id"], {"next_step_id": "disable_automatic"}
         )

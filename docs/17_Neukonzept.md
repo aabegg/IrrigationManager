@@ -300,7 +300,9 @@ Für die Freigabe einer Bewässerung gelten damit folgende Bedingungen:
 
 Der angezeigte Anlagenstatus macht mindestens `deaktiviert`, `aktiv mit deaktivierter Automatik`, `aktiv mit aktivierter Automatik` und `gesperrt` unterscheidbar. Eine Sicherheitssperre besitzt in der Anzeige und bei der Ausführungsfreigabe Vorrang vor den anderen Zuständen.
 
-Alle Anlagenaktionen sind in der Einstellungsoberfläche erreichbar, beispielsweise über das Drei-Punkte-Menü der Anlage oder über deren Zahnradsymbol. Das Aufheben einer Sicherheitssperre verlangt immer eine Warnmeldung mit ausdrücklicher Bestätigung.
+Die Anlageneinstellungen trennen Konfiguration und Laufzeitsteuerung. Das Hauptmenü enthält `Anlage konfigurieren`, `Status und Steuerung`, die manuelle Neuberechnung der Bewässerungsplanung, bei aktiver Sicherheitssperre deren Zurücksetzen sowie bei vorhandener Wassermessung die Zählerstandskorrektur. `Status und Steuerung` öffnet einen eigenen Dialog, zeigt Betriebs- und Automatikfreigabe an und bietet abhängig vom aktuellen Zustand jeweils `Anlage aktivieren` oder `Anlage deaktivieren` sowie `Automatische Bewässerung aktivieren` oder `Automatische Bewässerung deaktivieren` an.
+
+Der Not-Aus wird in der Benutzeroberfläche ausschließlich über die Anlagen-Card angeboten und erscheint nicht in den Anlageneinstellungen. Das Aufheben einer Sicherheitssperre verlangt immer eine Warnmeldung mit ausdrücklicher Bestätigung.
 
 ### Automatische Aufträge neu planen
 
