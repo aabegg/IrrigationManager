@@ -10,6 +10,7 @@ from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
+from .duration import parse_duration
 from .manager import IrrigationManager
 
 ATTR_CONFIG_ENTRY_ID = "config_entry_id"
@@ -60,11 +61,9 @@ def _validate_manual_target(data: dict[str, object]) -> dict[str, object]:
 
 
 _MANUAL_TARGET_FIELDS: dict[vol.Marker, object] = {
-    vol.Optional(ATTR_DURATION): vol.All(vol.Coerce(float), vol.Range(min=0.001, max=604_800)),
+    vol.Optional(ATTR_DURATION): vol.All(parse_duration, vol.Range(min=0.001, max=604_800)),
     vol.Optional(ATTR_AMOUNT): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
-    vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(
-        vol.Coerce(float), vol.Range(min=0.001, max=604_800)
-    ),
+    vol.Optional(ATTR_HARD_TIME_LIMIT): vol.All(parse_duration, vol.Range(min=0.001, max=604_800)),
 }
 
 START_MANUAL_SCHEMA = vol.All(
@@ -73,9 +72,7 @@ START_MANUAL_SCHEMA = vol.All(
             vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
             vol.Required(ATTR_ZONE_SUBENTRY_ID): cv.string,
             **_MANUAL_TARGET_FIELDS,
-            vol.Optional(ATTR_EXPIRY): vol.All(
-                vol.Coerce(float), vol.Range(min=0.001, max=604_800)
-            ),
+            vol.Optional(ATTR_EXPIRY): vol.All(parse_duration, vol.Range(min=0.001, max=604_800)),
             vol.Optional(ATTR_START_AT): cv.datetime,
         }
     ),

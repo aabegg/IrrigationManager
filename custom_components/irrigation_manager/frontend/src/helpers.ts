@@ -10,6 +10,24 @@ import type {
 export const DOMAIN = "irrigation_manager";
 export const INVALID_STATES = new Set(["unknown", "unavailable"]);
 
+export function parseDuration(value: string): number | undefined {
+  const match = /^(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)$/.exec(value.trim());
+  if (!match) return undefined;
+  const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+}
+
+export function formatDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remaining = seconds - hours * 3600 - minutes * 60;
+  const fractionalSeconds = remaining.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  const secondText = Number.isInteger(remaining)
+    ? String(remaining).padStart(2, "0")
+    : `${remaining < 10 ? "0" : ""}${fractionalSeconds}`;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${secondText}`;
+}
+
 export function responseData<T>(value: unknown): T {
   if (!value || typeof value !== "object" || !("response" in value)) return {} as T;
   return (value as { response: T }).response;

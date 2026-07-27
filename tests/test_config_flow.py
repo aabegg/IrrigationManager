@@ -77,7 +77,7 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
-                "monday": {"start": "22:00:00", "end": "00:30:00", "target": 600},
+                "monday": {"start": "22:00:00", "end": "00:30:00", "target": "00:10:00"},
             },
         )
 
@@ -128,7 +128,7 @@ async def test_creation_validates_pulse_factor_and_complete_schedule_rows(
             "name": "Beds",
             "zone_valve": "switch.beds",
             "control_type": "volume",
-            "volume_max_runtime": 900,
+            "volume_max_runtime": "00:15:00",
         },
     )
     result = await hass.config_entries.flow.async_configure(
@@ -171,7 +171,7 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
                 "name": "Lawn",
                 "zone_valve": "switch.lawn",
                 "control_type": "volume",
-                "volume_max_runtime": 1200,
+                "volume_max_runtime": "00:20:00",
             },
         )
         assert result["step_id"] == "minimal_schedule"
@@ -193,6 +193,7 @@ async def test_zone_add_and_reconfigure_expose_only_v2_sections(hass: HomeAssist
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
     zone = next(iter(entry.subentries.values()))
+    assert zone.data["volume_max_runtime"] == 1_200
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, "zone"),
         context={"source": "reconfigure", "subentry_id": zone.subentry_id},
@@ -423,7 +424,7 @@ async def test_calibrated_flow_allows_volume_target_to_fit_by_expected_duration(
             "name": "Lawn",
             "zone_valve": "switch.lawn",
             "control_type": "volume",
-            "volume_max_runtime": 3600,
+            "volume_max_runtime": "01:00:00",
         },
     )
     result = await hass.config_entries.subentries.async_configure(
@@ -433,6 +434,52 @@ async def test_calibrated_flow_allows_volume_target_to_fit_by_expected_duration(
 
     assert result["type"] is FlowResultType.ABORT
     assert entry.subentries[zone.subentry_id].data["weekly_schedule"][0]["target"] == 100.0
+
+
+async def test_calibration_form_converts_hh_mm_ss_to_seconds(hass: HomeAssistant) -> None:
+    """Keep calibration input readable while passing numeric seconds to the runtime."""
+    entry = await _create_v2_entry(hass, meter_type="cumulative")
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "weekly_schedule": [],
+        },
+        subentry_id="zone-1",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="zone-1",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+    manager = SimpleNamespace(
+        calibration_proposal=Mock(return_value=None),
+        async_start_calibration=AsyncMock(return_value={"test_id": "calibration-1"}),
+        is_calibration_active=Mock(return_value=True),
+        async_confirm_calibration=AsyncMock(),
+    )
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "calibration"}
+    )
+    duration_marker = next(
+        marker for marker in result["data_schema"].schema if str(marker) == "duration"
+    )
+    assert duration_marker.default() == "00:01:00"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"duration": "00:02:03", "confirm_supervision": True}
+    )
+
+    manager.async_start_calibration.assert_awaited_once_with(
+        zone_subentry_id=zone.subentry_id, duration_seconds=123
+    )
+    assert result["step_id"] == "calibration_running"
 
 
 async def test_zone_release_menu_tracks_independent_zone_states(

@@ -417,13 +417,17 @@ describe("dashboard card interactions", () => {
     await card.updateComplete;
 
     const target = card.shadowRoot.querySelector<HTMLInputElement>("[data-testid=manual-target]")!;
-    expect(target.max).toBe("604800");
+    expect(target.type).toBe("text");
+    expect(target.placeholder).toBe("HH:MM:SS");
+    expect(target.title).toContain("168:00:00");
     card.shadowRoot.querySelector<HTMLSelectElement>("[data-testid=target-mode]")!.value = "amount";
     card.shadowRoot.querySelector<HTMLSelectElement>("[data-testid=target-mode]")!
       .dispatchEvent(new Event("change"));
     await card.updateComplete;
-    expect(card.shadowRoot.querySelector<HTMLInputElement>("[data-testid=hard-limit]")!.max)
-      .toBe("5400");
+    const hardLimit = card.shadowRoot.querySelector<HTMLInputElement>("[data-testid=hard-limit]")!;
+    expect(hardLimit.type).toBe("text");
+    expect(hardLimit.placeholder).toBe("HH:MM:SS");
+    expect(hardLimit.title).toContain("01:30:00");
   });
 
   it("submits one atomic conflict policy when another execution is active", async () => {
@@ -462,6 +466,78 @@ describe("dashboard card interactions", () => {
       conflict_policy: "priority_next",
     }, undefined, false, true);
     expect(callService).toHaveBeenCalledTimes(1);
+  });
+
+  it("converts manual HH:MM:SS inputs to service seconds", async () => {
+    const callService = vi.fn(async () => ({ request_id: "manual-1" }));
+    const hass = home([
+      state("sensor.lawn_status", "idle", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        card_name: "Rasen",
+        volume_control_available: true,
+        card_entities: { anchor: "sensor.lawn_status", status: "sensor.lawn_status" },
+      }),
+    ], callService);
+    const card = await renderCard("irrigation-manager-zone-card", hass, {
+      type: "custom:irrigation-manager-zone-card",
+      entity: "sensor.lawn_status",
+    });
+    card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=manual-irrigation]")!.click();
+    await card.updateComplete;
+
+    const duration = card.shadowRoot.querySelector<HTMLInputElement>("[data-testid=manual-target]")!;
+    duration.value = "01:02:03";
+    duration.dispatchEvent(new Event("input"));
+    card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=submit-manual]")!.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("irrigation_manager", "start_manual_from_card", {
+      config_entry_id: "garden",
+      zone_subentry_id: "lawn",
+      duration: 3723,
+      conflict_policy: "start_now",
+    }, undefined, false, true);
+  });
+
+  it("converts the amount hard limit from HH:MM:SS to seconds", async () => {
+    const callService = vi.fn(async () => ({ request_id: "manual-1" }));
+    const hass = home([
+      state("sensor.lawn_status", "idle", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        card_name: "Rasen",
+        volume_control_available: true,
+        card_entities: { anchor: "sensor.lawn_status", status: "sensor.lawn_status" },
+      }),
+    ], callService);
+    const card = await renderCard("irrigation-manager-zone-card", hass, {
+      type: "custom:irrigation-manager-zone-card",
+      entity: "sensor.lawn_status",
+    });
+    card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=manual-irrigation]")!.click();
+    await card.updateComplete;
+    const mode = card.shadowRoot.querySelector<HTMLSelectElement>("[data-testid=target-mode]")!;
+    mode.value = "amount";
+    mode.dispatchEvent(new Event("change"));
+    await card.updateComplete;
+
+    const amount = card.shadowRoot.querySelector<HTMLInputElement>("[data-testid=manual-target]")!;
+    amount.value = "25";
+    amount.dispatchEvent(new Event("input"));
+    const hardLimit = card.shadowRoot.querySelector<HTMLInputElement>("[data-testid=hard-limit]")!;
+    hardLimit.value = "00:45:00";
+    hardLimit.dispatchEvent(new Event("input"));
+    card.shadowRoot.querySelector<HTMLButtonElement>("[data-testid=submit-manual]")!.click();
+    await Promise.resolve();
+
+    expect(callService).toHaveBeenCalledWith("irrigation_manager", "start_manual_from_card", {
+      config_entry_id: "garden",
+      zone_subentry_id: "lawn",
+      amount: 25,
+      hard_time_limit: 2700,
+      conflict_policy: "start_now",
+    }, undefined, false, true);
   });
 
   it("loads paginated zone-filtered irrigation history into an accessible dialog", async () => {

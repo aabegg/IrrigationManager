@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-rc14 - 2026-07-27
+
+### Changed
+
+- Replace every user-facing duration input with validated `HH:MM:SS` text while retaining
+  numeric seconds in configuration, storage, scheduling, and execution.
+- Apply the duration format consistently to weekly time targets, volume safety limits,
+  flow calibration, manual card actions, and Home Assistant action fields.
+- Keep numeric second values accepted by the service schema for existing automations and
+  external callers.
+
 ## 0.1.0-rc13 - 2026-07-27
 
 ### Changed

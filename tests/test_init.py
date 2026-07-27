@@ -41,6 +41,31 @@ def test_manual_action_requires_exactly_one_complete_target(
         )
 
 
+def test_manual_action_converts_hh_mm_ss_fields_to_seconds() -> None:
+    """Keep service-facing duration text separate from persisted numeric seconds."""
+    result = START_MANUAL_SCHEMA(
+        {
+            "config_entry_id": "installation-1",
+            "zone_subentry_id": "zone-1",
+            "duration": "01:02:03",
+            "expiry": "02:00:00",
+        }
+    )
+
+    assert result["duration"] == 3_723
+    assert result["expiry"] == 7_200
+
+    volume_result = START_MANUAL_SCHEMA(
+        {
+            "config_entry_id": "installation-1",
+            "zone_subentry_id": "zone-1",
+            "amount": 10,
+            "hard_time_limit": "00:45:00",
+        }
+    )
+    assert volume_result["hard_time_limit"] == 2_700
+
+
 async def test_fresh_store_uses_only_current_v2_schema(hass: HomeAssistant) -> None:
     """Return the compact current schema for a new installation."""
     state = await IrrigationStore(hass, "fresh-v2").async_load()

@@ -17,7 +17,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
     SubentryFlowResult,
 )
-from homeassistant.const import CONF_NAME, Platform, UnitOfTime, UnitOfVolume
+from homeassistant.const import CONF_NAME, Platform, UnitOfVolume
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.exceptions import HomeAssistantError
@@ -31,6 +31,7 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     TextSelector,
+    TextSelectorConfig,
     TimeSelector,
 )
 
@@ -59,6 +60,7 @@ from .const import (
     SUBENTRY_TYPE_ZONE,
     WEEKDAYS,
 )
+from .duration import format_duration, parse_duration
 from .manager import IrrigationManager
 from .scheduler import planned_volume_duration_seconds
 
@@ -198,15 +200,7 @@ def _minimal_zone_schema(has_meter: bool) -> vol.Schema:
         ),
     }
     if has_meter:
-        schema[vol.Optional(CONF_VOLUME_MAX_RUNTIME)] = NumberSelector(
-            NumberSelectorConfig(
-                min=1,
-                max=604_800,
-                step=1,
-                mode=NumberSelectorMode.BOX,
-                unit_of_measurement=UnitOfTime.SECONDS,
-            )
-        )
+        schema[vol.Optional(CONF_VOLUME_MAX_RUNTIME)] = _duration_selector()
     return vol.Schema(schema)
 
 
@@ -218,17 +212,17 @@ def _weekly_schedule_schema(control_type: str) -> vol.Schema:
                 {
                     vol.Optional("start"): TimeSelector(),
                     vol.Optional("end"): TimeSelector(),
-                    vol.Optional("target"): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0.001,
-                            max=1_000_000,
-                            step=1,
-                            mode=NumberSelectorMode.BOX,
-                            unit_of_measurement=(
-                                UnitOfTime.SECONDS
-                                if control_type == CONTROL_TYPE_TIME
-                                else UnitOfVolume.LITERS
-                            ),
+                    vol.Optional("target"): (
+                        _duration_selector()
+                        if control_type == CONTROL_TYPE_TIME
+                        else NumberSelector(
+                            NumberSelectorConfig(
+                                min=0.001,
+                                max=1_000_000,
+                                step=1,
+                                mode=NumberSelectorMode.BOX,
+                                unit_of_measurement=UnitOfVolume.LITERS,
+                            )
                         )
                     ),
                 }
@@ -237,7 +231,29 @@ def _weekly_schedule_schema(control_type: str) -> vol.Schema:
     return vol.Schema(schema)
 
 
-def _weekly_schedule_form_values(schedule: object) -> dict[str, object]:
+def _duration_selector() -> TextSelector:
+    """Return a text selector that makes the required duration format visible."""
+    return TextSelector(TextSelectorConfig(suffix="HH:MM:SS"))
+
+
+def _zone_form_values(data: Mapping[str, object]) -> dict[str, object]:
+    """Format persisted seconds for one zone form."""
+    values = dict(data)
+    runtime = data.get(CONF_VOLUME_MAX_RUNTIME)
+    if isinstance(runtime, int | float) and not isinstance(runtime, bool):
+        values[CONF_VOLUME_MAX_RUNTIME] = format_duration(float(runtime))
+    return values
+
+
+def _form_duration(value: object, *, maximum: float = 604_800) -> float:
+    """Validate one HH:MM:SS form value against its configured limit."""
+    seconds = parse_duration(value)
+    if seconds > maximum:
+        raise ValueError("Duration exceeds its maximum")
+    return seconds
+
+
+def _weekly_schedule_form_values(schedule: object, *, control_type: str) -> dict[str, object]:
     """Flatten canonical weekday rows back into form fields."""
     values: dict[str, object] = {}
     if not isinstance(schedule, list):
@@ -249,6 +265,8 @@ def _weekly_schedule_form_values(schedule: object) -> dict[str, object]:
         day_values = {
             field: row[field] for field in ("start", "end", "target") if row.get(field) is not None
         }
+        if control_type == CONTROL_TYPE_TIME and "target" in day_values:
+            day_values["target"] = format_duration(float(cast(float, day_values["target"])))
         if day_values:
             values[weekday] = day_values
     return values
@@ -285,11 +303,17 @@ def _canonical_weekly_schedule(
         try:
             start = time.fromisoformat(str(start_value))
             end = time.fromisoformat(str(end_value))
-            if not isinstance(target_value, int | float):
-                raise ValueError
-            target = float(target_value)
         except TypeError, ValueError:
             return [], "schedule_row_invalid"
+        try:
+            if control_type == CONTROL_TYPE_TIME:
+                target = parse_duration(target_value)
+            elif not isinstance(target_value, int | float):
+                raise ValueError
+            else:
+                target = float(target_value)
+        except TypeError, ValueError:
+            return [], "schedule_target_invalid"
         if target <= 0 or not math.isfinite(target):
             return [], "schedule_target_invalid"
         start_seconds = (
@@ -441,14 +465,27 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         schema = _minimal_zone_schema(has_meter)
         if user_input is not None:
             control_type = str(user_input[CONF_CONTROL_TYPE])
-            max_runtime = user_input.get(CONF_VOLUME_MAX_RUNTIME)
-            if control_type == CONTROL_TYPE_VOLUME and max_runtime is None:
+            max_runtime: float | None = None
+            if (
+                control_type == CONTROL_TYPE_VOLUME
+                and user_input.get(CONF_VOLUME_MAX_RUNTIME) is None
+            ):
                 return self.async_show_form(
                     step_id="installation_zone",
                     data_schema=self.add_suggested_values_to_schema(schema, user_input),
                     errors={"base": "volume_max_runtime_required"},
                     last_step=False,
                 )
+            if control_type == CONTROL_TYPE_VOLUME:
+                try:
+                    max_runtime = _form_duration(user_input[CONF_VOLUME_MAX_RUNTIME])
+                except ValueError:
+                    return self.async_show_form(
+                        step_id="installation_zone",
+                        data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                        errors={"base": "duration_format_invalid"},
+                        last_step=False,
+                    )
             self._first_zone = {
                 CONF_NAME: user_input[CONF_NAME],
                 CONF_ZONE_VALVE: user_input[CONF_ZONE_VALVE],
@@ -457,7 +494,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_AUTOMATION_ENABLED: True,
             }
             if max_runtime is not None:
-                self._first_zone[CONF_VOLUME_MAX_RUNTIME] = float(max_runtime)
+                self._first_zone[CONF_VOLUME_MAX_RUNTIME] = max_runtime
             return await self.async_step_installation_schedule()
         return self.async_show_form(
             step_id="installation_zone", data_schema=schema, last_step=False
@@ -541,14 +578,27 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             if self._valve_is_configured(str(user_input[CONF_ZONE_VALVE])):
                 return self.async_abort(reason="actuator_already_owned")
             control_type = str(user_input[CONF_CONTROL_TYPE])
-            max_runtime = user_input.get(CONF_VOLUME_MAX_RUNTIME)
-            if control_type == CONTROL_TYPE_VOLUME and max_runtime is None:
+            max_runtime: float | None = None
+            if (
+                control_type == CONTROL_TYPE_VOLUME
+                and user_input.get(CONF_VOLUME_MAX_RUNTIME) is None
+            ):
                 return self.async_show_form(
                     step_id="minimal",
                     data_schema=self.add_suggested_values_to_schema(schema, user_input),
                     errors={"base": "volume_max_runtime_required"},
                     last_step=False,
                 )
+            if control_type == CONTROL_TYPE_VOLUME:
+                try:
+                    max_runtime = _form_duration(user_input[CONF_VOLUME_MAX_RUNTIME])
+                except ValueError:
+                    return self.async_show_form(
+                        step_id="minimal",
+                        data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                        errors={"base": "duration_format_invalid"},
+                        last_step=False,
+                    )
             self._zone = {
                 CONF_NAME: user_input[CONF_NAME],
                 CONF_ZONE_VALVE: user_input[CONF_ZONE_VALVE],
@@ -557,7 +607,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 CONF_AUTOMATION_ENABLED: True,
             }
             if max_runtime is not None:
-                self._zone[CONF_VOLUME_MAX_RUNTIME] = float(max_runtime)
+                self._zone[CONF_VOLUME_MAX_RUNTIME] = max_runtime
             return await self.async_step_minimal_schedule()
         return self.async_show_form(step_id="minimal", data_schema=schema, last_step=False)
 
@@ -610,7 +660,9 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         if user_input is None:
             return self.async_show_form(
                 step_id="reconfigure_minimal",
-                data_schema=self.add_suggested_values_to_schema(schema, subentry.data),
+                data_schema=self.add_suggested_values_to_schema(
+                    schema, _zone_form_values(subentry.data)
+                ),
                 last_step=False,
             )
         if self._valve_is_configured(
@@ -618,14 +670,24 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         ):
             return self.async_abort(reason="actuator_already_owned")
         control_type = str(user_input[CONF_CONTROL_TYPE])
-        max_runtime = user_input.get(CONF_VOLUME_MAX_RUNTIME)
-        if control_type == CONTROL_TYPE_VOLUME and max_runtime is None:
+        max_runtime: float | None = None
+        if control_type == CONTROL_TYPE_VOLUME and user_input.get(CONF_VOLUME_MAX_RUNTIME) is None:
             return self.async_show_form(
                 step_id="reconfigure_minimal",
                 data_schema=self.add_suggested_values_to_schema(schema, user_input),
                 errors={"base": "volume_max_runtime_required"},
                 last_step=False,
             )
+        if control_type == CONTROL_TYPE_VOLUME:
+            try:
+                max_runtime = _form_duration(user_input[CONF_VOLUME_MAX_RUNTIME])
+            except ValueError:
+                return self.async_show_form(
+                    step_id="reconfigure_minimal",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "duration_format_invalid"},
+                    last_step=False,
+                )
         self._zone = dict(subentry.data)
         self._zone.update(
             {
@@ -635,8 +697,8 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             }
         )
         if max_runtime is not None:
-            self._zone[CONF_VOLUME_MAX_RUNTIME] = float(max_runtime)
-        elif control_type == CONTROL_TYPE_TIME:
+            self._zone[CONF_VOLUME_MAX_RUNTIME] = max_runtime
+        else:
             self._zone.pop(CONF_VOLUME_MAX_RUNTIME, None)
         return await self.async_step_reconfigure_minimal_schedule()
 
@@ -650,7 +712,11 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             return self.async_show_form(
                 step_id="reconfigure_minimal_schedule",
                 data_schema=self.add_suggested_values_to_schema(
-                    schema, _weekly_schedule_form_values(subentry.data.get(CONF_WEEKLY_SCHEDULE))
+                    schema,
+                    _weekly_schedule_form_values(
+                        subentry.data.get(CONF_WEEKLY_SCHEDULE),
+                        control_type=str(self._zone[CONF_CONTROL_TYPE]),
+                    ),
                 ),
                 last_step=True,
             )
@@ -823,15 +889,9 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             return self.async_abort(reason="calibration_configuration_invalid")
         schema = vol.Schema(
             {
-                vol.Required("duration", default=min(60.0, duration_limit)): NumberSelector(
-                    NumberSelectorConfig(
-                        min=1,
-                        max=duration_limit,
-                        step=1,
-                        mode=NumberSelectorMode.BOX,
-                        unit_of_measurement=UnitOfTime.SECONDS,
-                    )
-                ),
+                vol.Required(
+                    "duration", default=format_duration(min(60.0, duration_limit))
+                ): _duration_selector(),
                 vol.Required("confirm_supervision", default=False): BooleanSelector(),
             }
         )
@@ -839,6 +899,15 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             return self.async_show_form(
                 step_id="calibration",
                 data_schema=schema,
+                description_placeholders={"zone": self._get_reconfigure_subentry().title},
+            )
+        try:
+            duration = _form_duration(user_input["duration"], maximum=duration_limit)
+        except ValueError:
+            return self.async_show_form(
+                step_id="calibration",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "calibration_duration_invalid"},
                 description_placeholders={"zone": self._get_reconfigure_subentry().title},
             )
         if user_input.get("confirm_supervision") is not True:
@@ -855,7 +924,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         try:
             started = await manager.async_start_calibration(
                 zone_subentry_id=self._get_reconfigure_subentry().subentry_id,
-                duration_seconds=float(user_input["duration"]),
+                duration_seconds=duration,
             )
         except HomeAssistantError:
             return self.async_show_form(

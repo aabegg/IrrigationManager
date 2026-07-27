@@ -149,7 +149,7 @@ async def test_minimal_wizard_creates_installation_and_first_zone(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
-                "monday": {"start": "22:00:00", "end": "00:30:00", "target": 1800},
+                "monday": {"start": "22:00:00", "end": "00:30:00", "target": "00:30:00"},
             },
         )
 
@@ -207,7 +207,7 @@ async def test_weekly_schedule_rejects_partial_and_overlapping_rows(
         result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
 
     partial = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"monday": {"start": "04:00:00", "target": 600}}
+        result["flow_id"], {"monday": {"start": "04:00:00", "target": "00:10:00"}}
     )
     assert partial["step_id"] == "installation_schedule"
     assert partial["errors"] == {"base": "schedule_row_incomplete"}
@@ -215,8 +215,8 @@ async def test_weekly_schedule_rejects_partial_and_overlapping_rows(
     overlap = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {
-            "monday": {"start": "23:00:00", "end": "02:00:00", "target": 1800},
-            "tuesday": {"start": "01:00:00", "end": "03:00:00", "target": 600},
+            "monday": {"start": "23:00:00", "end": "02:00:00", "target": "00:30:00"},
+            "tuesday": {"start": "01:00:00", "end": "03:00:00", "target": "00:10:00"},
         },
     )
     assert overlap["step_id"] == "installation_schedule"
@@ -522,7 +522,11 @@ async def test_zone_edit_reloads_then_replans_pending_work_from_new_config(
         result = await hass.config_entries.subentries.async_configure(
             result["flow_id"],
             {
-                "wednesday": {"start": "06:00:00", "end": "07:00:00", "target": 300},
+                "wednesday": {
+                    "start": "06:00:00",
+                    "end": "07:00:00",
+                    "target": "00:05:00",
+                },
             },
         )
         assert result["type"] is FlowResultType.ABORT
@@ -860,7 +864,7 @@ async def test_v2_config_edits_do_not_overwrite_disabled_durable_releases(
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        {"monday": {"start": "06:00:00", "end": "07:00:00", "target": 300}},
+        {"monday": {"start": "06:00:00", "end": "07:00:00", "target": "00:05:00"}},
     )
     assert result["type"] is FlowResultType.ABORT
     await hass.async_block_till_done()
@@ -1309,14 +1313,14 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
         },
     )
     invalid = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {"monday": {"start": "04:00:00", "target": 600}}
+        result["flow_id"], {"monday": {"start": "04:00:00", "target": "00:10:00"}}
     )
     assert invalid["errors"] == {"base": "schedule_row_incomplete"}
     assert entry.subentries[zone.subentry_id].data["needs_reconfiguration"] is True
     completed = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
-            "monday": {"start": "04:00:00", "end": "05:00:00", "target": 600},
+            "monday": {"start": "04:00:00", "end": "05:00:00", "target": "00:10:00"},
         },
     )
     assert completed["type"] is FlowResultType.ABORT

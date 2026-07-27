@@ -11,13 +11,10 @@ start_manual: &manual_action
         text:
     duration: &duration
       required: false
+      example: "00:10:00"
       selector:
-        number:
-          min: 0.001
-          max: 604800
-          step: 1
-          unit_of_measurement: s
-          mode: box
+        text:
+          suffix: HH:MM:SS
     amount: &amount
       required: false
       selector:
@@ -29,22 +26,16 @@ start_manual: &manual_action
           mode: box
     hard_time_limit: &hard_time_limit
       required: false
+      example: "01:00:00"
       selector:
-        number:
-          min: 0.001
-          max: 604800
-          step: 1
-          unit_of_measurement: s
-          mode: box
+        text:
+          suffix: HH:MM:SS
     expiry:
       required: false
+      example: "01:00:00"
       selector:
-        number:
-          min: 0.001
-          max: 604800
-          step: 1
-          unit_of_measurement: s
-          mode: box
+        text:
+          suffix: HH:MM:SS
     start_at:
       required: false
       selector:

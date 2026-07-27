@@ -44,6 +44,22 @@ async def test_only_version_2_services_are_registered(hass: HomeAssistant) -> No
     assert set(yaml.safe_load(service_file.read_text(encoding="utf-8"))) == EXPECTED_SERVICES
 
 
+def test_service_duration_fields_use_hh_mm_ss_text_selectors() -> None:
+    """Present every service duration as HH:MM:SS instead of raw seconds."""
+    service_file = (
+        Path(__file__).parents[1] / "custom_components" / "irrigation_manager" / "services.yaml"
+    )
+    metadata = yaml.safe_load(service_file.read_text(encoding="utf-8"))
+
+    for service in ("start_manual", "create_manual", "start_manual_from_card"):
+        fields = metadata[service]["fields"]
+        assert fields["duration"]["selector"] == {"text": {"suffix": "HH:MM:SS"}}
+        assert fields["hard_time_limit"]["selector"] == {"text": {"suffix": "HH:MM:SS"}}
+    assert metadata["start_manual"]["fields"]["expiry"]["selector"] == {
+        "text": {"suffix": "HH:MM:SS"}
+    }
+
+
 async def test_emergency_stop_requires_admin_or_control_of_all_actuators(
     hass: HomeAssistant,
 ) -> None:
