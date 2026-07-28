@@ -23,14 +23,18 @@ from custom_components.irrigation_manager.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 from custom_components.irrigation_manager.executor import ExecutionResult
-from custom_components.irrigation_manager.manager import _bounded_retry_delay
+from custom_components.irrigation_manager.forecast import ForecastFetchResult, ForecastPeriod
+from custom_components.irrigation_manager.manager import IrrigationManager, _bounded_retry_delay
 from custom_components.irrigation_manager.models import (
     ActiveExecutionState,
     IrrigationExecutionState,
     ManualIrrigationRequest,
 )
 from custom_components.irrigation_manager.storage import IrrigationStore
-from custom_components.irrigation_manager.water_balance import update_water_balance
+from custom_components.irrigation_manager.water_balance import (
+    WaterBalanceTargetResult,
+    update_water_balance,
+)
 
 
 async def _setup_v2_installation(
@@ -167,7 +171,7 @@ async def test_stage1_migration_preserves_targets_as_day_overrides(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 5
+    assert entry.minor_version == 6
     assert entry.data["plant_site_module_enabled"] is False
     migrated = entry.subentries[zone.subentry_id].data
     assert migrated["base_target"] == 300.0
@@ -212,7 +216,7 @@ async def test_stage2_migration_adds_dormant_neutral_seasonal_configuration(
     assert await async_migrate_entry(hass, entry)
 
     migrated = entry.subentries[zone.subentry_id].data
-    assert entry.minor_version == 5
+    assert entry.minor_version == 6
     assert migrated["use_seasonal_adjustment"] is False
     assert migrated["seasonal_factors"] == {
         month: 1.0
@@ -480,7 +484,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
     assert await async_migrate_entry(hass, entry)
 
     assert entry.version == 2
-    assert entry.minor_version == 5
+    assert entry.minor_version == 6
     assert entry.data == {
         "name": "Legacy garden",
         "main_valve": "switch.main",
@@ -592,7 +596,7 @@ async def test_v2_minor_migration_removes_only_retired_entity_unique_ids(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 5
+    assert entry.minor_version == 6
     assert registry.async_get("sensor.renamed_zone_status") is not None
     assert all(registry.async_get(entity_id) is None for entity_id in retired)
 
@@ -1919,7 +1923,7 @@ async def test_no_meter_exposes_runtime_contract_without_water_entities(
     entry, zone = await _setup_v2_installation(hass)
     registry = er.async_get(hass)
 
-    assert entry.minor_version == 5
+    assert entry.minor_version == 6
     assert (
         registry.async_get_entity_id("sensor", DOMAIN, "installation-v2-runtime_water_total")
         is None
@@ -3317,6 +3321,514 @@ async def test_cross_midnight_window_survives_replan_after_midnight(
     report = await manager.async_plan_automatic(now=local_now.astimezone(UTC))
 
     assert "automatic:zone-v2-runtime:2026-07-27" in report["created_request_ids"]
+
+
+async def test_due_automatic_order_is_durably_postponed_to_make_up_window(
+    hass: HomeAssistant,
+) -> None:
+    """Persist forecast evidence and keep the original request identity."""
+    entry, zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={
+            "weather_module_enabled": True,
+            "weather_sources": {"forecast": "weather.home"},
+        },
+        zone_overrides={
+            "base_target": 600.0,
+            "use_weather_adjustment": True,
+            "watering_mode": "demand",
+            "crop_factor": 1.0,
+            "effective_rain_factor": 1.0,
+            "demand_threshold_mm": 2.0,
+            "maximum_deficit_mm": 50.0,
+            "effective_application_rate_mm_h": 10.0,
+            "use_forecast_postponement": True,
+            "maximum_make_up_days": 2,
+            "minimum_forecast_precipitation_mm": 3.0,
+            "minimum_forecast_probability": 70.0,
+            "maximum_make_up_target": 900.0,
+            "make_up_schedule": [
+                {
+                    "weekday": weekday,
+                    "start": (
+                        "06:00:00"
+                        if weekday == "saturday"
+                        else "04:00:00"
+                        if weekday == "sunday"
+                        else None
+                    ),
+                    "end": (
+                        "08:00:00"
+                        if weekday == "saturday"
+                        else "06:00:00"
+                        if weekday == "sunday"
+                        else None
+                    ),
+                }
+                for weekday in (
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday",
+                )
+            ],
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._installation_data.update(
+        {
+            "weather_module_enabled": True,
+            "weather_sources": {"forecast": "weather.home"},
+        }
+    )
+    manager._zone_configs[0].data.update(
+        {
+            "use_weather_adjustment": True,
+            "use_forecast_postponement": True,
+        }
+    )
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+    manager._zone_configs[0].data["weekly_schedule"] = [
+        {
+            "weekday": weekday,
+            "start": "05:00:00" if weekday == "friday" else None,
+            "end": "07:00:00" if weekday == "friday" else None,
+            "target": None,
+        }
+        for weekday in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+    ]
+    timezone = ZoneInfo("Europe/Zurich")
+    due = datetime(2026, 7, 31, 5, tzinfo=timezone).astimezone(UTC)
+    forecast = ForecastFetchResult(
+        periods=(
+            ForecastPeriod(
+                starts_at=datetime(2026, 7, 31, 8, tzinfo=UTC),
+                ends_at=datetime(2026, 7, 31, 9, tzinfo=UTC),
+                precipitation_mm=4.0,
+                probability_percent=85.0,
+            ),
+        ),
+        quality="valid",
+        warnings=(),
+        forecast_type="hourly",
+    )
+    observations = {
+        "forecast": {
+            "quality": "available",
+            "source_entity_id": "weather.home",
+            "supported_forecast_types": ["hourly"],
+        }
+    }
+    high_demand = WaterBalanceTargetResult(
+        state=None,
+        outcome="execute",
+        final_target=2_400.0,
+        fallback_strategy="none",
+        quality="valid",
+        deficit_target=2_400.0,
+    )
+
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.async_fetch_forecast",
+            AsyncMock(return_value=forecast),
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.update_water_balance",
+            return_value=high_demand,
+        ),
+    ):
+        report = await manager.async_plan_automatic(now=due)
+
+    request_id = f"automatic:{zone.unique_id}:2026-07-31"
+    assert request_id in report["created_request_ids"]
+    request = manager._request(request_id)
+    assert request is not None
+    assert (
+        request.requested_start_at
+        == datetime(2026, 8, 1, 6, tzinfo=timezone).astimezone(UTC).isoformat()
+    ), request.resolved_inputs
+    assert (
+        request.automatic_window_end
+        == datetime(2026, 8, 1, 8, tzinfo=timezone).astimezone(UTC).isoformat()
+    )
+    assert (
+        request.expires_at == datetime(2026, 8, 2, 7, tzinfo=timezone).astimezone(UTC).isoformat()
+    )
+    assert request.target_value == 900.0
+    evidence = request.resolved_inputs["forecast_postponement"]
+    assert evidence["reason"] == "forecast_threshold_reached"
+    assert evidence["qualified_precipitation_mm"] == pytest.approx(4.0)
+    assert evidence["minimum_precipitation_mm"] == 3.0
+    assert evidence["minimum_probability_percent"] == 70.0
+    assert evidence["quality"] == "valid"
+    assert evidence["postponement_count"] == 1
+    assert evidence["original_seasonal_target"] == 600.0
+    assert evidence["maximum_make_up_target"] == 900.0
+    assert evidence["make_up_target_capped"] is True
+    assert evidence["considered_periods"] == [
+        {
+            "starts_at": "2026-07-31T08:00:00+00:00",
+            "ends_at": "2026-07-31T09:00:00+00:00",
+            "precipitation_mm": 4.0,
+            "probability_percent": 85.0,
+        }
+    ]
+    assert (
+        evidence["original_window_end"]
+        == datetime(2026, 7, 31, 7, tzinfo=timezone).astimezone(UTC).isoformat()
+    )
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    restored = next(item for item in stored.manual_requests if item.request_id == request_id)
+    assert restored.resolved_inputs["forecast_postponement"] == evidence
+    diagnostic = manager.diagnostics_state_decisions()["forecast_postponements"][request_id]
+    assert diagnostic["reason"] == "forecast_threshold_reached"
+    assert "source_entity_id" not in diagnostic
+
+    pre_window_skip = WaterBalanceTargetResult(
+        state=None,
+        outcome="skip",
+        final_target=None,
+        fallback_strategy="none",
+        quality="valid",
+        reason="water_deficit_below_threshold",
+    )
+    before_catch_up = datetime(2026, 7, 31, 12, tzinfo=timezone).astimezone(UTC)
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.update_water_balance",
+            return_value=pre_window_skip,
+        ),
+    ):
+        await manager.async_plan_automatic(now=before_catch_up)
+
+    waiting = manager._request(request_id)
+    assert waiting is not None
+    assert waiting.status == "pending"
+    assert waiting.requested_start_at == request.requested_start_at
+    assert waiting.resolved_inputs["forecast_evaluation_required"] is True
+
+    repeated_forecast = replace(
+        forecast,
+        periods=(
+            ForecastPeriod(
+                starts_at=datetime(2026, 8, 1, 12, tzinfo=UTC),
+                ends_at=datetime(2026, 8, 1, 13, tzinfo=UTC),
+                precipitation_mm=4.0,
+                probability_percent=85.0,
+            ),
+        ),
+    )
+    catch_up_due = datetime(2026, 8, 1, 6, tzinfo=timezone).astimezone(UTC)
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.async_fetch_forecast",
+            AsyncMock(return_value=repeated_forecast),
+        ),
+    ):
+        await manager.async_plan_automatic(now=catch_up_due)
+
+    repeated = manager._request(request_id)
+    assert repeated is not None
+    assert (
+        repeated.requested_start_at
+        == datetime(2026, 8, 2, 4, tzinfo=timezone).astimezone(UTC).isoformat()
+    )
+    assert repeated.resolved_inputs["forecast_postponement"]["postponement_count"] == 2
+
+    measured_rain = WaterBalanceTargetResult(
+        state=None,
+        outcome="skip",
+        final_target=None,
+        fallback_strategy="none",
+        quality="valid",
+        reason="water_deficit_below_threshold",
+    )
+    measured_due = datetime(2026, 8, 2, 4, tzinfo=timezone).astimezone(UTC)
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.update_water_balance",
+            return_value=measured_rain,
+        ),
+    ):
+        await manager.async_plan_automatic(now=measured_due)
+
+    completed = manager._request(request_id)
+    assert completed is not None
+    assert completed.status == "completed"
+    assert (
+        completed.resolved_inputs["forecast_postponement"]["reason"]
+        == "measured_rain_satisfied_need"
+    )
+
+    manager._stored_state = replace(manager._stored_state, manual_requests=(restored,))
+
+    manager._zone_configs[0].data.update(
+        {
+            "base_target": 1_200.0,
+            "maximum_make_up_target": 1_500.0,
+            "use_forecast_postponement": False,
+            "weekly_schedule": [
+                {"weekday": weekday, "start": None, "end": None, "target": None}
+                for weekday in (
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday",
+                )
+            ],
+        }
+    )
+    disabled_fetch = AsyncMock()
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.async_fetch_forecast",
+            disabled_fetch,
+        ),
+    ):
+        await manager.async_plan_automatic(now=before_catch_up)
+
+    disabled_waiting = manager._request(request_id)
+    assert disabled_waiting is not None
+    assert disabled_waiting.status == "pending"
+    assert disabled_waiting.resolved_inputs["forecast_evaluation_required"] is True
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.async_fetch_forecast",
+            disabled_fetch,
+        ),
+    ):
+        await manager.async_plan_automatic(now=catch_up_due)
+
+    disabled = manager._request(request_id)
+    assert disabled is not None
+    assert disabled.requested_start_at == catch_up_due.isoformat()
+    assert disabled.target_value == 600.0
+    assert disabled.resolved_inputs["forecast_evaluation_required"] is False
+    assert (
+        disabled.resolved_inputs["forecast_postponement"]["reason"]
+        == "forecast_disabled_during_deferral"
+    )
+    assert disabled.resolved_inputs["forecast_postponement"]["considered_periods"] == []
+    assert (
+        disabled.resolved_inputs["forecast_postponement"]["original_window_end"]
+        == evidence["original_window_end"]
+    )
+    disabled_fetch.assert_not_awaited()
+
+    after_deadline = datetime(2026, 8, 20, 8, tzinfo=timezone).astimezone(UTC)
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+    ):
+        expiry_report = await manager.async_plan_automatic(now=after_deadline)
+    expired = manager._request(request_id)
+    assert expired is not None
+    assert expired.status == "expired"
+    assert expired.resolved_inputs["forecast_postponement"]["reason"] == "make_up_deadline_expired"
+    assert expiry_report["expired_make_up_request_ids"] == [request_id]
+
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+    manager._zone_configs[0].data.update(
+        {
+            "base_target": 600.0,
+            "maximum_make_up_target": 900.0,
+            "use_forecast_postponement": True,
+            "weekly_schedule": [
+                {
+                    "weekday": weekday,
+                    "start": "05:00:00" if weekday == "friday" else None,
+                    "end": "07:00:00" if weekday == "friday" else None,
+                    "target": None,
+                }
+                for weekday in (
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday",
+                )
+            ],
+        }
+    )
+    next_due = datetime(2026, 8, 7, 5, tzinfo=timezone).astimezone(UTC)
+    below_threshold = ForecastFetchResult(
+        periods=(
+            ForecastPeriod(
+                starts_at=datetime(2026, 8, 7, 8, tzinfo=UTC),
+                ends_at=datetime(2026, 8, 7, 9, tzinfo=UTC),
+                precipitation_mm=2.0,
+                probability_percent=85.0,
+            ),
+        ),
+        quality="valid",
+        warnings=(),
+        forecast_type="hourly",
+    )
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.async_fetch_forecast",
+            AsyncMock(return_value=below_threshold),
+        ),
+    ):
+        await manager.async_plan_automatic(now=next_due)
+
+    current = manager._request(f"automatic:{zone.unique_id}:2026-08-07")
+    assert current is not None
+    assert current.requested_start_at == next_due.isoformat()
+    assert current.resolved_inputs["forecast_evaluation_required"] is False
+    assert (
+        current.resolved_inputs["forecast_postponement"]["reason"]
+        == "forecast_threshold_not_reached"
+    )
+
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+    partial_due = datetime(2026, 8, 14, 5, tzinfo=timezone).astimezone(UTC)
+    partial_forecast = replace(
+        forecast,
+        quality="partial",
+        warnings=("forecast_period_incomplete",),
+    )
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.async_fetch_forecast",
+            AsyncMock(return_value=partial_forecast),
+        ),
+    ):
+        await manager.async_plan_automatic(now=partial_due)
+
+    partial = manager._request(f"automatic:{zone.unique_id}:2026-08-14")
+    assert partial is not None
+    assert partial.requested_start_at == partial_due.isoformat()
+    assert (
+        partial.resolved_inputs["forecast_postponement"]["reason"]
+        == "forecast_unavailable_execute_current_window"
+    )
+
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+    manager._zone_configs[0].data["make_up_schedule"] = [
+        {"weekday": weekday, "start": None, "end": None}
+        for weekday in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        )
+    ]
+    no_opportunity_due = datetime(2026, 8, 21, 5, tzinfo=timezone).astimezone(UTC)
+    no_opportunity_fetch = AsyncMock()
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", timezone),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.async_fetch_forecast",
+            no_opportunity_fetch,
+        ),
+    ):
+        await manager.async_plan_automatic(now=no_opportunity_due)
+
+    no_opportunity = manager._request(f"automatic:{zone.unique_id}:2026-08-21")
+    assert no_opportunity is not None
+    assert no_opportunity.requested_start_at == no_opportunity_due.isoformat()
+    assert (
+        no_opportunity.resolved_inputs["forecast_postponement"]["reason"]
+        == "no_future_make_up_opportunity"
+    )
+    no_opportunity_fetch.assert_not_awaited()
+
+
+def test_due_forecast_preflight_blocks_automatic_actuation_until_replanned() -> None:
+    """A persisted evaluation marker is an atomic dispatcher barrier."""
+    now = datetime(2026, 7, 31, 3, tzinfo=UTC)
+    request = ManualIrrigationRequest(
+        request_id="automatic:zone:2026-07-31",
+        sequence=1,
+        zone_id="zone",
+        zone_subentry_id="zone-subentry",
+        zone_name="Lawn",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=600,
+        remaining_value=600,
+        created_at=now.isoformat(),
+        requested_start_at=now.isoformat(),
+        expires_at=(now + timedelta(hours=2)).isoformat(),
+        source="automatic",
+        resolved_inputs={"forecast_evaluation_required": True},
+    )
+
+    assert IrrigationManager._forecast_preflight_required(request, now=now) is True
+    evaluated = replace(
+        request,
+        resolved_inputs={"forecast_evaluation_required": False},
+    )
+    assert IrrigationManager._forecast_preflight_required(evaluated, now=now) is False
 
 
 async def test_startup_recovery_accounts_persisted_meter_baseline_and_runtime(

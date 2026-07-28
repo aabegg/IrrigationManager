@@ -753,7 +753,30 @@ Die Zonenkonfiguration enthält dafür:
 - Mindestwahrscheinlichkeit für eine Aufschiebung
 - maximale nachzuholende Zielmenge beziehungsweise Laufzeit
 
-Die Standardwerte und zulässigen Bereiche dieser Angaben werden vor der Implementierung der Prognosestufe in diesem Dokument festgelegt.
+Die Prognoseverwendung ist nach der Migration und für jede neu angelegte Zone standardmässig deaktiviert. Sie kann nur aktiviert werden, wenn das Wettermodul der Anlage und die gemessene Wasserbilanz der Zone vollständig konfiguriert sind und eine verfügbare `weather`-Entity ausdrücklich der Quellenrolle `Wetterprognose` zugeordnet ist. Die Zuordnung allein aktiviert keine Aufschiebung.
+
+Stufe 5 ruft Prognosen ausschliesslich über die Home-Assistant-Aktion `weather.get_forecasts` ab. Stündliche Prognosen werden bevorzugt, danach `twice_daily` und zuletzt tägliche Prognosen, sofern die zugeordnete Entity die jeweilige Art unterstützt. Ein Fehler einer bevorzugten Art erlaubt den Versuch der nächsten ausdrücklich unterstützten Art. Direkte Forecast-Attribute im Entity-Zustand, anbieterspezifische Dienste und eigene Providerzugänge werden nicht verwendet.
+
+Für die zonenspezifischen Einstellungen gelten folgende Standardwerte und Grenzen:
+
+- `Prognosen berücksichtigen`: standardmässig deaktiviert
+- `maximale Nachholfrist`: Standard `2` lokale Kalendertage, zulässig `1` bis `7`
+- `Mindestprognosemenge`: Standard `3,0 mm`, zulässig `0,1` bis `100,0 mm`
+- `Mindestwahrscheinlichkeit`: Standard `70 %`, zulässig `1` bis `100 %`
+- `maximales Nachholziel`: ein ausdrücklich bestätigtes positives Zeit- beziehungsweise Mengenziel innerhalb der allgemeinen Zielgrenzen der Zone; als Vorschlag wird bei Bedarfsbewässerung das grösste bestätigte Basissoll und bei Mindestbewässerung mindestens das grösste gegenwärtig mögliche saisonale Basissoll verwendet
+- `Nachholfenster`: je lokalem Wochentag höchstens ein ausdrücklich konfiguriertes Start-/Endintervall; leere Tage sind zulässig, mindestens ein Intervall ist erforderlich und ein Intervall darf wie ein reguläres Bewässerungsfenster über Mitternacht reichen
+
+Das maximale Nachholziel ist eine sichtbare Sicherheitsobergrenze für das bei einem nachgeholten Auftrag aus der Wasserbilanz abgeleitete Ziel. Ein darüberliegender Bedarf wird auf diese konfigurierte Obergrenze begrenzt, im Entscheidungssnapshot mit `make_up_target_capped` gekennzeichnet und bleibt über die tatsächlich gutgeschriebene Bewässerung als Defizit in der Wasserbilanz erhalten. Bei Mindestbewässerung darf die Obergrenze nicht kleiner als das grösste aktuell mögliche saisonale Basissoll eines konfigurierten regulären Termins sein; eine entsprechende Konfiguration oder spätere Saisonänderung wird abgelehnt und niemals durch eine stille Unterschreitung der Mindestbewässerung geheilt.
+
+Eine Prognoseperiode wird nur berücksichtigt, wenn Zeitpunkt, Niederschlagsmenge und Niederschlagswahrscheinlichkeit vorhanden, endlich und plausibel sind, die Wahrscheinlichkeit mindestens der konfigurierten Mindestwahrscheinlichkeit entspricht und die vollständige Periode zwischen dem Bewertungszeitpunkt und dem Beginn der nächsten verfügbaren Nachholmöglichkeit liegt. Stündliche Perioden dauern eine Stunde, `twice_daily`-Perioden zwölf Stunden und tägliche Perioden einen vollständigen lokalen Kalendertag. Angebrochene Perioden werden nicht anteilig hoch- oder heruntergerechnet. Die Mengen aller so qualifizierten Perioden werden addiert. Nur wenn diese Summe die Mindestprognosemenge erreicht, darf aufgeschoben werden. Fehlende Felder, eine nicht aktuelle Quellenbeobachtung, eine leere Antwort, nicht unterstützte Prognosearten, Einheitenfehler oder ein Aktionsfehler führen ausfallsicher zu keiner neuen Aufschiebung und werden mit stabilem Grundcode protokolliert.
+
+Eine Prognose wird erstmals unmittelbar vor der Ausführung des regulären Auftrags bewertet, nicht beim Erzeugen des bis zu zwei Wochen im Voraus sichtbaren Auftrags. Die Ausführung prüft atomar, dass diese Fälligkeitsbewertung erfolgt ist, bevor ein Ventil geöffnet werden darf. Eine ausreichende Prognose verschiebt den bestehenden Auftrag in das früheste vollständig innerhalb der festen Nachholfrist liegende Nachholfenster. Der ursprüngliche Auftragsbezug, die ursprüngliche Termin-ID, das saisonale Basissoll, die feste Nachholfrist und das maximale Nachholziel bleiben dabei erhalten. Die Frist endet zur lokalen Uhrzeit des ursprünglichen Fensterendes nach der konfigurierten Zahl lokaler Kalendertage und wird zeitzonen- sowie DST-sicher aufgelöst.
+
+Zu Beginn jedes Nachholfensters werden zuerst gemessene Wetterwerte und tatsächliche Bewässerung in die Wasserbilanz übernommen. Bei Bedarfsbewässerung wird ein dadurch unter die Bedarfsschwelle gefallener Auftrag ohne Ventilöffnung mit `measured_rain_satisfied_need` abgeschlossen. Bei Mindestbewässerung bleibt das saisonale Mindestziel geschuldet; eine Prognose kann dessen Ausführung zeitlich verschieben, aber gemessener Regen reduziert es nicht. Besteht weiterhin Bedarf, darf nur dann erneut bis zum nächsten Nachholfenster aufgeschoben werden, wenn dieses vollständig innerhalb der unveränderten Frist liegt und die neu abgerufene Prognose erneut die Schwellwerte erreicht. Gibt es keine weitere Nachholmöglichkeit, wird die Prognose ignoriert und der Auftrag im aktuellen Fenster ausgeführt, sofern das vollständige Ziel hineinpasst.
+
+Eine Aufschiebung wird im dauerhaften Bewässerungsauftrag mit ursprünglichem Fenster, aktueller Nachholmöglichkeit, fester Frist, Prognoseart, verwendeten vollständigen Perioden, qualifizierter Niederschlagssumme, Schwellwerten, Bewertungszeitpunkt, Qualität, Warnungen und Anzahl bisheriger Aufschiebungen gespeichert. Der Dispatcher darf einen fälligen prognosefähigen Auftrag nur starten, nachdem die Planung diesen Nachweis für die aktuelle Ausführungsmöglichkeit atomar erneuert hat. Damit bleiben Aufschiebung und erneute Bewertung über Neustarts erhalten, ohne ein Ventil auf Basis einer veralteten Vorhersage zu öffnen.
+
+Wird das Wettermodul der Anlage, die Wetterverwendung der Zone oder nur die Prognoseverwendung während einer Aufschiebung deaktiviert, bleibt der Auftrag samt fester Frist erhalten. Er wird im nächsten bereits festgelegten beziehungsweise noch innerhalb der Frist verfügbaren Nachholfenster ohne weitere Prognose anhand des ursprünglichen saisonalen Basissolls und der weiterhin geltenden Bewässerungsmodus-Regeln bewertet. Eine Konfigurationsänderung darf die Frist weder verlängern noch den Auftrag löschen. Wird kein vollständiges Nachholfenster mehr erreicht, endet der Auftrag nachvollziehbar als `make_up_deadline_expired`.
 
 Für eine freitags zwischen `05:00` und `08:00` geplante Heckenbewässerung mit zwei Tagen Nachholfrist gilt beispielhaft:
 
@@ -764,7 +787,7 @@ Für eine freitags zwischen `05:00` und `08:00` geplante Heckenbewässerung mit 
 5. Fällt genügend Regen, wird der Auftrag mit nachvollziehbarem Abschlussgrund ohne Bewässerung abgeschlossen.
 6. Eine neue Prognose darf die Bewässerung nicht unbegrenzt über die Nachholfrist hinaus verschieben.
 
-Wird das Wettermodul während einer wetterbedingten Aufschiebung deaktiviert, bleibt der Auftrag erhalten und wird im nächsten zulässigen Nachholfenster anhand des saisonalen Basissolls neu eingeplant. Eine Aufschiebung ist persistenter Zustand und muss einen Neustart überstehen.
+Die Abnahme erfolgt an den öffentlichen Schnittstellen der Prognosenormalisierung und -entscheidung, des Config Flow samt Migration, der atomaren automatischen Planung sowie der dauerhaften Auftragsspeicherung und Neustartwiederherstellung. Mindestens geprüft werden das vollständige Freitag-Regen-Samstag-Nachholen-Szenario, ausgebliebener und ausreichend gemessener Regen, Prognoseausfall, unvollständige Perioden, feste Frist, fehlendes Nachholfenster, Deaktivieren während einer Aufschiebung, Zielobergrenze und Neustart vor jeder erneuten Bewertung.
 
 ### Bodenfeuchterückmeldung
 

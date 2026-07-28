@@ -27,6 +27,7 @@ from .const import (
     CONF_SEASONAL_MODULE_ENABLED,
     CONF_SOAK_MODULE_ENABLED,
     CONF_SUBAREAS,
+    CONF_USE_FORECAST_POSTPONEMENT,
     CONF_USE_PLANT_SITE_MODEL,
     CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_USE_WEATHER_ADJUSTMENT,
@@ -269,7 +270,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         migrated_data = dict(entry.data)
         migrated_data.setdefault(CONF_PLANT_SITE_MODULE_ENABLED, False)
         migrated_data.setdefault(CONF_SEASONAL_MODULE_ENABLED, False)
-        migrated_data[CONF_WEATHER_MODULE_ENABLED] = False
+        if original_minor < 5:
+            migrated_data[CONF_WEATHER_MODULE_ENABLED] = False
         migrated_data.setdefault(CONF_WEATHER_SOURCES, {})
         migrated_data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
         for subentry in entry.get_subentries_of_type("zone"):
@@ -280,6 +282,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             zone_data.setdefault(CONF_SEASONAL_FACTORS, {month: 1.0 for month in MONTHS})
             if original_minor < 5:
                 zone_data[CONF_USE_WEATHER_ADJUSTMENT] = False
+            if original_minor < 6:
+                zone_data[CONF_USE_FORECAST_POSTPONEMENT] = False
             if CONF_BASE_TARGET not in zone_data:
                 schedule = zone_data.get(CONF_WEEKLY_SCHEDULE)
                 if isinstance(schedule, list):

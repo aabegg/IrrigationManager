@@ -5,7 +5,7 @@ from typing import Final
 DOMAIN: Final = "irrigation_manager"
 INTEGRATION_NAME: Final = "Irrigation Manager"
 CONFIG_ENTRY_VERSION: Final = 2
-CONFIG_ENTRY_MINOR_VERSION: Final = 5
+CONFIG_ENTRY_MINOR_VERSION: Final = 6
 
 CONF_MAIN_VALVE: Final = "main_valve"
 CONF_WATER_METER: Final = "water_meter"
@@ -28,6 +28,12 @@ CONF_SEASONAL_FACTORS: Final = "seasonal_factors"
 CONF_WEATHER_MODULE_ENABLED: Final = "weather_module_enabled"
 CONF_WEATHER_SOURCES: Final = "weather_sources"
 CONF_USE_WEATHER_ADJUSTMENT: Final = "use_weather_adjustment"
+CONF_USE_FORECAST_POSTPONEMENT: Final = "use_forecast_postponement"
+CONF_MAXIMUM_MAKE_UP_DAYS: Final = "maximum_make_up_days"
+CONF_MAKE_UP_SCHEDULE: Final = "make_up_schedule"
+CONF_MINIMUM_FORECAST_PRECIPITATION_MM: Final = "minimum_forecast_precipitation_mm"
+CONF_MINIMUM_FORECAST_PROBABILITY: Final = "minimum_forecast_probability"
+CONF_MAXIMUM_MAKE_UP_TARGET: Final = "maximum_make_up_target"
 CONF_WATERING_MODE: Final = "watering_mode"
 CONF_CROP_FACTOR: Final = "crop_factor"
 CONF_EFFECTIVE_RAIN_FACTOR: Final = "effective_rain_factor"

@@ -19,7 +19,7 @@ from homeassistant.config_entries import (
     SubentryFlowResult,
 )
 from homeassistant.const import CONF_NAME, Platform, UnitOfVolume
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.selector import (
@@ -53,9 +53,14 @@ from .const import (
     CONF_IRRIGATION_EFFICIENCY,
     CONF_LITERS_PER_PULSE,
     CONF_MAIN_VALVE,
+    CONF_MAKE_UP_SCHEDULE,
     CONF_MAXIMUM_DEFICIT_MM,
+    CONF_MAXIMUM_MAKE_UP_DAYS,
+    CONF_MAXIMUM_MAKE_UP_TARGET,
     CONF_METER_ENTITY,
     CONF_METER_TYPE,
+    CONF_MINIMUM_FORECAST_PRECIPITATION_MM,
+    CONF_MINIMUM_FORECAST_PROBABILITY,
     CONF_NEEDS_RECONFIGURATION,
     CONF_OPERATION_ENABLED,
     CONF_PLANT_SITE_MODULE_ENABLED,
@@ -63,6 +68,7 @@ from .const import (
     CONF_SEASONAL_MODULE_ENABLED,
     CONF_SOAK_MODULE_ENABLED,
     CONF_SUBAREAS,
+    CONF_USE_FORECAST_POSTPONEMENT,
     CONF_USE_PLANT_SITE_MODEL,
     CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_USE_WEATHER_ADJUSTMENT,
@@ -84,6 +90,13 @@ from .const import (
     WEEKDAYS,
 )
 from .duration import format_duration, parse_duration
+from .forecast import (
+    DEFAULT_MAXIMUM_MAKE_UP_DAYS,
+    DEFAULT_MINIMUM_FORECAST_PRECIPITATION_MM,
+    DEFAULT_MINIMUM_FORECAST_PROBABILITY,
+    MAXIMUM_MAKE_UP_DAYS,
+    MINIMUM_MAKE_UP_DAYS,
+)
 from .manager import IrrigationManager
 from .profiles import (
     APPLICATION_PROFILE_OPTIONS,
@@ -105,6 +118,7 @@ from .seasonal import (
 from .weather_sources import (
     WEATHER_SOURCE_ROLES,
     WeatherSourceRole,
+    observe_weather_sources,
 )
 from .zone_config import positive_number
 
@@ -402,6 +416,253 @@ def _canonical_weather_settings(user_input: Mapping[str, object]) -> dict[str, o
     if maximum <= threshold:
         raise ValueError("Weather settings are inconsistent")
     return dict(user_input)
+
+
+def _forecast_usage_schema(default: bool = False) -> vol.Schema:
+    """Choose whether one measured-water-balance zone uses rain forecasts."""
+    return vol.Schema(
+        {vol.Required(CONF_USE_FORECAST_POSTPONEMENT, default=default): BooleanSelector()}
+    )
+
+
+def _maximum_scheduled_target(zone: Mapping[str, object]) -> float:
+    """Return the largest confirmed regular target before seasonal adjustment."""
+    baseline = positive_number(zone.get(CONF_BASE_TARGET))
+    targets: list[float] = []
+    schedule = zone.get(CONF_WEEKLY_SCHEDULE)
+    if isinstance(schedule, list):
+        for row in schedule:
+            if not isinstance(row, Mapping) or row.get("start") is None or row.get("end") is None:
+                continue
+            override = positive_number(row.get("target"))
+            if override is not None:
+                targets.append(override)
+            elif baseline is not None:
+                targets.append(baseline)
+    if not targets and baseline is not None:
+        targets.append(baseline)
+    if not targets:
+        raise ValueError("Forecast postponement requires a confirmed baseline")
+    return max(targets)
+
+
+def _minimum_make_up_target(zone: Mapping[str, object]) -> float:
+    """Protect the largest currently guaranteed seasonal minimum."""
+    if zone.get(CONF_WATERING_MODE) != "minimum":
+        return 0.0
+    target = _maximum_scheduled_target(zone)
+    if zone.get(CONF_USE_SEASONAL_ADJUSTMENT) is True:
+        raw = zone.get(CONF_SEASONAL_FACTORS, {})
+        if not isinstance(raw, Mapping):
+            raise ValueError("Seasonal curve is invalid")
+        target *= max(canonical_seasonal_factors(raw).values())
+    return target
+
+
+def _forecast_details_schema(control_type: str, zone: Mapping[str, object]) -> vol.Schema:
+    """Collect bounded forecast thresholds and one safe make-up ceiling."""
+    proposed_target = zone.get(CONF_MAXIMUM_MAKE_UP_TARGET)
+    if not isinstance(proposed_target, int | float) or isinstance(proposed_target, bool):
+        proposed_target = _maximum_scheduled_target(zone)
+    target_default: object = (
+        format_duration(float(proposed_target))
+        if control_type == CONTROL_TYPE_TIME
+        else float(proposed_target)
+    )
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_MAXIMUM_MAKE_UP_DAYS,
+                default=zone.get(CONF_MAXIMUM_MAKE_UP_DAYS, DEFAULT_MAXIMUM_MAKE_UP_DAYS),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=MINIMUM_MAKE_UP_DAYS,
+                    max=MAXIMUM_MAKE_UP_DAYS,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_MINIMUM_FORECAST_PRECIPITATION_MM,
+                default=zone.get(
+                    CONF_MINIMUM_FORECAST_PRECIPITATION_MM,
+                    DEFAULT_MINIMUM_FORECAST_PRECIPITATION_MM,
+                ),
+            ): NumberSelector(
+                NumberSelectorConfig(min=0.1, max=100.0, step=0.1, mode=NumberSelectorMode.BOX)
+            ),
+            vol.Required(
+                CONF_MINIMUM_FORECAST_PROBABILITY,
+                default=zone.get(
+                    CONF_MINIMUM_FORECAST_PROBABILITY,
+                    DEFAULT_MINIMUM_FORECAST_PROBABILITY,
+                ),
+            ): NumberSelector(
+                NumberSelectorConfig(min=1, max=100, step=1, mode=NumberSelectorMode.BOX)
+            ),
+            vol.Required(CONF_MAXIMUM_MAKE_UP_TARGET, default=target_default): _target_selector(
+                control_type
+            ),
+        }
+    )
+
+
+def _canonical_forecast_details(
+    user_input: Mapping[str, object], zone: Mapping[str, object]
+) -> dict[str, object]:
+    """Validate cross-field forecast limits after selector validation."""
+    raw_days = user_input[CONF_MAXIMUM_MAKE_UP_DAYS]
+    if isinstance(raw_days, bool) or not isinstance(raw_days, int | float):
+        raise ValueError("Make-up days must be an integer")
+    days_value = float(raw_days)
+    precipitation = float(cast(float, user_input[CONF_MINIMUM_FORECAST_PRECIPITATION_MM]))
+    probability = float(cast(float, user_input[CONF_MINIMUM_FORECAST_PROBABILITY]))
+    target = _canonical_target(
+        user_input[CONF_MAXIMUM_MAKE_UP_TARGET], str(zone[CONF_CONTROL_TYPE])
+    )
+    if (
+        not days_value.is_integer()
+        or not MINIMUM_MAKE_UP_DAYS <= days_value <= MAXIMUM_MAKE_UP_DAYS
+        or not math.isfinite(precipitation)
+        or not 0.1 <= precipitation <= 100.0
+        or not math.isfinite(probability)
+        or not 1 <= probability <= 100
+        or target < _minimum_make_up_target(zone)
+    ):
+        raise ValueError("Forecast settings are outside their safe bounds")
+    return {
+        CONF_MAXIMUM_MAKE_UP_DAYS: int(days_value),
+        CONF_MINIMUM_FORECAST_PRECIPITATION_MM: precipitation,
+        CONF_MINIMUM_FORECAST_PROBABILITY: probability,
+        CONF_MAXIMUM_MAKE_UP_TARGET: target,
+    }
+
+
+def _assigned_forecast_source(
+    irrigation_facility: Mapping[str, object],
+) -> str | None:
+    """Return the explicitly assigned native weather entity, if structurally valid."""
+    sources = irrigation_facility.get(CONF_WEATHER_SOURCES)
+    if not isinstance(sources, Mapping):
+        return None
+    entity_id = sources.get(WeatherSourceRole.FORECAST.value)
+    if not isinstance(entity_id, str) or not entity_id.startswith("weather."):
+        return None
+    return entity_id
+
+
+def _has_available_forecast_source(
+    hass: HomeAssistant, irrigation_facility: Mapping[str, object]
+) -> bool:
+    """Return whether the assigned source is current and supports a native forecast."""
+    entity_id = _assigned_forecast_source(irrigation_facility)
+    if entity_id is None:
+        return False
+    observation = observe_weather_sources(hass, {WeatherSourceRole.FORECAST.value: entity_id}).get(
+        WeatherSourceRole.FORECAST.value
+    )
+    if not isinstance(observation, Mapping):
+        return False
+    supported = observation.get("supported_forecast_types")
+    return (
+        observation.get("quality") == "available"
+        and isinstance(supported, list)
+        and any(item in {"hourly", "twice_daily", "daily"} for item in supported)
+    )
+
+
+def _forecast_contract_is_valid(zone: Mapping[str, object]) -> bool:
+    """Keep an enabled forecast ceiling above every guaranteed seasonal target."""
+    if zone.get(CONF_USE_FORECAST_POSTPONEMENT) is not True:
+        return True
+    maximum = positive_number(zone.get(CONF_MAXIMUM_MAKE_UP_TARGET))
+    if maximum is None:
+        return False
+    try:
+        return maximum >= _minimum_make_up_target(zone)
+    except KeyError, TypeError, ValueError:
+        return False
+
+
+def _make_up_schedule_schema() -> vol.Schema:
+    """Collect at most one local make-up interval per weekday."""
+    return vol.Schema(
+        {
+            vol.Optional(weekday): section(
+                vol.Schema(
+                    {
+                        vol.Optional("start"): TimeSelector(),
+                        vol.Optional("end"): TimeSelector(),
+                    }
+                )
+            )
+            for weekday in WEEKDAYS
+        }
+    )
+
+
+def _canonical_make_up_schedule(
+    user_input: Mapping[str, object],
+) -> tuple[list[dict[str, object]], str | None]:
+    """Normalize seven optional make-up windows without inventing any interval."""
+    schedule: list[dict[str, object]] = []
+    intervals: list[tuple[float, float]] = []
+    configured = 0
+    week_seconds = 7 * 86_400
+    for weekday_index, weekday in enumerate(WEEKDAYS):
+        row = user_input.get(weekday, {})
+        if not isinstance(row, Mapping):
+            return [], "make_up_schedule_invalid"
+        start_value = row.get("start")
+        end_value = row.get("end")
+        has_start = start_value not in (None, "")
+        has_end = end_value not in (None, "")
+        if has_start != has_end:
+            return [], "make_up_schedule_incomplete"
+        if not has_start:
+            schedule.append({"weekday": weekday, "start": None, "end": None})
+            continue
+        try:
+            start = time.fromisoformat(str(start_value))
+            end = time.fromisoformat(str(end_value))
+        except TypeError, ValueError:
+            return [], "make_up_schedule_invalid"
+        configured += 1
+        start_seconds = (
+            weekday_index * 86_400 + start.hour * 3600 + start.minute * 60 + start.second
+        )
+        end_seconds = weekday_index * 86_400 + end.hour * 3600 + end.minute * 60 + end.second
+        if end_seconds <= start_seconds:
+            end_seconds += 86_400
+        intervals.append((start_seconds, end_seconds))
+        schedule.append({"weekday": weekday, "start": start.isoformat(), "end": end.isoformat()})
+    if configured == 0:
+        return [], "make_up_schedule_required"
+    cyclic = [
+        *intervals,
+        *((start + week_seconds, end + week_seconds) for start, end in intervals),
+    ]
+    for index, (interval_start, interval_end) in enumerate(intervals):
+        for other_index, (other_start, other_end) in enumerate(cyclic):
+            if index == other_index:
+                continue
+            if max(interval_start, other_start) < min(interval_end, other_end):
+                return [], "make_up_schedule_overlap"
+    return schedule, None
+
+
+def _make_up_schedule_form_values(value: object) -> dict[str, object]:
+    """Convert the canonical list into section values for editing."""
+    if not isinstance(value, list):
+        return {}
+    return {
+        str(row["weekday"]): {"start": row["start"], "end": row["end"]}
+        for row in value
+        if isinstance(row, Mapping)
+        and row.get("weekday") in WEEKDAYS
+        and row.get("start") is not None
+        and row.get("end") is not None
+    }
 
 
 def _seasonal_curve_schema(factors: Mapping[str, object] | None = None) -> vol.Schema:
@@ -1228,7 +1489,12 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         schema = _weekly_schedule_schema(str(self._first_zone[CONF_CONTROL_TYPE]))
         if user_input is None:
             return self.async_show_form(
-                step_id="installation_schedule", data_schema=schema, last_step=True
+                step_id="installation_schedule",
+                data_schema=schema,
+                last_step=not (
+                    self._first_zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True
+                    and _has_available_forecast_source(self.hass, self._installation)
+                ),
             )
         schedule, error = _canonical_weekly_schedule(
             user_input,
@@ -1244,6 +1510,78 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 last_step=True,
             )
         self._first_zone[CONF_WEEKLY_SCHEDULE] = schedule
+        if self._first_zone.get(
+            CONF_USE_WEATHER_ADJUSTMENT
+        ) is True and _has_available_forecast_source(self.hass, self._installation):
+            return await self.async_step_first_zone_forecast()
+        self._first_zone[CONF_USE_FORECAST_POSTPONEMENT] = False
+        return await self._async_create_irrigation_facility()
+
+    async def async_step_first_zone_forecast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose forecast postponement after the regular schedule is known."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="first_zone_forecast",
+                data_schema=_forecast_usage_schema(),
+                last_step=False,
+            )
+        self._first_zone[CONF_USE_FORECAST_POSTPONEMENT] = bool(
+            user_input[CONF_USE_FORECAST_POSTPONEMENT]
+        )
+        if not self._first_zone[CONF_USE_FORECAST_POSTPONEMENT]:
+            return await self._async_create_irrigation_facility()
+        return await self.async_step_first_zone_forecast_details()
+
+    async def async_step_first_zone_forecast_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect safe first-zone forecast bounds."""
+        schema = _forecast_details_schema(
+            str(self._first_zone[CONF_CONTROL_TYPE]), self._first_zone
+        )
+        if user_input is None:
+            return self.async_show_form(
+                step_id="first_zone_forecast_details",
+                data_schema=schema,
+                last_step=False,
+            )
+        try:
+            self._first_zone.update(_canonical_forecast_details(user_input, self._first_zone))
+        except KeyError, TypeError, ValueError:
+            return self.async_show_form(
+                step_id="first_zone_forecast_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "forecast_settings_invalid"},
+                last_step=False,
+            )
+        return await self.async_step_first_zone_make_up_schedule()
+
+    async def async_step_first_zone_make_up_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect first-zone catch-up windows before creating the entry."""
+        schema = _make_up_schedule_schema()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="first_zone_make_up_schedule",
+                data_schema=schema,
+                last_step=True,
+            )
+        schedule, error = _canonical_make_up_schedule(user_input)
+        if error is not None:
+            return self.async_show_form(
+                step_id="first_zone_make_up_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+                last_step=True,
+            )
+        self._first_zone[CONF_MAKE_UP_SCHEDULE] = schedule
+        return await self._async_create_irrigation_facility()
+
+    async def _async_create_irrigation_facility(self) -> ConfigFlowResult:
+        """Create the fully collected irrigation facility and first zone atomically."""
         candidate = _owned_endpoints(self._installation, (self._first_zone,))
         async with _ACTUATOR_OWNERSHIP_LOCK:
             if _has_duplicate_endpoints(self._installation, (self._first_zone,)) or (
@@ -1509,7 +1847,12 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         schema = _weekly_schedule_schema(str(self._zone[CONF_CONTROL_TYPE]))
         if user_input is None:
             return self.async_show_form(
-                step_id="minimal_schedule", data_schema=schema, last_step=True
+                step_id="minimal_schedule",
+                data_schema=schema,
+                last_step=not (
+                    self._zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True
+                    and _has_available_forecast_source(self.hass, self._get_entry().data)
+                ),
             )
         schedule, error = _canonical_weekly_schedule(
             user_input,
@@ -1525,6 +1868,72 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 last_step=True,
             )
         self._zone[CONF_WEEKLY_SCHEDULE] = schedule
+        if self._zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True and _has_available_forecast_source(
+            self.hass, self._get_entry().data
+        ):
+            return await self.async_step_forecast()
+        self._zone[CONF_USE_FORECAST_POSTPONEMENT] = False
+        return await self._async_create_zone()
+
+    async def async_step_forecast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Choose forecast postponement for a newly added zone."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="forecast",
+                data_schema=_forecast_usage_schema(),
+                last_step=False,
+            )
+        self._zone[CONF_USE_FORECAST_POSTPONEMENT] = bool(
+            user_input[CONF_USE_FORECAST_POSTPONEMENT]
+        )
+        if not self._zone[CONF_USE_FORECAST_POSTPONEMENT]:
+            return await self._async_create_zone()
+        return await self.async_step_forecast_details()
+
+    async def async_step_forecast_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect safe forecast bounds for a newly added zone."""
+        schema = _forecast_details_schema(str(self._zone[CONF_CONTROL_TYPE]), self._zone)
+        if user_input is None:
+            return self.async_show_form(
+                step_id="forecast_details", data_schema=schema, last_step=False
+            )
+        try:
+            self._zone.update(_canonical_forecast_details(user_input, self._zone))
+        except KeyError, TypeError, ValueError:
+            return self.async_show_form(
+                step_id="forecast_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "forecast_settings_invalid"},
+                last_step=False,
+            )
+        return await self.async_step_make_up_schedule()
+
+    async def async_step_make_up_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect catch-up windows for a newly added zone."""
+        schema = _make_up_schedule_schema()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="make_up_schedule", data_schema=schema, last_step=True
+            )
+        schedule, error = _canonical_make_up_schedule(user_input)
+        if error is not None:
+            return self.async_show_form(
+                step_id="make_up_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+                last_step=True,
+            )
+        self._zone[CONF_MAKE_UP_SCHEDULE] = schedule
+        return await self._async_create_zone()
+
+    async def _async_create_zone(self) -> SubentryFlowResult:
+        """Create one fully collected zone."""
         async with _ACTUATOR_OWNERSHIP_LOCK:
             if self._valve_is_configured(str(self._zone[CONF_ZONE_VALVE])):
                 return self.async_abort(reason="actuator_already_owned")
@@ -1550,6 +1959,12 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             options.remove("reconfigure_seasonal")
         if self._get_entry().data.get(CONF_WEATHER_MODULE_ENABLED) is True:
             options.insert(options.index("reconfigure_baseline"), "reconfigure_weather")
+            subentry = self._get_reconfigure_subentry()
+            if (
+                subentry.data.get(CONF_USE_WEATHER_ADJUSTMENT) is True
+                and _assigned_forecast_source(self._get_entry().data) is not None
+            ):
+                options.insert(options.index("reconfigure_baseline"), "reconfigure_forecast")
         if self._get_entry().data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
             options.append("calibration")
         return self.async_show_menu(step_id="reconfigure", menu_options=options)
@@ -1699,6 +2114,13 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 last_step=True,
             )
         self._zone[CONF_WEEKLY_SCHEDULE] = schedule
+        if not _forecast_contract_is_valid(self._zone):
+            return self.async_show_form(
+                step_id="reconfigure_minimal_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "forecast_settings_invalid"},
+                last_step=True,
+            )
         self._zone.pop(CONF_NEEDS_RECONFIGURATION, None)
         async with _ACTUATOR_OWNERSHIP_LOCK:
             if self._valve_is_configured(
@@ -1758,6 +2180,13 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 last_step=True,
             )
         data[CONF_WEEKLY_SCHEDULE] = schedule
+        if not _forecast_contract_is_valid(data):
+            return self.async_show_form(
+                step_id="reconfigure_baseline",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "forecast_settings_invalid"},
+                last_step=True,
+            )
         return self.async_update_and_abort(self._get_entry(), subentry, data=data)
 
     async def async_step_reconfigure_schedule(
@@ -1797,6 +2226,13 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 last_step=True,
             )
         data[CONF_WEEKLY_SCHEDULE] = schedule
+        if not _forecast_contract_is_valid(data):
+            return self.async_show_form(
+                step_id="reconfigure_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "forecast_settings_invalid"},
+                last_step=True,
+            )
         return self.async_update_and_abort(self._get_entry(), subentry, data=data)
 
     async def async_step_reconfigure_weather(
@@ -1847,7 +2283,94 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         )
         for key in irrelevant:
             self._zone.pop(key, None)
+        if not _forecast_contract_is_valid(self._zone):
+            return self.async_show_form(
+                step_id="reconfigure_weather_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "forecast_settings_invalid"},
+                last_step=True,
+            )
         return self.async_update_and_abort(self._get_entry(), subentry, data=self._zone)
+
+    async def async_step_reconfigure_forecast(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Enable or disable forecast postponement without deleting its settings."""
+        subentry = self._get_reconfigure_subentry()
+        enabled = bool(subentry.data.get(CONF_USE_FORECAST_POSTPONEMENT, False))
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_forecast",
+                data_schema=_forecast_usage_schema(enabled),
+                last_step=False,
+            )
+        self._zone = dict(subentry.data)
+        self._zone[CONF_USE_FORECAST_POSTPONEMENT] = bool(
+            user_input[CONF_USE_FORECAST_POSTPONEMENT]
+        )
+        if not self._zone[CONF_USE_FORECAST_POSTPONEMENT]:
+            return self.async_update_and_abort(self._get_entry(), subentry, data=self._zone)
+        if not _has_available_forecast_source(self.hass, self._get_entry().data):
+            return self.async_show_form(
+                step_id="reconfigure_forecast",
+                data_schema=self.add_suggested_values_to_schema(
+                    _forecast_usage_schema(enabled), user_input
+                ),
+                errors={"base": "forecast_source_unavailable"},
+                last_step=False,
+            )
+        return await self.async_step_reconfigure_forecast_details()
+
+    async def async_step_reconfigure_forecast_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Validate the fixed deadline, thresholds, and target ceiling."""
+        control_type = str(self._zone[CONF_CONTROL_TYPE])
+        schema = _forecast_details_schema(control_type, self._zone)
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_forecast_details",
+                data_schema=schema,
+                last_step=False,
+            )
+        try:
+            settings = _canonical_forecast_details(user_input, self._zone)
+        except KeyError, TypeError, ValueError:
+            return self.async_show_form(
+                step_id="reconfigure_forecast_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "forecast_settings_invalid"},
+                last_step=False,
+            )
+        self._zone.update(settings)
+        return await self.async_step_reconfigure_make_up_schedule()
+
+    async def async_step_reconfigure_make_up_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Persist a complete seven-day make-up-window table."""
+        schema = _make_up_schedule_schema()
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_make_up_schedule",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema,
+                    _make_up_schedule_form_values(self._zone.get(CONF_MAKE_UP_SCHEDULE)),
+                ),
+                last_step=True,
+            )
+        schedule, error = _canonical_make_up_schedule(user_input)
+        if error is not None:
+            return self.async_show_form(
+                step_id="reconfigure_make_up_schedule",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": error},
+                last_step=True,
+            )
+        self._zone[CONF_MAKE_UP_SCHEDULE] = schedule
+        return self.async_update_and_abort(
+            self._get_entry(), self._get_reconfigure_subentry(), data=self._zone
+        )
 
     async def async_step_reconfigure_plant(
         self, user_input: dict[str, Any] | None = None
@@ -1979,6 +2502,14 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             CONF_USE_SEASONAL_ADJUSTMENT: True,
             CONF_SEASONAL_FACTORS: dict(self._seasonal_factors),
         }
+        if not _forecast_contract_is_valid(data):
+            return self.async_show_form(
+                step_id="reconfigure_seasonal_review",
+                data_schema=_seasonal_confirmation_schema(),
+                errors={"base": "forecast_settings_invalid"},
+                description_placeholders={"preview": submission.preview},
+                last_step=True,
+            )
         return self.async_update_and_abort(self._get_entry(), subentry, data=data)
 
     async def async_step_releases(

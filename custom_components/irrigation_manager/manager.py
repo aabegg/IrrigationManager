@@ -32,15 +32,21 @@ from .const import (
     CONF_LITERS_PER_COUNT,
     CONF_LITERS_PER_PULSE,
     CONF_MAIN_VALVE,
+    CONF_MAKE_UP_SCHEDULE,
     CONF_MAX_DELIVERY_RUNTIME,
     CONF_MAX_OPERATION_LIFETIME,
     CONF_MAXIMUM_DEFICIT_MM,
+    CONF_MAXIMUM_MAKE_UP_DAYS,
+    CONF_MAXIMUM_MAKE_UP_TARGET,
     CONF_METER_ENTITY,
     CONF_METER_TYPE,
+    CONF_MINIMUM_FORECAST_PRECIPITATION_MM,
+    CONF_MINIMUM_FORECAST_PROBABILITY,
     CONF_NEEDS_RECONFIGURATION,
     CONF_OPERATION_ENABLED,
     CONF_SEASONAL_FACTORS,
     CONF_SEASONAL_MODULE_ENABLED,
+    CONF_USE_FORECAST_POSTPONEMENT,
     CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_USE_WEATHER_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
@@ -61,6 +67,15 @@ from .executor import (
     ExecutionRequest,
     ExecutionResult,
     IrrigationExecutor,
+)
+from .forecast import (
+    ForecastFetchResult,
+    ForecastPeriod,
+    ForecastSettings,
+    async_fetch_forecast,
+    evaluate_rain_forecast,
+    next_make_up_opportunity,
+    postponement_deadline,
 )
 from .meter import CumulativeMeter
 from .models import (
@@ -751,6 +766,120 @@ class IrrigationManager:
             "effective_target": effective_target,
         }
 
+    @staticmethod
+    def _forecast_runtime_settings(
+        zone: Mapping[str, object],
+    ) -> tuple[int, float, ForecastSettings] | None:
+        """Return a complete safe opt-in contract or disable postponement."""
+        if zone.get(CONF_USE_FORECAST_POSTPONEMENT) is not True:
+            return None
+        days_value = zone.get(CONF_MAXIMUM_MAKE_UP_DAYS)
+        target_value = zone.get(CONF_MAXIMUM_MAKE_UP_TARGET)
+        precipitation_value = zone.get(CONF_MINIMUM_FORECAST_PRECIPITATION_MM)
+        probability_value = zone.get(CONF_MINIMUM_FORECAST_PROBABILITY)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int | float)
+            for value in (
+                days_value,
+                target_value,
+                precipitation_value,
+                probability_value,
+            )
+        ):
+            return None
+        days_float = float(cast(int | float, days_value))
+        maximum_target = float(cast(int | float, target_value))
+        minimum_rain = float(cast(int | float, precipitation_value))
+        minimum_probability = float(cast(int | float, probability_value))
+        if (
+            not days_float.is_integer()
+            or not 1 <= days_float <= 7
+            or not math.isfinite(maximum_target)
+            or maximum_target <= 0
+            or not math.isfinite(minimum_rain)
+            or not 0.1 <= minimum_rain <= 100
+            or not math.isfinite(minimum_probability)
+            or not 1 <= minimum_probability <= 100
+        ):
+            return None
+        return (
+            int(days_float),
+            maximum_target,
+            ForecastSettings(
+                minimum_precipitation_mm=minimum_rain,
+                minimum_probability_percent=minimum_probability,
+            ),
+        )
+
+    @staticmethod
+    def _forecast_evidence(
+        *,
+        reason: str,
+        original_window_start: datetime,
+        original_window_end: datetime,
+        deadline: datetime,
+        evaluated_at: datetime | None = None,
+        source_entity_id: str | None = None,
+        forecast_type: str | None = None,
+        next_opportunity_at: datetime | None = None,
+        qualified_precipitation_mm: float | None = None,
+        minimum_precipitation_mm: float | None = None,
+        minimum_probability_percent: float | None = None,
+        quality: str | None = None,
+        considered_periods: Iterable[ForecastPeriod] = (),
+        postponed: bool = False,
+        warnings: Iterable[str] = (),
+        previous: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Freeze compact restart-safe evidence for one due-order decision."""
+        attempts = 1
+        if previous is not None:
+            raw_attempts = previous.get("evaluation_count")
+            if isinstance(raw_attempts, int) and not isinstance(raw_attempts, bool):
+                attempts = raw_attempts + 1
+        postponement_count = 0
+        if previous is not None:
+            raw_count = previous.get("postponement_count")
+            if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+                postponement_count = raw_count
+        if postponed:
+            postponement_count += 1
+        result = dict(previous or {})
+        result.update(
+            {
+                "reason": reason,
+                "original_window_start": original_window_start.isoformat(),
+                "original_window_end": original_window_end.isoformat(),
+                "deadline": deadline.isoformat(),
+                "evaluated_at": None if evaluated_at is None else evaluated_at.isoformat(),
+                "source_entity_id": source_entity_id,
+                "forecast_type": forecast_type,
+                "next_opportunity_at": (
+                    None if next_opportunity_at is None else next_opportunity_at.isoformat()
+                ),
+                "qualified_precipitation_mm": qualified_precipitation_mm,
+                "evaluation_count": attempts,
+                "postponement_count": postponement_count,
+            }
+        )
+        if minimum_precipitation_mm is not None:
+            result["minimum_precipitation_mm"] = minimum_precipitation_mm
+        if minimum_probability_percent is not None:
+            result["minimum_probability_percent"] = minimum_probability_percent
+        if quality is not None:
+            result["quality"] = quality
+        result["warnings"] = list(warnings)
+        result["considered_periods"] = [
+            {
+                "starts_at": period.starts_at.isoformat(),
+                "ends_at": period.ends_at.isoformat(),
+                "precipitation_mm": period.precipitation_mm,
+                "probability_percent": period.probability_percent,
+            }
+            for period in considered_periods
+        ]
+        return result
+
     async def _async_plan_automatic_locked(
         self, *, dry_run: bool, now: datetime | None
     ) -> dict[str, object]:
@@ -763,8 +892,15 @@ class IrrigationManager:
             else None
         )
         candidates: list[ManualIrrigationRequest] = []
+        completed_without_execution: dict[str, ManualIrrigationRequest] = {}
+        expired_make_up_requests: dict[str, ManualIrrigationRequest] = {}
         not_plannable: list[PlanningRejection] = []
         target_warnings: set[tuple[str, str, str]] = set()
+        pending_automatic = {
+            request.request_id: request
+            for request in self._stored_state.manual_requests
+            if request.source == "automatic" and request.status == "pending"
+        }
         releases_allow = (
             self._operation_enabled
             and self._automation_enabled
@@ -778,6 +914,8 @@ class IrrigationManager:
             if zone_id in configured_zone_ids
         }
         weather_plans: dict[str, _ZoneWeatherPlan] = {}
+        weather_observations: Mapping[str, object] = {}
+        forecast_results: dict[str, ForecastFetchResult] = {}
         weather_module_enabled = self._installation_data.get(CONF_WEATHER_MODULE_ENABLED) is True
         if weather_module_enabled:
             observations = observe_weather_sources(
@@ -785,6 +923,7 @@ class IrrigationManager:
                 self._installation_data.get(CONF_WEATHER_SOURCES),
                 now=planning_now,
             )
+            weather_observations = observations
             reference_et = self._weather_reading(
                 observations, WeatherSourceRole.REFERENCE_EVAPOTRANSPIRATION
             )
@@ -867,40 +1006,153 @@ class IrrigationManager:
                     for index, row in enumerate(schedule)
                 ):
                     raise HomeAssistantError(f"Invalid weekly schedule for zone {zone.title}")
-                for offset in range(-1, 14):
-                    day = local_now.date() + timedelta(days=offset)
+                planning_days = {
+                    local_now.date() + timedelta(days=offset) for offset in range(-7, 14)
+                }
+                for pending_request in pending_automatic.values():
+                    if pending_request.zone_id != zone.zone_id:
+                        continue
+                    raw_evidence = pending_request.resolved_inputs.get("forecast_postponement")
+                    if not isinstance(raw_evidence, Mapping):
+                        continue
+                    raw_original_start = raw_evidence.get("original_window_start")
+                    if isinstance(raw_original_start, str):
+                        with suppress(ValueError):
+                            planning_days.add(
+                                datetime.fromisoformat(raw_original_start)
+                                .astimezone(dt_util.DEFAULT_TIME_ZONE)
+                                .date()
+                            )
+                for day in sorted(planning_days):
                     row = schedule[day.weekday()]
                     if not isinstance(row, Mapping):
                         raise HomeAssistantError(f"Invalid weekly schedule for zone {zone.title}")
+                    request_id = f"automatic:{zone.zone_id}:{day.isoformat()}"
+                    existing_request = pending_automatic.get(request_id)
+                    previous_evidence: Mapping[str, object] | None = None
+                    if existing_request is not None:
+                        raw_evidence = existing_request.resolved_inputs.get("forecast_postponement")
+                        if isinstance(raw_evidence, Mapping):
+                            previous_evidence = raw_evidence
                     start_value = row.get("start")
                     end_value = row.get("end")
                     if start_value is None and end_value is None:
-                        continue
-                    if start_value is None or end_value is None:
-                        raise HomeAssistantError(f"Incomplete weekly window for zone {zone.title}")
-                    try:
-                        start_time = time.fromisoformat(str(start_value))
-                        end_time = time.fromisoformat(str(end_value))
-                        target, uses_override = effective_schedule_target(zone.data, row)
-                    except (TypeError, ValueError) as err:
-                        raise HomeAssistantError(
-                            f"Invalid weekly target for zone {zone.title}: {err}"
-                        ) from err
-                    start = resolve_local_wall_time(day, start_time, dt_util.DEFAULT_TIME_ZONE)
-                    end = resolve_local_wall_time(day, end_time, dt_util.DEFAULT_TIME_ZONE)
-                    if end <= start:
-                        end = resolve_local_wall_time(
-                            day + timedelta(days=1), end_time, dt_util.DEFAULT_TIME_ZONE
+                        if previous_evidence is None:
+                            continue
+                        if existing_request is None:
+                            continue
+                        raw_original_start = previous_evidence.get("original_window_start")
+                        raw_original_end = previous_evidence.get("original_window_end")
+                        raw_original_target = previous_evidence.get("original_seasonal_target")
+                        if (
+                            not isinstance(raw_original_start, str)
+                            or not isinstance(raw_original_end, str)
+                            or isinstance(raw_original_target, bool)
+                            or not isinstance(raw_original_target, int | float)
+                            or not math.isfinite(float(raw_original_target))
+                            or float(raw_original_target) <= 0
+                        ):
+                            continue
+                        try:
+                            original_start = datetime.fromisoformat(raw_original_start)
+                            original_end = datetime.fromisoformat(raw_original_end)
+                        except ValueError:
+                            continue
+                        target = float(raw_original_target)
+                        uses_override = bool(
+                            existing_request.resolved_inputs.get("used_day_target_override", False)
                         )
+                        start = original_start
+                        end = original_end
+                    elif start_value is None or end_value is None:
+                        raise HomeAssistantError(f"Incomplete weekly window for zone {zone.title}")
+                    else:
+                        try:
+                            start_time = time.fromisoformat(str(start_value))
+                            end_time = time.fromisoformat(str(end_value))
+                            target, uses_override = effective_schedule_target(zone.data, row)
+                        except (TypeError, ValueError) as err:
+                            raise HomeAssistantError(
+                                f"Invalid weekly target for zone {zone.title}: {err}"
+                            ) from err
+                        start = resolve_local_wall_time(day, start_time, dt_util.DEFAULT_TIME_ZONE)
+                        end = resolve_local_wall_time(day, end_time, dt_util.DEFAULT_TIME_ZONE)
+                        if end <= start:
+                            end = resolve_local_wall_time(
+                                day + timedelta(days=1),
+                                end_time,
+                                dt_util.DEFAULT_TIME_ZONE,
+                            )
+                        original_start = start
+                        original_end = end
+                    if previous_evidence is not None:
+                        if existing_request is None:
+                            continue
+                        raw_original_start = previous_evidence.get("original_window_start")
+                        raw_original_end = previous_evidence.get("original_window_end")
+                        try:
+                            if isinstance(raw_original_start, str):
+                                original_start = datetime.fromisoformat(raw_original_start)
+                            if isinstance(raw_original_end, str):
+                                original_end = datetime.fromisoformat(raw_original_end)
+                            start = datetime.fromisoformat(
+                                existing_request.requested_start_at or start.isoformat()
+                            )
+                            end = datetime.fromisoformat(
+                                existing_request.automatic_window_end or end.isoformat()
+                            )
+                        except ValueError:
+                            start = original_start
+                            end = original_end
+                    if end <= planning_now and previous_evidence is not None:
+                        raw_deadline = previous_evidence.get("deadline")
+                        try:
+                            deadline = (
+                                datetime.fromisoformat(raw_deadline)
+                                if isinstance(raw_deadline, str)
+                                else planning_now
+                            )
+                        except ValueError:
+                            deadline = planning_now
+                        next_opportunity = next_make_up_opportunity(
+                            schedule=zone.data.get(CONF_MAKE_UP_SCHEDULE),
+                            after=max(end, planning_now),
+                            deadline=deadline,
+                            timezone=dt_util.DEFAULT_TIME_ZONE,
+                        )
+                        if next_opportunity is not None:
+                            start = next_opportunity.starts_at
+                            end = next_opportunity.ends_at
+                        elif existing_request is not None:
+                            expired_evidence = dict(previous_evidence)
+                            expired_evidence.update(
+                                {
+                                    "reason": "make_up_deadline_expired",
+                                    "evaluated_at": planning_now.isoformat(),
+                                }
+                            )
+                            expired_inputs = dict(existing_request.resolved_inputs)
+                            expired_inputs.update(
+                                {
+                                    "forecast_evaluation_required": False,
+                                    "forecast_postponement": expired_evidence,
+                                }
+                            )
+                            expired_make_up_requests[request_id] = replace(
+                                existing_request,
+                                status="expired",
+                                resolved_inputs=expired_inputs,
+                                revision=existing_request.revision + 1,
+                            )
                     if end <= planning_now:
                         continue
+                    window_is_due = start <= planning_now < end
                     raw_curve = zone.data.get(CONF_SEASONAL_FACTORS, {})
                     seasonal_curve: Mapping[str, object] = (
                         raw_curve
                         if isinstance(raw_curve, Mapping)
                         else {"invalid_curve": raw_curve}
                     )
-                    request_id = f"automatic:{zone.zone_id}:{day.isoformat()}"
                     if request_id == active_request_id:
                         continue
                     target_resolution = resolve_automatic_target(
@@ -918,6 +1170,17 @@ class IrrigationManager:
                     if resolved_target is None:
                         raise HomeAssistantError("Executable target resolution has no target")
                     target = resolved_target
+                    original_seasonal_target = target
+                    if previous_evidence is not None:
+                        raw_original_target = previous_evidence.get("original_seasonal_target")
+                        if (
+                            isinstance(raw_original_target, int | float)
+                            and not isinstance(raw_original_target, bool)
+                            and math.isfinite(float(raw_original_target))
+                            and float(raw_original_target) > 0
+                        ):
+                            original_seasonal_target = float(raw_original_target)
+                            target = original_seasonal_target
                     target_warnings.update(
                         (request_id, zone.zone_id, warning)
                         for warning in target_resolution.warnings
@@ -939,35 +1202,71 @@ class IrrigationManager:
                         else:
                             balance = weather_plan.result
                             settings = weather_plan.settings
-                            if day == local_now.date() and balance.quality == "valid":
+                            balance_is_current = (
+                                day == local_now.date() or previous_evidence is not None
+                            )
+                            if balance_is_current and balance.quality == "valid":
                                 if balance.outcome == "skip":
-                                    not_plannable.append(
-                                        PlanningRejection(
-                                            request_id=request_id,
-                                            zone_id=zone.zone_id,
-                                            reason=(
-                                                PlanningRejectionReason.WATER_DEFICIT_BELOW_THRESHOLD
-                                            ),
+                                    if (
+                                        previous_evidence is not None
+                                        and existing_request is not None
+                                    ):
+                                        if window_is_due:
+                                            completed_evidence = dict(previous_evidence)
+                                            completed_evidence.update(
+                                                {
+                                                    "reason": "measured_rain_satisfied_need",
+                                                    "evaluated_at": planning_now.isoformat(),
+                                                }
+                                            )
+                                            completed_inputs = dict(
+                                                existing_request.resolved_inputs
+                                            )
+                                            completed_inputs.update(
+                                                {
+                                                    "forecast_evaluation_required": False,
+                                                    "forecast_postponement": completed_evidence,
+                                                }
+                                            )
+                                            completed_without_execution[request_id] = replace(
+                                                existing_request,
+                                                status="completed",
+                                                resolved_inputs=completed_inputs,
+                                                revision=existing_request.revision + 1,
+                                            )
+                                            continue
+                                    else:
+                                        not_plannable.append(
+                                            PlanningRejection(
+                                                request_id=request_id,
+                                                zone_id=zone.zone_id,
+                                                reason=(
+                                                    PlanningRejectionReason.WATER_DEFICIT_BELOW_THRESHOLD
+                                                ),
+                                            )
                                         )
-                                    )
-                                    continue
-                                if balance.deficit_target is None:
+                                        continue
+                                elif balance.deficit_target is None:
                                     raise HomeAssistantError(
                                         "Valid water-balance resolution has no deficit target"
                                     )
-                                seasonal_target = target
-                                target = (
-                                    max(target, balance.deficit_target)
-                                    if settings.watering_mode is WateringMode.MINIMUM
-                                    else balance.deficit_target
-                                )
-                                weather_adjusted = not math.isclose(
-                                    target, seasonal_target, rel_tol=1e-9, abs_tol=1e-6
-                                )
+                                else:
+                                    seasonal_target = target
+                                    target = (
+                                        max(target, balance.deficit_target)
+                                        if settings.watering_mode is WateringMode.MINIMUM
+                                        else balance.deficit_target
+                                    )
+                                    weather_adjusted = not math.isclose(
+                                        target,
+                                        seasonal_target,
+                                        rel_tol=1e-9,
+                                        abs_tol=1e-6,
+                                    )
                             weather_snapshot = self._water_balance_snapshot(
                                 balance,
                                 settings,
-                                target_date=day,
+                                target_date=(local_now.date() if previous_evidence else day),
                                 current_date=local_now.date(),
                                 effective_target=target,
                             )
@@ -978,6 +1277,216 @@ class IrrigationManager:
                                     for warning in snapshot_warnings
                                     if isinstance(warning, str)
                                 )
+                    forecast_evidence = (
+                        dict(previous_evidence) if previous_evidence is not None else None
+                    )
+                    forecast_evaluation_required = False
+                    forecast_contract = self._forecast_runtime_settings(zone.data)
+                    maximum_make_up_target = (
+                        forecast_contract[1] if forecast_contract is not None else None
+                    )
+                    if previous_evidence is not None:
+                        raw_maximum_target = previous_evidence.get("maximum_make_up_target")
+                        if (
+                            isinstance(raw_maximum_target, int | float)
+                            and not isinstance(raw_maximum_target, bool)
+                            and math.isfinite(float(raw_maximum_target))
+                            and float(raw_maximum_target) > 0
+                        ):
+                            maximum_make_up_target = float(raw_maximum_target)
+                    was_deferred = (
+                        existing_request is not None
+                        and existing_request.requested_start_at is not None
+                        and datetime.fromisoformat(existing_request.requested_start_at)
+                        != original_start
+                    )
+                    fixed_deadline = postponement_deadline(
+                        original_window_end=original_end,
+                        maximum_days=(forecast_contract[0] if forecast_contract else 1),
+                        timezone=dt_util.DEFAULT_TIME_ZONE,
+                    )
+                    if previous_evidence is not None:
+                        raw_deadline = previous_evidence.get("deadline")
+                        if isinstance(raw_deadline, str):
+                            with suppress(ValueError):
+                                fixed_deadline = datetime.fromisoformat(raw_deadline)
+                    request_expires_at = fixed_deadline if was_deferred else end
+                    due_for_forecast = window_is_due
+                    forecast_available = False
+                    source_entity_id: str | None = None
+                    supported_types: tuple[str, ...] = ()
+                    raw_forecast_observation = weather_observations.get(
+                        WeatherSourceRole.FORECAST.value
+                    )
+                    if isinstance(raw_forecast_observation, Mapping):
+                        raw_source = raw_forecast_observation.get("source_entity_id")
+                        raw_supported = raw_forecast_observation.get("supported_forecast_types")
+                        forecast_available = (
+                            raw_forecast_observation.get("quality") == "available"
+                            and isinstance(raw_source, str)
+                            and bool(raw_source)
+                            and isinstance(raw_supported, list)
+                            and all(isinstance(item, str) for item in raw_supported)
+                        )
+                        if forecast_available:
+                            source_entity_id = cast(str, raw_source)
+                            supported_types = tuple(cast(list[str], raw_supported))
+                    postponement_enabled = (
+                        weather_module_enabled
+                        and zone.data.get(CONF_USE_WEATHER_ADJUSTMENT) is True
+                        and forecast_contract is not None
+                    )
+                    newly_postponed = False
+                    if was_deferred and not postponement_enabled:
+                        forecast_evidence = self._forecast_evidence(
+                            reason="forecast_disabled_during_deferral",
+                            original_window_start=original_start,
+                            original_window_end=original_end,
+                            deadline=fixed_deadline,
+                            evaluated_at=planning_now,
+                            quality="disabled",
+                            previous=previous_evidence,
+                        )
+                        forecast_evaluation_required = not due_for_forecast
+                    elif postponement_enabled and not due_for_forecast:
+                        forecast_evaluation_required = True
+                    elif postponement_enabled and due_for_forecast:
+                        active_forecast_contract = cast(
+                            tuple[int, float, ForecastSettings], forecast_contract
+                        )
+                        next_opportunity = next_make_up_opportunity(
+                            schedule=zone.data.get(CONF_MAKE_UP_SCHEDULE),
+                            after=end,
+                            deadline=fixed_deadline,
+                            timezone=dt_util.DEFAULT_TIME_ZONE,
+                        )
+                        if next_opportunity is None:
+                            forecast_evidence = self._forecast_evidence(
+                                reason="no_future_make_up_opportunity",
+                                original_window_start=original_start,
+                                original_window_end=original_end,
+                                deadline=fixed_deadline,
+                                evaluated_at=planning_now,
+                                minimum_precipitation_mm=(
+                                    active_forecast_contract[2].minimum_precipitation_mm
+                                ),
+                                minimum_probability_percent=(
+                                    active_forecast_contract[2].minimum_probability_percent
+                                ),
+                                quality="not_applicable",
+                                previous=previous_evidence,
+                            )
+                        elif not forecast_available or source_entity_id is None:
+                            forecast_evidence = self._forecast_evidence(
+                                reason="forecast_unavailable_execute_current_window",
+                                original_window_start=original_start,
+                                original_window_end=original_end,
+                                deadline=fixed_deadline,
+                                evaluated_at=planning_now,
+                                source_entity_id=source_entity_id,
+                                next_opportunity_at=next_opportunity.starts_at,
+                                minimum_precipitation_mm=(
+                                    active_forecast_contract[2].minimum_precipitation_mm
+                                ),
+                                minimum_probability_percent=(
+                                    active_forecast_contract[2].minimum_probability_percent
+                                ),
+                                quality="unavailable",
+                                previous=previous_evidence,
+                            )
+                        else:
+                            fetch_result = forecast_results.get(source_entity_id)
+                            if fetch_result is None:
+                                fetch_result = await async_fetch_forecast(
+                                    self._hass,
+                                    entity_id=source_entity_id,
+                                    supported_types=supported_types,
+                                    timezone=dt_util.DEFAULT_TIME_ZONE,
+                                )
+                                forecast_results[source_entity_id] = fetch_result
+                            if (
+                                fetch_result.quality != "valid"
+                                or fetch_result.forecast_type is None
+                                or not fetch_result.periods
+                            ):
+                                forecast_evidence = self._forecast_evidence(
+                                    reason="forecast_unavailable_execute_current_window",
+                                    original_window_start=original_start,
+                                    original_window_end=original_end,
+                                    deadline=fixed_deadline,
+                                    evaluated_at=planning_now,
+                                    source_entity_id=source_entity_id,
+                                    next_opportunity_at=next_opportunity.starts_at,
+                                    minimum_precipitation_mm=(
+                                        active_forecast_contract[2].minimum_precipitation_mm
+                                    ),
+                                    minimum_probability_percent=(
+                                        active_forecast_contract[2].minimum_probability_percent
+                                    ),
+                                    quality=fetch_result.quality,
+                                    warnings=fetch_result.warnings,
+                                    previous=previous_evidence,
+                                )
+                            else:
+                                evaluation = evaluate_rain_forecast(
+                                    periods=fetch_result.periods,
+                                    evaluated_at=planning_now,
+                                    next_opportunity_at=next_opportunity.starts_at,
+                                    forecast_type=fetch_result.forecast_type,
+                                    source_entity_id=source_entity_id,
+                                    settings=active_forecast_contract[2],
+                                )
+                                forecast_evidence = self._forecast_evidence(
+                                    reason=evaluation.reason,
+                                    original_window_start=original_start,
+                                    original_window_end=original_end,
+                                    deadline=fixed_deadline,
+                                    evaluated_at=planning_now,
+                                    source_entity_id=source_entity_id,
+                                    forecast_type=evaluation.forecast_type,
+                                    next_opportunity_at=next_opportunity.starts_at,
+                                    qualified_precipitation_mm=(
+                                        evaluation.qualified_precipitation_mm
+                                    ),
+                                    minimum_precipitation_mm=(
+                                        active_forecast_contract[2].minimum_precipitation_mm
+                                    ),
+                                    minimum_probability_percent=(
+                                        active_forecast_contract[2].minimum_probability_percent
+                                    ),
+                                    quality=fetch_result.quality,
+                                    considered_periods=evaluation.considered_periods,
+                                    postponed=evaluation.should_postpone,
+                                    warnings=fetch_result.warnings,
+                                    previous=previous_evidence,
+                                )
+                                if evaluation.should_postpone:
+                                    start = next_opportunity.starts_at
+                                    end = next_opportunity.ends_at
+                                    request_expires_at = fixed_deadline
+                                    forecast_evaluation_required = True
+                                    newly_postponed = True
+                    make_up_target_capped = False
+                    if (
+                        (was_deferred or newly_postponed)
+                        and maximum_make_up_target is not None
+                        and target > maximum_make_up_target
+                    ):
+                        target = maximum_make_up_target
+                        make_up_target_capped = True
+                        target_warnings.add((request_id, zone.zone_id, "make_up_target_capped"))
+                    if forecast_evidence is not None:
+                        forecast_evidence.setdefault(
+                            "original_seasonal_target", original_seasonal_target
+                        )
+                        if maximum_make_up_target is not None:
+                            forecast_evidence.setdefault(
+                                "maximum_make_up_target", maximum_make_up_target
+                            )
+                        forecast_evidence["make_up_target_capped"] = (
+                            make_up_target_capped
+                            or forecast_evidence.get("make_up_target_capped") is True
+                        )
                     control_type = str(zone.data.get(CONF_CONTROL_TYPE, "time"))
                     hard_limit = (
                         self._optional_float(zone.data, CONF_VOLUME_MAX_RUNTIME)
@@ -1052,7 +1561,7 @@ class IrrigationManager:
                             target_value=target,
                             remaining_value=target,
                             created_at=planning_now.isoformat(),
-                            expires_at=end.isoformat(),
+                            expires_at=request_expires_at.isoformat(),
                             requested_start_at=expected_start.isoformat(),
                             source="automatic",
                             automatic_window_end=end.isoformat(),
@@ -1076,6 +1585,7 @@ class IrrigationManager:
                                 "effective_target": target,
                                 "weekly_window_start": start.isoformat(),
                                 "planned_delivery_duration_seconds": required_duration,
+                                "forecast_evaluation_required": (forecast_evaluation_required),
                                 "planning_basis": (
                                     "calibrated_flow"
                                     if expected_flow is not None and expected_flow > 0
@@ -1084,6 +1594,11 @@ class IrrigationManager:
                                 **(
                                     {"water_balance": weather_snapshot}
                                     if weather_snapshot is not None
+                                    else {}
+                                ),
+                                **(
+                                    {"forecast_postponement": forecast_evidence}
+                                    if forecast_evidence is not None
                                     else {}
                                 ),
                             },
@@ -1135,7 +1650,9 @@ class IrrigationManager:
                     )
                     replaced_ids.append(candidate.request_id)
             candidate_ids = {request.request_id for request in candidates}
-            removed = sorted(pending.keys() - candidate_ids)
+            completed_ids = set(completed_without_execution)
+            expired_ids = set(expired_make_up_requests)
+            removed = sorted(pending.keys() - candidate_ids - completed_ids - expired_ids)
             retained = tuple(
                 request
                 for request in self._stored_state.manual_requests
@@ -1143,11 +1660,16 @@ class IrrigationManager:
             )
             created.sort()
             replaced_ids.sort()
-            changed = bool(created or replaced_ids or removed)
+            changed = bool(created or replaced_ids or removed or completed_ids or expired_ids)
             if (changed or observability_changed or balance_changed) and not dry_run:
                 next_state = replace(
                     self._stored_state,
-                    manual_requests=(*retained, *reconciled),
+                    manual_requests=(
+                        *retained,
+                        *reconciled,
+                        *completed_without_execution.values(),
+                        *expired_make_up_requests.values(),
+                    ),
                     next_request_sequence=sequence,
                     zone_water_balances=zone_balances,
                 )
@@ -1170,6 +1692,14 @@ class IrrigationManager:
                     ),
                     reason=DispatchReason.CANCELLED,
                 )
+                await self._async_record_terminal_requests(
+                    completed_without_execution.values(),
+                    reason=DispatchReason.COMPLETED,
+                )
+                await self._async_record_terminal_requests(
+                    expired_make_up_requests.values(),
+                    reason=DispatchReason.EXPIRED,
+                )
                 self._queue_event.set()
                 self._publish(status=self._coordinator.data.status, active_zone_id=None)
             return {
@@ -1182,6 +1712,8 @@ class IrrigationManager:
                 "would_create_request_ids": created if dry_run else [],
                 "replaced_request_ids": replaced_ids,
                 "removed_request_ids": removed,
+                "completed_without_execution_request_ids": sorted(completed_ids),
+                "expired_make_up_request_ids": sorted(expired_ids),
                 "not_plannable": [rejection.as_dict() for rejection in not_plannable],
             }
 
@@ -1418,6 +1950,7 @@ class IrrigationManager:
         consecutive_failures = 0
         while not self._shutting_down:
             selected: ManualIrrigationRequest | None = None
+            forecast_preflight = False
             retry_delay: float | None = None
             try:
                 async with self._command_lock:
@@ -1430,9 +1963,17 @@ class IrrigationManager:
                     decision = self._dispatch_decision(selected, now=datetime.now(UTC))
                     await self._async_record_dispatch_decision(decision)
                     if decision.reason == DispatchReason.READY and selected is not None:
-                        task = await self._async_prepare_execution(selected)
+                        forecast_preflight = self._forecast_preflight_required(
+                            selected, now=datetime.now(UTC)
+                        )
+                        if not forecast_preflight:
+                            task = await self._async_prepare_execution(selected)
                     else:
                         selected = None
+                if forecast_preflight:
+                    selected = None
+                    await self.async_plan_automatic(now=datetime.now(UTC))
+                    continue
                 if selected is None:
                     timeout = self._seconds_until_next_request_change()
                     if timeout is not None:
@@ -1481,6 +2022,22 @@ class IrrigationManager:
                     await self._async_record_dispatch_error(err, retry_delay)
             if retry_delay is not None:
                 await asyncio.sleep(retry_delay)
+
+    @staticmethod
+    def _forecast_preflight_required(request: ManualIrrigationRequest, *, now: datetime) -> bool:
+        """Block automatic actuation until the due forecast decision is durable."""
+        if (
+            request.source != "automatic"
+            or request.resolved_inputs.get("forecast_evaluation_required") is not True
+        ):
+            return False
+        try:
+            requested_start = datetime.fromisoformat(
+                request.requested_start_at or request.created_at
+            )
+        except ValueError:
+            return True
+        return requested_start <= now
 
     def _request_released(self, request: ManualIrrigationRequest) -> bool:
         return self._dispatch_decision(request, now=datetime.now(UTC)).reason == "ready"
@@ -3327,6 +3884,29 @@ class IrrigationManager:
             "planning_rejections": [
                 rejection.as_dict() for rejection in self._stored_state.planning_rejections
             ],
+            "forecast_postponements": {
+                request.request_id: {
+                    "zone_id": request.zone_id,
+                    "requested_start_at": request.requested_start_at,
+                    "automatic_window_end": request.automatic_window_end,
+                    "deadline": evidence.get("deadline"),
+                    "reason": evidence.get("reason"),
+                    "evaluated_at": evidence.get("evaluated_at"),
+                    "next_opportunity_at": evidence.get("next_opportunity_at"),
+                    "qualified_precipitation_mm": evidence.get("qualified_precipitation_mm"),
+                    "quality": evidence.get("quality"),
+                    "evaluation_count": evidence.get("evaluation_count"),
+                    "postponement_count": evidence.get("postponement_count"),
+                    "warnings": evidence.get("warnings", []),
+                }
+                for request in self._stored_state.manual_requests
+                if request.source == "automatic"
+                and request.status == "pending"
+                and isinstance(
+                    evidence := request.resolved_inputs.get("forecast_postponement"),
+                    Mapping,
+                )
+            },
             "water_balances": {
                 zone_id: {
                     "ready_from_date": balance.ready_from_date,
