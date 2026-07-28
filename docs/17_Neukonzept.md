@@ -777,6 +777,23 @@ Jede Ausbaustufe muss für sich vollständig nutzbar, migrierbar, testbar und de
 
 Für die Migration bestehender Version-2-Zonen wird das erste vorhandene positive Tagesziel in Wochentagsreihenfolge als gemeinsames Basissoll übernommen. Sämtliche bisherigen Tagesziele bleiben unabhängig von Gleichheit oder Wiederholung als ausdrückliche Tagesabweichungen erhalten, sodass sich kein bestehender Auftrag ändert. Besitzt eine bestehende Zone kein einziges Tagesziel, bleibt ihr Basissoll zunächst leer; sie kann weiterhin manuell verwendet werden und benötigt erst vor dem Speichern eines neuen automatischen Bewässerungsfensters ein positives Basissoll. Die Migration erfindet für eine leere Zone keinen Wert und setzt allein deshalb keine Sicherheitssperre.
 
+### Stufe 1.1: Persistente Ausführungsdiagnose (umgesetzt ab rc19)
+
+Vor der saisonalen Korrektur ist die Ablaufdiagnose von Planung und Dispatcher so erweitert, dass ein nicht gestarteter oder blockierter Bewässerungsauftrag nach einem unsauberen Neustart nachvollzogen werden kann. Die Diagnose ist rein beobachtend und verändert weder Priorisierung noch Freigaben, Ziele oder Ausführung.
+
+- Die bisherige boolesche Ausführungsfreigabe wird intern als strukturierte Entscheidung mit einem stabilen Grundcode dargestellt. Mindestens unterschieden werden `waiting_for_start`, `ready`, `operation_disabled`, `zone_disabled`, `automation_disabled`, `zone_automation_disabled`, `safety_lock`, `emergency_stop`, `reconfiguration_required`, `config_reload_pending`, `automatic_planning_in_progress`, `actuator_snapshot_mismatch`, `window_no_longer_fits` und `expired`.
+- Persistiert werden ausschliesslich Zustandsübergänge, nicht jeder Dispatcher-Durchlauf. Ein Eintrag enthält Zeitstempel, Auftrags-ID, Zonen-ID, alten und neuen Grundcode, die für die Entscheidung relevanten Freigaben und Sperren sowie den nächsten geplanten Weckzeitpunkt.
+- Pro Bewässerungsanlage werden die letzten 100 Diagnoseeinträge als begrenzter Ringpuffer im versionierten Laufzeitspeicher geführt. Die Migration ergänzt einen leeren Puffer und verändert keine bestehenden Aufträge oder Bewässerungsvorgänge.
+- Die Home-Assistant-Integrationsdiagnose zeigt den aktuellen Dispatcherzustand, den gegebenenfalls blockierenden Auftrag, den Grund, den Beginn der Blockierung, den nächsten Weckzeitpunkt und den Ringpuffer. Entity-Zustände, Zugangsdaten und andere nicht benötigte Nutzdaten werden nicht kopiert.
+- Ein fälliger blockierter Auftrag erzeugt beim Wechsel in einen Blockierungsgrund genau einen gedrosselten Systemprotokolleintrag. Erst ein Wechsel des Grundes oder die erneute Blockierung nach zwischenzeitlichem `ready` darf einen weiteren Eintrag erzeugen; eine Warteschleife darf das Protokoll nicht füllen.
+- Ein erfolgreicher Start, Ablauf, Abbruch, Konfigurationsreload und Neustart schliesst beziehungsweise überführt den letzten Diagnosezustand ausdrücklich. Nach einem unsauberen Neustart bleibt dadurch erkennbar, welcher Zustand zuletzt dauerhaft erreicht wurde.
+- Für den Integrationslebenszyklus ergänzen `startup`, `clean_shutdown`, `config_reload` und `unclean_restart` die auftragsbezogenen Grundcodes; `completed` und `cancelled` schliessen einen Auftrag ausdrücklich ab. Unerwartete Dispatcher- und Planungsfehler werden als `dispatcher_error` beziehungsweise `automatic_planning_error` mit Fehlerklasse und nächstem Retry-Zeitpunkt erfasst; die vollständige Ausnahme mit Stacktrace bleibt im Home-Assistant-Systemprotokoll.
+- Jeder Dispatcher-Durchlauf muss entweder einen Auftrag dauerhaft voranbringen oder warten. Bei einem unerwarteten Fehler verhindert ein exponentieller, auf 60 Sekunden begrenzter Backoff einen Fehler- oder Busy-Loop. Ein Fehler beim Schreiben der optionalen Diagnose wird protokolliert, darf den Bewässerungsbetrieb aber nicht selbst sperren.
+- Kurzlebige In-Memory-Warteobjekte und zugehörige Fehler werden nach Abschluss oder Abbruch entfernt, damit die Zahl früherer Aufträge den Arbeitsspeicher nicht unbegrenzt belastet.
+- Die Diagnose benennt nur Zustände innerhalb des Irrigation Managers. Stromausfall, Kernel-Panik, OOM oder andere HAOS-Ursachen werden nicht behauptet, sondern bleiben mit den Host- und Supervisor-Protokollen zu korrelieren.
+
+Abnahmekriterien sind ein reproduzierter fälliger, aber blockierter Auftrag ohne Busy-Loop, korrekte Grundcodes für alle Freigabe- und Sperrpfade, gedrosselte Protokollierung, Begrenzung des Ringpuffers, Migration ohne Verhaltensänderung sowie der Erhalt des letzten Diagnosezustands über einen simulierten unsauberen Neustart.
+
 ### Stufe 2: Saisonale Korrektur
 
 - zwölf Monatsfaktoren und tägliche lineare Interpolation implementieren

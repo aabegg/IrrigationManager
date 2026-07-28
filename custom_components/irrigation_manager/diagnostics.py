@@ -16,6 +16,7 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     """Return redacted configuration and the decisions behind current state."""
     manager = entry.runtime_data.manager
+    decisions = manager.diagnostics_state_decisions()
     return {
         "entry": async_redact_data(
             {
@@ -37,5 +38,7 @@ async def async_get_config_entry_diagnostics(
             )
             for subentry in entry.subentries.values()
         ],
-        "state_decisions": manager.diagnostics_state_decisions(),
+        "state_decisions": decisions,
+        "dispatcher": decisions["dispatcher"],
+        "dispatcher_history": decisions["dispatcher_history"],
     }

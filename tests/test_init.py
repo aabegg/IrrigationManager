@@ -13,7 +13,11 @@ from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager.const import DOMAIN
-from custom_components.irrigation_manager.models import StoredInstallationState
+from custom_components.irrigation_manager.models import (
+    DispatcherDiagnosticEntry,
+    DispatcherDiagnosticState,
+    StoredInstallationState,
+)
 from custom_components.irrigation_manager.services import START_MANUAL_SCHEMA
 from custom_components.irrigation_manager.storage import IrrigationStore
 
@@ -103,7 +107,87 @@ async def test_fresh_store_uses_only_current_v2_schema(hass: HomeAssistant) -> N
         "automation_enabled",
         "zone_operation_enabled",
         "zone_automation_enabled",
+        "dispatcher_diagnostic",
+        "dispatcher_diagnostic_history",
     }
+
+
+async def test_dispatch_diagnostics_round_trip_independently_of_operational_state(
+    hass: HomeAssistant,
+) -> None:
+    """Persist bounded dispatcher evidence without coupling it to entities."""
+    diagnostic = DispatcherDiagnosticState(
+        current_reason="operation_disabled",
+        current_request_id="request-1",
+        current_zone_id="zone-1",
+        blocked_since="2026-07-28T06:00:00+00:00",
+        next_wake_at="2026-07-28T07:00:00+00:00",
+        boot_id="boot-1",
+        boot_started_at="2026-07-28T05:59:00+00:00",
+        clean_shutdown=False,
+    )
+    event = DispatcherDiagnosticEntry(
+        recorded_at="2026-07-28T06:00:00+00:00",
+        request_id="request-1",
+        zone_id="zone-1",
+        old_reason="waiting_for_start",
+        new_reason="operation_disabled",
+        releases={"operation": False},
+        locks={"operation_disabled": True},
+        next_wake_at="2026-07-28T07:00:00+00:00",
+    )
+    store = IrrigationStore(hass, "diagnostics-round-trip")
+
+    await store.async_save(
+        StoredInstallationState(
+            installation_total_liters=12.5,
+            dispatcher_diagnostic=diagnostic,
+            dispatcher_diagnostic_history=(event,),
+        )
+    )
+
+    loaded = await store.async_load()
+    assert loaded.installation_total_liters == 12.5
+    assert loaded.dispatcher_diagnostic == diagnostic
+    assert loaded.dispatcher_diagnostic_history == (event,)
+
+
+def test_malformed_dispatch_diagnostics_do_not_invalidate_operational_state() -> None:
+    """Treat optional telemetry corruption as non-fatal for irrigation state."""
+    state = StoredInstallationState.from_dict(
+        {
+            "installation_total_liters": 7,
+            "dispatcher_diagnostic": {"current_reason": 3},
+            "dispatcher_diagnostic_history": [
+                {"new_reason": "ready"},
+                "broken",
+            ],
+        }
+    )
+
+    assert state.installation_total_liters == 7
+    assert state.dispatcher_diagnostic is None
+    assert state.dispatcher_diagnostic_history == ()
+
+
+def test_dispatch_diagnostic_history_is_limited_to_last_one_hundred() -> None:
+    """Bound persisted telemetry independently of how much work was performed."""
+    history = [
+        DispatcherDiagnosticEntry(
+            recorded_at=f"2026-07-28T06:{index:02d}:00+00:00",
+            request_id=f"request-{index}",
+            zone_id="zone-1",
+            old_reason="waiting_for_start",
+            new_reason="ready",
+        ).as_dict()
+        for index in range(105)
+    ]
+
+    state = StoredInstallationState.from_dict({"dispatcher_diagnostic_history": history})
+
+    assert len(state.dispatcher_diagnostic_history) == 100
+    assert state.dispatcher_diagnostic_history[0].request_id == "request-5"
+    assert state.dispatcher_diagnostic_history[-1].request_id == "request-104"
 
 
 async def test_store_migrates_shipped_rc6_data_to_v2(hass: HomeAssistant) -> None:
@@ -129,6 +213,25 @@ async def test_store_migrates_shipped_rc6_data_to_v2(hass: HomeAssistant) -> Non
     assert state.zone_totals_liters == {"zone-1": 12}
     assert "winter_lock" not in state.as_dict()
     assert "weather_failure_since" not in state.as_dict()
+
+
+async def test_store_minor_migration_adds_empty_dispatch_diagnostics(
+    hass: HomeAssistant,
+) -> None:
+    """Upgrade rc18 storage without changing operational irrigation data."""
+    await Store[dict[str, object]](
+        hass,
+        2,
+        "irrigation_manager.pre-diagnostics",
+        atomic_writes=True,
+        minor_version=0,
+    ).async_save(StoredInstallationState(installation_total_liters=19).as_dict())
+
+    state = await IrrigationStore(hass, "pre-diagnostics").async_load()
+
+    assert state.installation_total_liters == 19
+    assert state.dispatcher_diagnostic is None
+    assert state.dispatcher_diagnostic_history == ()
 
 
 async def test_setup_publishes_v2_initial_snapshot_without_legacy_fields(

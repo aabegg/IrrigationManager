@@ -19,7 +19,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager import async_migrate_entry
 from custom_components.irrigation_manager.const import DOMAIN
+from custom_components.irrigation_manager.diagnostics import (
+    async_get_config_entry_diagnostics,
+)
 from custom_components.irrigation_manager.executor import ExecutionResult
+from custom_components.irrigation_manager.manager import _bounded_retry_delay
 from custom_components.irrigation_manager.models import (
     ActiveExecutionState,
     IrrigationExecutionState,
@@ -1872,6 +1876,452 @@ async def test_dispatch_wake_timeout_ignores_past_requested_start(
     assert 299 < timeout <= 300
 
 
+async def test_due_blocked_request_is_diagnosed_once_without_busy_loop(
+    hass: HomeAssistant,
+) -> None:
+    """Persist one stable transition for a blocked due request and then wait."""
+    entry, zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={"operation_enabled": False},
+    )
+    manager = entry.runtime_data.manager
+    manager._dispatcher_task = entry.async_create_background_task(
+        hass,
+        manager._async_dispatch_requests(),
+        "test request dispatcher",
+    )
+    await asyncio.sleep(0.05)
+    assert manager._dispatcher_task is not None
+    assert not manager._dispatcher_task.done()
+    now = datetime.now(UTC)
+    request = ManualIrrigationRequest(
+        request_id="blocked-diagnostic",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=1,
+        remaining_value=1,
+        created_at=(now - timedelta(minutes=1)).isoformat(),
+        requested_start_at=(now - timedelta(seconds=1)).isoformat(),
+        expires_at=(now + timedelta(minutes=5)).isoformat(),
+    )
+    async with manager._command_lock:
+        manager._stored_state = replace(manager._stored_state, manual_requests=(request,))
+        manager._queue_event.set()
+    await asyncio.sleep(0.05)
+    first = await async_get_config_entry_diagnostics(hass, entry)
+    manager._queue_event.set()
+    await asyncio.sleep(0.05)
+    second = await async_get_config_entry_diagnostics(hass, entry)
+
+    dispatcher = second["dispatcher"]
+    assert dispatcher["current_reason"] == "operation_disabled"
+    assert dispatcher["current_request_id"] == "blocked-diagnostic"
+    assert dispatcher["blocked_since"] is not None
+    transitions = [
+        event
+        for event in second["dispatcher_history"]
+        if event["new_reason"] == "operation_disabled"
+    ]
+    assert len(transitions) == 1
+    assert second["dispatcher_history"] == first["dispatcher_history"]
+
+
+async def test_dispatcher_retries_unexpected_failure_with_backoff(
+    hass: HomeAssistant,
+) -> None:
+    """An internal exception must not turn the background dispatcher into a hot loop."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    manager._dispatcher_task = entry.async_create_background_task(
+        hass,
+        manager._async_dispatch_requests(),
+        "test request dispatcher",
+    )
+    await asyncio.sleep(0.05)
+    assert manager._dispatcher_task is not None
+    assert not manager._dispatcher_task.done()
+    calls = 0
+
+    async def fail_expiry() -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("synthetic dispatcher failure")
+
+    async with manager._command_lock:
+        manager._async_expire_requests = fail_expiry
+        manager._queue_event.set()
+    await asyncio.sleep(0.1)
+
+    assert calls == 1
+    diagnostics = manager.diagnostics_state_decisions()
+    assert diagnostics["dispatcher"]["current_reason"] == "dispatcher_error"
+    assert diagnostics["dispatcher"]["last_error"] == "RuntimeError"
+
+
+async def test_dispatcher_cleanup_failure_is_logged_without_killing_task(
+    hass: HomeAssistant,
+) -> None:
+    """Keep the dispatcher supervised when its final presentation refresh fails."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    manager._dispatcher_task = entry.async_create_background_task(
+        hass,
+        manager._async_dispatch_requests(),
+        "test request dispatcher",
+    )
+    await asyncio.sleep(0.05)
+
+    def fail_publish(*, status: str, active_zone_id: str | None) -> None:
+        del status, active_zone_id
+        raise RuntimeError("synthetic publish failure")
+
+    async with manager._command_lock:
+        manager._publish = fail_publish
+        manager._queue_event.set()
+    await asyncio.sleep(0.1)
+
+    assert manager._dispatcher_task is not None
+    assert not manager._dispatcher_task.done()
+    diagnostics = manager.diagnostics_state_decisions()
+    assert diagnostics["dispatcher"]["current_reason"] == "dispatcher_error"
+    assert diagnostics["dispatcher"]["last_error"] == "RuntimeError"
+
+
+async def test_automatic_planner_failure_is_logged_and_retried_with_backoff(
+    hass: HomeAssistant,
+) -> None:
+    """Retain evidence when automatic planning fails instead of sleeping silently."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    calls = 0
+
+    async def fail_planning(*, dry_run: bool = False, now=None) -> dict[str, object]:
+        del dry_run, now
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("synthetic planning failure")
+
+    manager.async_plan_automatic = fail_planning
+    manager._automatic_planner_task = entry.async_create_background_task(
+        hass,
+        manager._async_automatic_planner(),
+        "test automatic planner",
+    )
+    await asyncio.sleep(0.1)
+
+    assert calls == 1
+    assert manager._automatic_planner_task is not None
+    assert not manager._automatic_planner_task.done()
+    diagnostic = manager.diagnostics_state_decisions()["dispatcher"]
+    assert diagnostic["current_reason"] == "automatic_planning_error"
+    assert diagnostic["last_error"] == "RuntimeError"
+
+
+async def test_failed_diagnostic_write_is_retried_without_duplicate_transition(
+    hass: HomeAssistant,
+) -> None:
+    """Retry a lost telemetry write even when the dispatcher decision is unchanged."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    request = ManualIrrigationRequest(
+        request_id="retry-diagnostic",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=1,
+        remaining_value=1,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(hours=1)).isoformat(),
+    )
+    decision = manager._dispatch_decision(request, now=now)
+    original_history_size = len(manager._stored_state.dispatcher_diagnostic_history)
+    manager._store.async_save = AsyncMock(side_effect=[RuntimeError("storage unavailable"), None])
+
+    await manager._async_record_dispatch_decision(decision)
+    assert manager._diagnostics_dirty is True
+    history_size_after_failure = len(manager._stored_state.dispatcher_diagnostic_history)
+    await manager._async_record_dispatch_decision(decision)
+
+    assert manager._store.async_save.await_count == 2
+    assert manager._diagnostics_dirty is False
+    assert history_size_after_failure == original_history_size + 1
+    assert len(manager._stored_state.dispatcher_diagnostic_history) == history_size_after_failure
+
+
+async def test_same_block_reason_metadata_update_preserves_original_block_start(
+    hass: HomeAssistant,
+) -> None:
+    """Update wake metadata without inventing another decision transition."""
+    entry, zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={"operation_enabled": False},
+    )
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    request = ManualIrrigationRequest(
+        request_id="stable-block",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=1,
+        remaining_value=1,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(hours=1)).isoformat(),
+    )
+    decision = manager._dispatch_decision(request, now=now)
+    await manager._async_record_dispatch_decision(decision)
+    first = manager._stored_state.dispatcher_diagnostic
+    history_size = len(manager._stored_state.dispatcher_diagnostic_history)
+    assert first is not None
+
+    await manager._async_record_dispatch_decision(
+        replace(decision, next_wake_at=(now + timedelta(minutes=30)).isoformat())
+    )
+    updated = manager._stored_state.dispatcher_diagnostic
+
+    assert updated is not None
+    assert updated.blocked_since == first.blocked_since
+    assert len(manager._stored_state.dispatcher_diagnostic_history) == history_size
+
+
+def test_dispatch_retry_delay_is_bounded_without_large_integer_conversion() -> None:
+    """Remain at the 60-second ceiling for arbitrarily many failures."""
+    assert [_bounded_retry_delay(index) for index in range(1, 9)] == [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        60,
+        60,
+    ]
+    assert _bounded_retry_delay(1_000_000) == 60
+
+
+async def test_completion_and_pending_cancellation_close_diagnostic_request(
+    hass: HomeAssistant,
+) -> None:
+    """Record terminal evidence before the dispatcher advances to later work."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    pending = await manager.async_start_manual(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=1,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        requested_start_at=datetime.now(UTC) + timedelta(hours=1),
+        wait_for_completion=False,
+    )
+    pending_second = await manager.async_start_manual(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=1,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+        requested_start_at=datetime.now(UTC) + timedelta(hours=2),
+        wait_for_completion=False,
+    )
+    await manager.async_cancel_request(str(pending["request_id"]))
+    await manager.async_cancel_request(str(pending_second["request_id"]))
+
+    manager._dispatcher_task = entry.async_create_background_task(
+        hass,
+        manager._async_dispatch_requests(),
+        "test request dispatcher",
+    )
+    completed = await manager.async_start_manual(
+        zone_subentry_id=zone.subentry_id,
+        duration_seconds=0.001,
+        amount_liters=None,
+        hard_time_limit_seconds=None,
+    )
+    terminal_reasons = {
+        (event.request_id, event.new_reason)
+        for event in manager._stored_state.dispatcher_diagnostic_history
+    }
+
+    assert (str(pending["request_id"]), "cancelled") in terminal_reasons
+    assert (str(pending_second["request_id"]), "cancelled") in terminal_reasons
+    assert (str(completed["request_id"]), "completed") in terminal_reasons
+
+
+async def test_bulk_automatic_cancellation_records_every_affected_request(
+    hass: HomeAssistant,
+) -> None:
+    """Do not collapse several automatic cancellations into one terminal event."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    requests = tuple(
+        ManualIrrigationRequest(
+            request_id=f"automatic-cancel-{index}",
+            sequence=index,
+            zone_id=zone.unique_id,
+            zone_subentry_id=zone.subentry_id,
+            zone_name=zone.title,
+            zone_valve="switch.lawn",
+            main_valve=None,
+            target_type="duration",
+            target_value=60,
+            remaining_value=60,
+            created_at=now.isoformat(),
+            requested_start_at=(now + timedelta(hours=index)).isoformat(),
+            expires_at=(now + timedelta(hours=index + 1)).isoformat(),
+            source="automatic",
+            automatic_window_end=(now + timedelta(hours=index + 1)).isoformat(),
+        )
+        for index in (1, 2)
+    )
+    manager._stored_state = replace(manager._stored_state, manual_requests=requests)
+
+    await manager.async_set_installation_automation(enabled=False, stop_active=False)
+
+    cancelled_ids = {
+        event.request_id
+        for event in manager._stored_state.dispatcher_diagnostic_history
+        if event.new_reason == "cancelled"
+    }
+    assert cancelled_ids >= {"automatic-cancel-1", "automatic-cancel-2"}
+
+
+async def test_dispatch_decision_uses_stable_reason_codes_for_every_release_path(
+    hass: HomeAssistant,
+) -> None:
+    """Keep the diagnostic vocabulary deterministic across all dispatcher barriers."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    manual = ManualIrrigationRequest(
+        request_id="reason-matrix",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=60,
+        remaining_value=60,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(hours=1)).isoformat(),
+    )
+
+    assert manager._dispatch_decision(None, now=now).reason == "waiting_for_start"
+    assert manager._dispatch_decision(manual, now=now).reason == "ready"
+
+    manager._config_reload_pending = True
+    assert manager._dispatch_decision(manual, now=now).reason == "config_reload_pending"
+    manager._config_reload_pending = False
+    manager._automatic_planning_in_progress = True
+    assert manager._dispatch_decision(manual, now=now).reason == "automatic_planning_in_progress"
+    manager._automatic_planning_in_progress = False
+
+    manager._installation_data["needs_reconfiguration"] = True
+    assert manager._dispatch_decision(manual, now=now).reason == "reconfiguration_required"
+    manager._installation_data["needs_reconfiguration"] = False
+    manager._stored_state = replace(manager._stored_state, operation_enabled=False)
+    assert manager._dispatch_decision(manual, now=now).reason == "operation_disabled"
+    manager._stored_state = replace(
+        manager._stored_state,
+        operation_enabled=True,
+        emergency_stop=True,
+        installation_safety_lock="Emergency stop activated",
+    )
+    assert manager._dispatch_decision(manual, now=now).reason == "emergency_stop"
+    manager._stored_state = replace(
+        manager._stored_state,
+        emergency_stop=False,
+        installation_safety_lock="Flow failure",
+    )
+    safety_decision = manager._dispatch_decision(manual, now=now)
+    assert safety_decision.reason == "safety_lock"
+    assert safety_decision.locks == {"safety_lock": "Flow failure"}
+    manager._stored_state = replace(manager._stored_state, installation_safety_lock=None)
+
+    mismatch = replace(manual, zone_valve="switch.replaced")
+    assert manager._dispatch_decision(mismatch, now=now).reason == "actuator_snapshot_mismatch"
+    manager._stored_state = replace(
+        manager._stored_state,
+        zone_operation_enabled={str(zone.unique_id): False},
+    )
+    assert manager._dispatch_decision(manual, now=now).reason == "zone_disabled"
+    manager._stored_state = replace(
+        manager._stored_state,
+        zone_operation_enabled={str(zone.unique_id): True},
+    )
+
+    automatic = replace(
+        manual,
+        source="automatic",
+        automatic_window_end=(now + timedelta(hours=1)).isoformat(),
+    )
+    manager._stored_state = replace(manager._stored_state, automation_enabled=False)
+    assert manager._dispatch_decision(automatic, now=now).reason == "automation_disabled"
+    manager._stored_state = replace(
+        manager._stored_state,
+        automation_enabled=True,
+        zone_automation_enabled={str(zone.unique_id): False},
+    )
+    assert manager._dispatch_decision(automatic, now=now).reason == "zone_automation_disabled"
+    manager._stored_state = replace(
+        manager._stored_state,
+        zone_automation_enabled={str(zone.unique_id): True},
+    )
+    too_late = replace(
+        automatic,
+        automatic_window_end=(now + timedelta(seconds=10)).isoformat(),
+    )
+    assert manager._dispatch_decision(too_late, now=now).reason == "window_no_longer_fits"
+
+
+async def test_clean_shutdown_and_unclean_restart_are_durable(
+    hass: HomeAssistant,
+) -> None:
+    """Distinguish orderly unload from a previous runtime that never closed."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    diagnostic = manager._stored_state.dispatcher_diagnostic
+    assert diagnostic is not None
+    manager._stored_state = replace(
+        manager._stored_state,
+        dispatcher_diagnostic=replace(
+            diagnostic,
+            current_reason="safety_lock",
+            clean_shutdown=False,
+        ),
+    )
+    await manager._store.async_save(manager._stored_state)
+
+    await manager._async_begin_boot_diagnostics()
+    after_restart = await IrrigationStore(hass, entry.entry_id).async_load()
+    restarted = after_restart.dispatcher_diagnostic
+    assert restarted is not None
+    assert restarted.current_reason == "unclean_restart"
+    assert restarted.clean_shutdown is False
+    assert after_restart.dispatcher_diagnostic_history[-1].old_reason == "safety_lock"
+
+    await manager.async_shutdown()
+    after_shutdown = await IrrigationStore(hass, entry.entry_id).async_load()
+    stopped = after_shutdown.dispatcher_diagnostic
+    assert stopped is not None
+    assert stopped.current_reason == "clean_shutdown"
+    assert stopped.clean_shutdown is True
+
+
 async def test_planner_accounts_for_queued_predecessor_inside_window(
     hass: HomeAssistant,
 ) -> None:
@@ -1992,6 +2442,10 @@ async def test_startup_recovery_accounts_persisted_meter_baseline_and_runtime(
     assert recovered.delivered_duration_seconds == pytest.approx(20, abs=1)
     assert recovered.measurement_quality == "measured"
     assert manager._stored_state.installation_total_liters == 12
+    assert any(
+        event.request_id == request.request_id and event.new_reason == "cancelled"
+        for event in manager._stored_state.dispatcher_diagnostic_history
+    )
 
 
 async def test_emergency_stop_blocks_open_command_even_without_lock(
@@ -2040,3 +2494,13 @@ async def test_stale_pending_snapshot_is_cancelled_and_authorization_uses_snapsh
     )
     await manager._async_cancel_stale_pending_snapshots()
     assert manager._request(request.request_id).status == "cancelled"
+    diagnostic_events = [
+        event
+        for event in manager._stored_state.dispatcher_diagnostic_history
+        if event.request_id == request.request_id
+    ]
+    assert [event.new_reason for event in diagnostic_events[-2:]] == [
+        "actuator_snapshot_mismatch",
+        "cancelled",
+    ]
+    assert diagnostic_events[-2].locks == {"actuator_snapshot_mismatch": True}

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import math
 from collections.abc import Iterable, Mapping
 from contextlib import suppress
@@ -51,6 +52,9 @@ from .meter import CumulativeMeter
 from .models import (
     ActiveExecutionState,
     CalibrationProposal,
+    DispatcherDiagnosticEntry,
+    DispatcherDiagnosticState,
+    DispatchReason,
     InstallationSnapshot,
     IrrigationExecutionState,
     ManualIrrigationRequest,
@@ -69,6 +73,30 @@ from .zone_config import effective_schedule_target
 
 _FINAL_REQUEST_STATUSES = {"completed", "cancelled", "expired"}
 _OPEN_REQUEST_STATUSES = {"pending", "executing"}
+_DISPATCH_DIAGNOSTIC_LIMIT = 100
+_BLOCKING_DISPATCH_REASONS = {
+    DispatchReason.OPERATION_DISABLED,
+    DispatchReason.ZONE_DISABLED,
+    DispatchReason.AUTOMATION_DISABLED,
+    DispatchReason.ZONE_AUTOMATION_DISABLED,
+    DispatchReason.SAFETY_LOCK,
+    DispatchReason.EMERGENCY_STOP,
+    DispatchReason.RECONFIGURATION_REQUIRED,
+    DispatchReason.CONFIG_RELOAD_PENDING,
+    DispatchReason.AUTOMATIC_PLANNING_IN_PROGRESS,
+    DispatchReason.ACTUATOR_SNAPSHOT_MISMATCH,
+    DispatchReason.WINDOW_NO_LONGER_FITS,
+    DispatchReason.DISPATCHER_ERROR,
+    DispatchReason.AUTOMATIC_PLANNING_ERROR,
+}
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _bounded_retry_delay(consecutive_failures: int) -> float:
+    """Return exponential seconds without constructing an unbounded integer."""
+    delays = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0)
+    return delays[min(max(consecutive_failures - 1, 0), len(delays) - 1)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +113,18 @@ class _ZoneConfigSnapshot:
     def zone_id(self) -> str:
         """Return the stable zone identity."""
         return self.unique_id or self.subentry_id
+
+
+@dataclass(frozen=True, slots=True)
+class _DispatchDecision:
+    """One deterministic dispatcher decision at a point in time."""
+
+    reason: DispatchReason
+    request: ManualIrrigationRequest | None
+    next_wake_at: str | None
+    releases: dict[str, bool]
+    locks: dict[str, str | bool]
+    record_per_request: bool = False
 
 
 class IrrigationManager:
@@ -159,7 +199,9 @@ class IrrigationManager:
         self._planning_event = asyncio.Event()
         self._complete_idle_event = asyncio.Event()
         self._terminal_events: dict[str, asyncio.Event] = {}
+        self._request_error_waiters: set[str] = set()
         self._request_errors: dict[str, Exception] = {}
+        self._diagnostics_dirty = False
         self._cancel_requested: set[str] = set()
         self._active_task: asyncio.Task[ExecutionResult] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
@@ -231,6 +273,7 @@ class IrrigationManager:
 
     async def async_initialize(self) -> None:
         """Initialize persistence and recover only a durably active execution."""
+        await self._async_begin_boot_diagnostics()
         await self._async_initialize_releases()
         await self._async_cancel_stale_pending_snapshots()
         active = self._stored_state.active_execution
@@ -302,6 +345,7 @@ class IrrigationManager:
     async def _async_cancel_stale_pending_snapshots(self) -> None:
         """Cancel queued work whose immutable actuator snapshot no longer matches config."""
         changed = False
+        cancelled_requests: list[ManualIrrigationRequest] = []
         requests: list[ManualIrrigationRequest] = []
         for request in self._stored_state.manual_requests:
             zone = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
@@ -314,10 +358,25 @@ class IrrigationManager:
             if request.status == "pending" and not valid:
                 request = replace(request, status="cancelled", revision=request.revision + 1)
                 changed = True
+                cancelled_requests.append(request)
             requests.append(request)
         if changed:
             self._stored_state = replace(self._stored_state, manual_requests=tuple(requests))
             await self._store.async_save(self._stored_state)
+            next_change = self._next_request_change_at(datetime.now(UTC))
+            next_wake_at = next_change.isoformat() if next_change is not None else None
+            for request in cancelled_requests:
+                await self._async_record_dispatch_decision(
+                    self._terminal_dispatch_decision(
+                        request,
+                        reason=DispatchReason.ACTUATOR_SNAPSHOT_MISMATCH,
+                        next_wake_at=next_wake_at,
+                        locks={"actuator_snapshot_mismatch": True},
+                    )
+                )
+            await self._async_record_terminal_requests(
+                cancelled_requests, reason=DispatchReason.CANCELLED
+            )
 
     async def async_shutdown(self) -> None:
         """Stop manager-owned tasks and safely recover an active execution."""
@@ -342,6 +401,11 @@ class IrrigationManager:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self._stored_state.active_execution is not None:
             await self._async_recover_interrupted_execution()
+        await self._async_close_boot_diagnostics(
+            DispatchReason.CONFIG_RELOAD
+            if self._config_reload_pending
+            else DispatchReason.CLEAN_SHUTDOWN
+        )
 
     async def async_request_config_reload(self) -> None:
         """Coalesce one reload and apply it when no execution owns old config."""
@@ -369,6 +433,7 @@ class IrrigationManager:
             if self._pending_reload_task is current:
                 self._pending_reload_task = None
                 self._config_reload_pending = False
+                self._queue_event.set()
 
     def _is_complete_idle(self) -> bool:
         return (
@@ -573,6 +638,17 @@ class IrrigationManager:
                 )
                 await self._store.async_save(next_state)
                 self._stored_state = next_state
+                await self._async_record_terminal_requests(
+                    (
+                        replace(
+                            pending[request_id],
+                            status="cancelled",
+                            revision=pending[request_id].revision + 1,
+                        )
+                        for request_id in removed
+                    ),
+                    reason=DispatchReason.CANCELLED,
+                )
                 self._queue_event.set()
                 self._publish(status=self._coordinator.data.status, active_zone_id=None)
             return {
@@ -643,16 +719,27 @@ class IrrigationManager:
 
     async def _async_automatic_planner(self) -> None:
         """Replan at local-day boundaries and explicit release changes."""
+        consecutive_failures = 0
         while not self._shutting_down:
             self._planning_event.clear()
             try:
                 await self.async_plan_automatic()
+                consecutive_failures = 0
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self._planning_event.wait(), timeout=3_600)
             except asyncio.CancelledError:
                 return
-            except Exception:  # noqa: BLE001
-                await asyncio.sleep(60)
+            except Exception as err:
+                consecutive_failures += 1
+                retry_delay = _bounded_retry_delay(consecutive_failures)
+                _LOGGER.exception(
+                    "Irrigation automatic planning failed; retrying in %.0f seconds",
+                    retry_delay,
+                )
+                await self._async_record_runtime_error(
+                    DispatchReason.AUTOMATIC_PLANNING_ERROR, err, retry_delay
+                )
+                await asyncio.sleep(retry_delay)
 
     async def async_start_manual(
         self,
@@ -749,81 +836,100 @@ class IrrigationManager:
             )
             await self._store.async_save(next_state)
             self._stored_state = next_state
-            terminal = self._terminal_events.setdefault(request.request_id, asyncio.Event())
+            terminal = (
+                self._terminal_events.setdefault(request.request_id, asyncio.Event())
+                if wait_for_completion
+                else None
+            )
+            if wait_for_completion:
+                self._request_error_waiters.add(request.request_id)
             self._queue_event.set()
             self._publish(status=self._coordinator.data.status, active_zone_id=None)
         if active_to_stop is not None:
             await self.async_stop(request_id=active_to_stop)
         if wait_for_completion:
-            await terminal.wait()
-            if error := self._request_errors.pop(request.request_id, None):
-                raise error
+            assert terminal is not None
+            try:
+                await terminal.wait()
+                if error := self._request_errors.pop(request.request_id, None):
+                    raise error
+            finally:
+                self._terminal_events.pop(request.request_id, None)
+                self._request_error_waiters.discard(request.request_id)
+                self._request_errors.pop(request.request_id, None)
         return {"request_id": request.request_id, "warnings": []}
 
     async def _async_dispatch_requests(self) -> None:
         """Execute ready requests strictly one at a time."""
+        consecutive_failures = 0
         while not self._shutting_down:
-            self._queue_event.clear()
             selected: ManualIrrigationRequest | None = None
+            retry_delay: float | None = None
             try:
                 async with self._command_lock:
+                    self._queue_event.clear()
                     await self._async_expire_requests()
                     selected = select_manual_request(
                         now=datetime.now(UTC),
                         requests=self._stored_state.manual_requests,
                     )
-                    if self._automatic_planning_in_progress or self._config_reload_pending:
-                        selected = None
-                    if selected is not None and not self._request_released(selected):
-                        selected = None
-                    if selected is not None:
+                    decision = self._dispatch_decision(selected, now=datetime.now(UTC))
+                    await self._async_record_dispatch_decision(decision)
+                    if decision.reason == DispatchReason.READY and selected is not None:
                         task = await self._async_prepare_execution(selected)
+                    else:
+                        selected = None
                 if selected is None:
                     timeout = self._seconds_until_next_request_change()
+                    if timeout is not None:
+                        timeout = max(0.25, timeout)
+                    consecutive_failures = 0
                     with suppress(TimeoutError):
                         await asyncio.wait_for(self._queue_event.wait(), timeout=timeout)
-                    continue
-                result = await asyncio.shield(task)
-                async with self._command_lock:
-                    await self._async_finish_execution(selected.request_id, result)
+                else:
+                    result = await asyncio.shield(task)
+                    async with self._command_lock:
+                        await self._async_finish_execution(selected.request_id, result)
+                    consecutive_failures = 0
             except asyncio.CancelledError:
                 return
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
+                consecutive_failures += 1
+                retry_delay = _bounded_retry_delay(consecutive_failures)
+                _LOGGER.exception(
+                    "Irrigation request dispatcher failed; retrying in %.0f seconds",
+                    retry_delay,
+                )
                 if selected is not None:
-                    async with self._command_lock:
-                        await self._async_fail_request(selected.request_id, err)
+                    try:
+                        async with self._command_lock:
+                            await self._async_fail_request(selected.request_id, err)
+                    except Exception:
+                        _LOGGER.exception(
+                            "Failed to persist terminal state for irrigation request %s",
+                            selected.request_id,
+                        )
+                await self._async_record_dispatch_error(err, retry_delay)
             finally:
                 self._watering = False
                 if self._active_task is not None and self._active_task.done():
                     self._active_task = None
-                self._publish(status="idle", active_zone_id=None)
+                try:
+                    self._publish(status="idle", active_zone_id=None)
+                except Exception as err:
+                    consecutive_failures += 1
+                    publish_retry_delay = _bounded_retry_delay(consecutive_failures)
+                    retry_delay = max(retry_delay or 0.0, publish_retry_delay)
+                    _LOGGER.exception(
+                        "Irrigation dispatcher state publication failed; retrying in %.0f seconds",
+                        retry_delay,
+                    )
+                    await self._async_record_dispatch_error(err, retry_delay)
+            if retry_delay is not None:
+                await asyncio.sleep(retry_delay)
 
     def _request_released(self, request: ManualIrrigationRequest) -> bool:
-        if (
-            not self._operation_enabled
-            or self._stored_state.installation_safety_lock is not None
-            or self._stored_state.emergency_stop
-        ):
-            return False
-        zone = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
-        if (
-            zone is None
-            or not self._zone_operation_released(zone)
-            or zone.zone_id != request.zone_id
-            or zone.data.get(CONF_ZONE_VALVE) != request.zone_valve
-            or request.main_valve != self._main_valve
-        ):
-            return False
-        if (
-            request.source == "automatic"
-            and request.automatic_window_end is not None
-            and datetime.now(UTC) + self._request_expected_duration(request)
-            > datetime.fromisoformat(request.automatic_window_end)
-        ):
-            return False
-        return request.source != "automatic" or (
-            self._automation_enabled and self._zone_automation_released(zone)
-        )
+        return self._dispatch_decision(request, now=datetime.now(UTC)).reason == "ready"
 
     async def _async_prepare_execution(
         self, request: ManualIrrigationRequest
@@ -1033,7 +1139,8 @@ class IrrigationManager:
         if failed:
             installation_lock = completion
             installation_lock_at = now.isoformat()
-            self._request_errors[request_id] = HomeAssistantError(str(completion))
+            if request_id in self._request_error_waiters:
+                self._request_errors[request_id] = HomeAssistantError(str(completion))
         history = self._stored_state.water_consumption_history
         if result.delivered_liters > 0:
             history = (
@@ -1066,6 +1173,14 @@ class IrrigationManager:
         )
         self._stored_state = self._with_meter_continuity(next_state)
         await self._store.async_save(self._stored_state)
+        next_change = self._next_request_change_at(now)
+        await self._async_record_dispatch_decision(
+            self._terminal_dispatch_decision(
+                request,
+                reason=DispatchReason(request.status),
+                next_wake_at=next_change.isoformat() if next_change is not None else None,
+            )
+        )
         self._cancel_requested.discard(request_id)
         self._signal_terminal(request_id)
         self._planning_event.set()
@@ -1095,7 +1210,9 @@ class IrrigationManager:
         )
         self._stored_state = self._with_meter_continuity(self._stored_state)
         await self._store.async_save(self._stored_state)
-        self._request_errors[request_id] = error
+        await self._async_record_terminal_requests((failed,), reason=DispatchReason.CANCELLED)
+        if request_id in self._request_error_waiters:
+            self._request_errors[request_id] = error
         self._signal_terminal(request_id)
         self._refresh_complete_idle_event()
 
@@ -1211,6 +1328,18 @@ class IrrigationManager:
         )
         self._stored_state = self._with_meter_continuity(self._stored_state)
         await self._store.async_save(self._stored_state)
+        recovered_request = next(
+            (
+                item
+                for item in requests
+                if item.request_id == active.request_id and item.status == "cancelled"
+            ),
+            None,
+        )
+        if recovered_request is not None:
+            await self._async_record_terminal_requests(
+                (recovered_request,), reason=DispatchReason.CANCELLED
+            )
         if active.request_id is not None:
             self._signal_terminal(active.request_id)
         self._refresh_complete_idle_event()
@@ -1218,7 +1347,7 @@ class IrrigationManager:
     async def _async_expire_requests(self, *, now: datetime | None = None) -> None:
         current = now or datetime.now(UTC)
         changed = False
-        expired_ids: list[str] = []
+        expired_requests: list[ManualIrrigationRequest] = []
         requests: list[ManualIrrigationRequest] = []
         for request in self._stored_state.manual_requests:
             if (
@@ -1228,13 +1357,22 @@ class IrrigationManager:
             ):
                 request = replace(request, status="expired", revision=request.revision + 1)
                 changed = True
-                expired_ids.append(request.request_id)
+                expired_requests.append(request)
             requests.append(request)
         if changed:
             self._stored_state = replace(self._stored_state, manual_requests=tuple(requests))
             await self._store.async_save(self._stored_state)
-            for request_id in expired_ids:
-                self._signal_terminal(request_id)
+            next_change = self._next_request_change_at(current)
+            next_wake_at = next_change.isoformat() if next_change is not None else None
+            for request in expired_requests:
+                await self._async_record_dispatch_decision(
+                    self._terminal_dispatch_decision(
+                        request,
+                        reason=DispatchReason.EXPIRED,
+                        next_wake_at=next_wake_at,
+                    )
+                )
+                self._signal_terminal(request.request_id)
 
     async def async_set_installation_operation(self, *, enabled: bool) -> dict[str, object]:
         """Persist the installation operation release and stop active water."""
@@ -1271,6 +1409,11 @@ class IrrigationManager:
             active_request = (
                 self._request(active.request_id) if active and active.request_id else None
             )
+            cancelled_ids = {
+                request.request_id
+                for request in self._stored_state.manual_requests
+                if not enabled and request.source == "automatic" and request.status == "pending"
+            }
             requests = tuple(
                 replace(request, status="cancelled", revision=request.revision + 1)
                 if not enabled and request.source == "automatic" and request.status == "pending"
@@ -1284,7 +1427,12 @@ class IrrigationManager:
             )
             await self._store.async_save(next_state)
             self._stored_state = next_state
+            await self._async_record_terminal_requests(
+                (request for request in requests if request.request_id in cancelled_ids),
+                reason=DispatchReason.CANCELLED,
+            )
             self._publish(status="idle", active_zone_id=None)
+            self._queue_event.set()
         if (
             not enabled
             and stop_active
@@ -1336,6 +1484,14 @@ class IrrigationManager:
             active_request = (
                 self._request(active.request_id) if active and active.request_id else None
             )
+            cancelled_ids = {
+                request.request_id
+                for request in self._stored_state.manual_requests
+                if not enabled
+                and request.zone_id == zone.zone_id
+                and request.source == "automatic"
+                and request.status == "pending"
+            }
             requests = tuple(
                 replace(request, status="cancelled", revision=request.revision + 1)
                 if not enabled
@@ -1352,7 +1508,12 @@ class IrrigationManager:
             )
             await self._store.async_save(next_state)
             self._stored_state = next_state
+            await self._async_record_terminal_requests(
+                (request for request in requests if request.request_id in cancelled_ids),
+                reason=DispatchReason.CANCELLED,
+            )
             self._publish(status="idle", active_zone_id=None)
+            self._queue_event.set()
         if (
             not enabled
             and stop_active
@@ -1411,6 +1572,7 @@ class IrrigationManager:
             )
             await self._store.async_save(self._stored_state)
             self._publish(status="idle", active_zone_id=None)
+            self._queue_event.set()
 
     async def async_stop(
         self,
@@ -1439,6 +1601,7 @@ class IrrigationManager:
     async def async_cancel_request(self, request_id: str) -> None:
         """Cancel a pending or executing request."""
         task: asyncio.Task[ExecutionResult] | None = None
+        terminal: asyncio.Event | None = None
         async with self._command_lock:
             request = self._request(request_id)
             if request is None:
@@ -1449,6 +1612,7 @@ class IrrigationManager:
                 self._cancel_requested.add(request_id)
                 task = self._active_task
                 if task is not None:
+                    terminal = self._terminal_events.setdefault(request_id, asyncio.Event())
                     task.cancel()
             else:
                 cancelled = replace(
@@ -1460,10 +1624,22 @@ class IrrigationManager:
                     self._stored_state, manual_requests=self._with_request(cancelled)
                 )
                 await self._store.async_save(self._stored_state)
+                next_change = self._next_request_change_at(datetime.now(UTC))
+                await self._async_record_dispatch_decision(
+                    self._terminal_dispatch_decision(
+                        cancelled,
+                        reason=DispatchReason.CANCELLED,
+                        next_wake_at=(next_change.isoformat() if next_change is not None else None),
+                    )
+                )
                 self._signal_terminal(request_id)
                 self._queue_event.set()
         if task is not None:
-            await self._terminal_events.setdefault(request_id, asyncio.Event()).wait()
+            assert terminal is not None
+            try:
+                await terminal.wait()
+            finally:
+                self._terminal_events.pop(request_id, None)
 
     def list_manual_requests(self) -> list[dict[str, object]]:
         """Return durable requests in stable sequence order."""
@@ -2213,9 +2389,342 @@ class IrrigationManager:
                 totals["month"] += record.amount_liters
         return totals
 
+    def _dispatch_decision(
+        self,
+        request: ManualIrrigationRequest | None,
+        *,
+        now: datetime,
+    ) -> _DispatchDecision:
+        """Explain whether the selected due request may execute."""
+        next_change = self._next_request_change_at(now)
+        next_wake_at = next_change.isoformat() if next_change is not None else None
+        zone = (
+            self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+            if request is not None
+            else None
+        )
+        reason = DispatchReason.READY
+        if self._config_reload_pending:
+            reason = DispatchReason.CONFIG_RELOAD_PENDING
+        elif self._automatic_planning_in_progress:
+            reason = DispatchReason.AUTOMATIC_PLANNING_IN_PROGRESS
+        elif request is None:
+            reason = DispatchReason.WAITING_FOR_START
+            pending = [
+                item for item in self._stored_state.manual_requests if item.status == "pending"
+            ]
+            request = min(pending, key=request_priority, default=None)
+            if request is not None:
+                zone = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+        elif self._installation_reconfiguration_required or (
+            zone is not None and self._zone_reconfiguration_required(zone.data)
+        ):
+            reason = DispatchReason.RECONFIGURATION_REQUIRED
+        elif not self._operation_enabled:
+            reason = DispatchReason.OPERATION_DISABLED
+        elif self._stored_state.emergency_stop:
+            reason = DispatchReason.EMERGENCY_STOP
+        elif self._stored_state.installation_safety_lock is not None:
+            reason = DispatchReason.SAFETY_LOCK
+        elif (
+            zone is None
+            or zone.zone_id != request.zone_id
+            or zone.data.get(CONF_ZONE_VALVE) != request.zone_valve
+            or request.main_valve != self._main_valve
+        ):
+            reason = DispatchReason.ACTUATOR_SNAPSHOT_MISMATCH
+        elif not self._zone_operation_released(zone):
+            reason = DispatchReason.ZONE_DISABLED
+        elif (
+            request.source == "automatic"
+            and request.automatic_window_end is not None
+            and now + self._request_expected_duration(request)
+            > datetime.fromisoformat(request.automatic_window_end)
+        ):
+            reason = DispatchReason.WINDOW_NO_LONGER_FITS
+        elif request.source == "automatic" and not self._automation_enabled:
+            reason = DispatchReason.AUTOMATION_DISABLED
+        elif request.source == "automatic" and not self._zone_automation_released(zone):
+            reason = DispatchReason.ZONE_AUTOMATION_DISABLED
+
+        releases = {
+            "operation": self._operation_enabled,
+            "automation": self._automation_enabled,
+            "zone_operation": zone is not None and self._zone_operation_released(zone),
+            "zone_automation": zone is not None and self._zone_automation_released(zone),
+        }
+        locks: dict[str, str | bool] = {}
+        if self._stored_state.installation_safety_lock is not None:
+            locks["safety_lock"] = self._stored_state.installation_safety_lock
+        if self._stored_state.emergency_stop:
+            locks["emergency_stop"] = True
+        if self._installation_reconfiguration_required or (
+            zone is not None and self._zone_reconfiguration_required(zone.data)
+        ):
+            locks["reconfiguration_required"] = True
+        if self._config_reload_pending:
+            locks["config_reload_pending"] = True
+        if self._automatic_planning_in_progress:
+            locks["automatic_planning_in_progress"] = True
+        if reason == DispatchReason.ACTUATOR_SNAPSHOT_MISMATCH:
+            locks["actuator_snapshot_mismatch"] = True
+        if reason == DispatchReason.WINDOW_NO_LONGER_FITS:
+            locks["window_no_longer_fits"] = True
+        return _DispatchDecision(
+            reason=reason,
+            request=request,
+            next_wake_at=next_wake_at,
+            releases=releases,
+            locks=locks,
+        )
+
+    def _terminal_dispatch_decision(
+        self,
+        request: ManualIrrigationRequest,
+        *,
+        reason: DispatchReason,
+        next_wake_at: str | None,
+        locks: dict[str, str | bool] | None = None,
+    ) -> _DispatchDecision:
+        """Build an explicit terminal transition for one irrigation order."""
+        zone = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
+        return _DispatchDecision(
+            reason=reason,
+            request=request,
+            next_wake_at=next_wake_at,
+            releases={
+                "operation": self._operation_enabled,
+                "automation": self._automation_enabled,
+                "zone_operation": zone is not None and self._zone_operation_released(zone),
+                "zone_automation": zone is not None and self._zone_automation_released(zone),
+            },
+            locks=locks or {},
+            record_per_request=True,
+        )
+
+    async def _async_record_terminal_requests(
+        self,
+        requests: Iterable[ManualIrrigationRequest],
+        *,
+        reason: DispatchReason,
+    ) -> None:
+        """Persist one terminal transition for every affected irrigation order."""
+        next_change = self._next_request_change_at(datetime.now(UTC))
+        next_wake_at = next_change.isoformat() if next_change is not None else None
+        for request in requests:
+            await self._async_record_dispatch_decision(
+                self._terminal_dispatch_decision(
+                    request,
+                    reason=reason,
+                    next_wake_at=next_wake_at,
+                )
+            )
+
+    async def _async_begin_boot_diagnostics(self) -> None:
+        """Start a boot epoch and retain evidence of an unclean predecessor."""
+        previous = self._stored_state.dispatcher_diagnostic
+        now = datetime.now(UTC).isoformat()
+        reason = (
+            DispatchReason.UNCLEAN_RESTART
+            if previous is not None and not previous.clean_shutdown
+            else DispatchReason.STARTUP
+        )
+        event = DispatcherDiagnosticEntry(
+            recorded_at=now,
+            request_id=previous.current_request_id if previous is not None else None,
+            zone_id=previous.current_zone_id if previous is not None else None,
+            old_reason=previous.current_reason if previous is not None else None,
+            new_reason=reason,
+            releases={},
+            locks={"unclean_restart": True} if reason == DispatchReason.UNCLEAN_RESTART else {},
+            next_wake_at=previous.next_wake_at if previous is not None else None,
+        )
+        diagnostic = DispatcherDiagnosticState(
+            current_reason=reason,
+            current_request_id=event.request_id,
+            current_zone_id=event.zone_id,
+            blocked_since=now if reason == DispatchReason.UNCLEAN_RESTART else None,
+            next_wake_at=event.next_wake_at,
+            boot_id=uuid4().hex,
+            boot_started_at=now,
+            clean_shutdown=False,
+        )
+        self._append_dispatch_diagnostic(diagnostic, event)
+        await self._async_save_diagnostics()
+        if reason == DispatchReason.UNCLEAN_RESTART:
+            _LOGGER.warning(
+                "Irrigation Manager detected an unclean previous runtime; "
+                "last dispatcher reason was %s",
+                event.old_reason,
+            )
+
+    async def _async_close_boot_diagnostics(self, reason: DispatchReason) -> None:
+        """Persist an explicit clean shutdown or configuration reload."""
+        previous = self._stored_state.dispatcher_diagnostic
+        if previous is None:
+            return
+        now = datetime.now(UTC).isoformat()
+        event = DispatcherDiagnosticEntry(
+            recorded_at=now,
+            request_id=previous.current_request_id,
+            zone_id=previous.current_zone_id,
+            old_reason=previous.current_reason,
+            new_reason=reason,
+            releases={},
+            locks={},
+            next_wake_at=previous.next_wake_at,
+        )
+        diagnostic = replace(
+            previous,
+            current_reason=reason,
+            blocked_since=None,
+            clean_shutdown=True,
+            last_error=None,
+        )
+        self._append_dispatch_diagnostic(diagnostic, event)
+        await self._async_save_diagnostics()
+
+    async def _async_record_dispatch_decision(self, decision: _DispatchDecision) -> None:
+        """Persist and log only a changed dispatcher decision."""
+        previous = self._stored_state.dispatcher_diagnostic
+        request_id = decision.request.request_id if decision.request is not None else None
+        zone_id = decision.request.zone_id if decision.request is not None else None
+        if (
+            previous is not None
+            and previous.current_reason == decision.reason
+            and not decision.record_per_request
+        ):
+            metadata_changed = (
+                previous.current_request_id != request_id
+                or previous.current_zone_id != zone_id
+                or previous.next_wake_at != decision.next_wake_at
+                or previous.last_error is not None
+            )
+            if metadata_changed:
+                self._stored_state = replace(
+                    self._stored_state,
+                    dispatcher_diagnostic=replace(
+                        previous,
+                        current_request_id=request_id,
+                        current_zone_id=zone_id,
+                        next_wake_at=decision.next_wake_at,
+                        clean_shutdown=False,
+                        last_error=None,
+                    ),
+                )
+            if metadata_changed or self._diagnostics_dirty:
+                await self._async_save_diagnostics()
+            return
+        now = datetime.now(UTC).isoformat()
+        event = DispatcherDiagnosticEntry(
+            recorded_at=now,
+            request_id=request_id,
+            zone_id=zone_id,
+            old_reason=previous.current_reason if previous is not None else None,
+            new_reason=decision.reason,
+            releases=decision.releases,
+            locks=decision.locks,
+            next_wake_at=decision.next_wake_at,
+        )
+        diagnostic = DispatcherDiagnosticState(
+            current_reason=decision.reason,
+            current_request_id=request_id,
+            current_zone_id=zone_id,
+            blocked_since=(now if decision.reason in _BLOCKING_DISPATCH_REASONS else None),
+            next_wake_at=decision.next_wake_at,
+            boot_id=previous.boot_id if previous is not None else uuid4().hex,
+            boot_started_at=previous.boot_started_at if previous is not None else now,
+            clean_shutdown=False,
+        )
+        self._append_dispatch_diagnostic(diagnostic, event)
+        await self._async_save_diagnostics()
+        if decision.reason in _BLOCKING_DISPATCH_REASONS and request_id is not None:
+            _LOGGER.warning(
+                "Irrigation request %s for zone %s is blocked: %s; next wake: %s",
+                request_id,
+                zone_id,
+                decision.reason,
+                decision.next_wake_at,
+            )
+
+    async def _async_record_dispatch_error(self, error: Exception, retry_delay: float) -> None:
+        """Retain a dispatcher error without persisting exception payloads."""
+        await self._async_record_runtime_error(DispatchReason.DISPATCHER_ERROR, error, retry_delay)
+
+    async def _async_record_runtime_error(
+        self, reason: DispatchReason, error: Exception, retry_delay: float
+    ) -> None:
+        """Retain one runtime error class and its bounded retry point."""
+        previous = self._stored_state.dispatcher_diagnostic
+        now_dt = datetime.now(UTC)
+        now = now_dt.isoformat()
+        error_name = type(error).__name__
+        next_wake_at = (now_dt + timedelta(seconds=retry_delay)).isoformat()
+        if previous is not None and previous.current_reason == reason:
+            self._stored_state = replace(
+                self._stored_state,
+                dispatcher_diagnostic=replace(
+                    previous,
+                    next_wake_at=next_wake_at,
+                    clean_shutdown=False,
+                    last_error=error_name,
+                ),
+            )
+            await self._async_save_diagnostics()
+            return
+        event = DispatcherDiagnosticEntry(
+            recorded_at=now,
+            request_id=previous.current_request_id if previous is not None else None,
+            zone_id=previous.current_zone_id if previous is not None else None,
+            old_reason=previous.current_reason if previous is not None else None,
+            new_reason=reason,
+            releases={},
+            locks={reason: True},
+            next_wake_at=next_wake_at,
+            error_class=error_name,
+        )
+        diagnostic = DispatcherDiagnosticState(
+            current_reason=reason,
+            current_request_id=event.request_id,
+            current_zone_id=event.zone_id,
+            blocked_since=now,
+            next_wake_at=next_wake_at,
+            boot_id=previous.boot_id if previous is not None else uuid4().hex,
+            boot_started_at=previous.boot_started_at if previous is not None else now,
+            clean_shutdown=False,
+            last_error=error_name,
+        )
+        self._append_dispatch_diagnostic(diagnostic, event)
+        await self._async_save_diagnostics()
+
+    def _append_dispatch_diagnostic(
+        self,
+        diagnostic: DispatcherDiagnosticState,
+        event: DispatcherDiagnosticEntry,
+    ) -> None:
+        """Apply one transition while enforcing the durable ring-buffer limit."""
+        self._stored_state = replace(
+            self._stored_state,
+            dispatcher_diagnostic=diagnostic,
+            dispatcher_diagnostic_history=(
+                *self._stored_state.dispatcher_diagnostic_history,
+                event,
+            )[-_DISPATCH_DIAGNOSTIC_LIMIT:],
+        )
+
+    async def _async_save_diagnostics(self) -> None:
+        """Persist optional telemetry without making it an actuation dependency."""
+        try:
+            await self._store.async_save(self._stored_state)
+            self._diagnostics_dirty = False
+        except Exception:
+            self._diagnostics_dirty = True
+            _LOGGER.exception("Failed to persist Irrigation Manager dispatcher diagnostics")
+
     def diagnostics_state_decisions(self) -> dict[str, object]:
         """Return only v2 state needed to explain current decisions."""
         snapshot = self.snapshot()
+        diagnostic = self._stored_state.dispatcher_diagnostic
         return {
             "status": snapshot.status,
             "operation_enabled": snapshot.operation_enabled,
@@ -2224,6 +2733,10 @@ class IrrigationManager:
             "zone_status": snapshot.zone_status,
             "pending_request_count": snapshot.pending_request_count,
             "active_request_id": snapshot.active_request_id,
+            "dispatcher": diagnostic.as_dict() if diagnostic is not None else None,
+            "dispatcher_history": [
+                event.as_dict() for event in self._stored_state.dispatcher_diagnostic_history
+            ],
         }
 
     def _request(self, request_id: str) -> ManualIrrigationRequest | None:
@@ -2354,6 +2867,11 @@ class IrrigationManager:
 
     def _seconds_until_next_request_change(self) -> float | None:
         now = datetime.now(UTC)
+        next_change = self._next_request_change_at(now)
+        return max(0.0, (next_change - now).total_seconds()) if next_change is not None else None
+
+    def _next_request_change_at(self, now: datetime) -> datetime | None:
+        """Return the exact next release or expiry boundary for pending work."""
         moments = []
         for request in self._stored_state.manual_requests:
             if request.status != "pending":
@@ -2366,9 +2884,7 @@ class IrrigationManager:
             )
             if requested_start > now:
                 moments.append(requested_start)
-        return (
-            max(0.0, min((moment - now).total_seconds() for moment in moments)) if moments else None
-        )
+        return min(moments) if moments else None
 
     async def _async_close_entities(self, entity_ids: Iterable[str]) -> None:
         errors: list[Exception] = []
@@ -2381,4 +2897,5 @@ class IrrigationManager:
             raise ExceptionGroup("Irrigation valve closure failed", errors)
 
     def _signal_terminal(self, request_id: str) -> None:
-        self._terminal_events.setdefault(request_id, asyncio.Event()).set()
+        if terminal := self._terminal_events.pop(request_id, None):
+            terminal.set()

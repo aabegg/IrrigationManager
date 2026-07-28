@@ -1,8 +1,10 @@
 """Version-2 runtime and durable models."""
 
 import math
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
+from enum import StrEnum
 from typing import cast
 
 
@@ -381,6 +383,124 @@ class MeterCorrectionRecord:
         return {item.name: getattr(self, item.name) for item in fields(self)}
 
 
+class DispatchReason(StrEnum):
+    """Stable persisted vocabulary for planning and dispatcher transitions."""
+
+    WAITING_FOR_START = "waiting_for_start"
+    READY = "ready"
+    OPERATION_DISABLED = "operation_disabled"
+    ZONE_DISABLED = "zone_disabled"
+    AUTOMATION_DISABLED = "automation_disabled"
+    ZONE_AUTOMATION_DISABLED = "zone_automation_disabled"
+    SAFETY_LOCK = "safety_lock"
+    EMERGENCY_STOP = "emergency_stop"
+    RECONFIGURATION_REQUIRED = "reconfiguration_required"
+    CONFIG_RELOAD_PENDING = "config_reload_pending"
+    AUTOMATIC_PLANNING_IN_PROGRESS = "automatic_planning_in_progress"
+    ACTUATOR_SNAPSHOT_MISMATCH = "actuator_snapshot_mismatch"
+    WINDOW_NO_LONGER_FITS = "window_no_longer_fits"
+    EXPIRED = "expired"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    STARTUP = "startup"
+    CLEAN_SHUTDOWN = "clean_shutdown"
+    CONFIG_RELOAD = "config_reload"
+    UNCLEAN_RESTART = "unclean_restart"
+    DISPATCHER_ERROR = "dispatcher_error"
+    AUTOMATIC_PLANNING_ERROR = "automatic_planning_error"
+
+
+@dataclass(frozen=True, slots=True)
+class DispatcherDiagnosticEntry:
+    """One durable dispatcher decision transition."""
+
+    recorded_at: str
+    request_id: str | None
+    zone_id: str | None
+    old_reason: DispatchReason | None
+    new_reason: DispatchReason
+    releases: dict[str, bool] = field(default_factory=dict)
+    locks: dict[str, str | bool] = field(default_factory=dict)
+    next_wake_at: str | None = None
+    error_class: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> DispatcherDiagnosticEntry:
+        """Deserialize one optional diagnostic transition."""
+        old_reason = _optional_string(data, "old_reason")
+        return cls(
+            recorded_at=_required_string(data, "recorded_at"),
+            request_id=_optional_string(data, "request_id"),
+            zone_id=_optional_string(data, "zone_id"),
+            old_reason=DispatchReason(old_reason) if old_reason is not None else None,
+            new_reason=DispatchReason(_required_string(data, "new_reason")),
+            releases=StoredInstallationState._bool_dict(data, "releases"),
+            locks=cls._lock_dict(data),
+            next_wake_at=_optional_string(data, "next_wake_at"),
+            error_class=_optional_string(data, "error_class"),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize one diagnostic transition."""
+        return {
+            "recorded_at": self.recorded_at,
+            "request_id": self.request_id,
+            "zone_id": self.zone_id,
+            "old_reason": self.old_reason,
+            "new_reason": self.new_reason,
+            "releases": dict(self.releases),
+            "locks": dict(self.locks),
+            "next_wake_at": self.next_wake_at,
+            "error_class": self.error_class,
+        }
+
+    @staticmethod
+    def _lock_dict(data: dict[str, object]) -> dict[str, str | bool]:
+        value = data.get("locks", {})
+        if not isinstance(value, dict) or not all(
+            isinstance(key, str) and isinstance(item, str | bool) for key, item in value.items()
+        ):
+            raise ValueError("Stored dispatcher locks are malformed")
+        return cast(dict[str, str | bool], value)
+
+
+@dataclass(frozen=True, slots=True)
+class DispatcherDiagnosticState:
+    """Current durable dispatcher and integration lifecycle evidence."""
+
+    current_reason: DispatchReason
+    current_request_id: str | None
+    current_zone_id: str | None
+    blocked_since: str | None
+    next_wake_at: str | None
+    boot_id: str
+    boot_started_at: str
+    clean_shutdown: bool
+    last_error: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> DispatcherDiagnosticState:
+        """Deserialize current dispatcher evidence."""
+        clean_shutdown = data.get("clean_shutdown")
+        if not isinstance(clean_shutdown, bool):
+            raise ValueError("Stored dispatcher clean-shutdown flag is malformed")
+        return cls(
+            current_reason=DispatchReason(_required_string(data, "current_reason")),
+            current_request_id=_optional_string(data, "current_request_id"),
+            current_zone_id=_optional_string(data, "current_zone_id"),
+            blocked_since=_optional_string(data, "blocked_since"),
+            next_wake_at=_optional_string(data, "next_wake_at"),
+            boot_id=_required_string(data, "boot_id"),
+            boot_started_at=_required_string(data, "boot_started_at"),
+            clean_shutdown=clean_shutdown,
+            last_error=_optional_string(data, "last_error"),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize current dispatcher evidence."""
+        return {item.name: getattr(self, item.name) for item in fields(self)}
+
+
 @dataclass(frozen=True, slots=True)
 class StoredInstallationState:
     """Current version-2 state persisted independently of entities."""
@@ -416,6 +536,8 @@ class StoredInstallationState:
     automation_enabled: bool | None = None
     zone_operation_enabled: dict[str, bool] = field(default_factory=dict)
     zone_automation_enabled: dict[str, bool] = field(default_factory=dict)
+    dispatcher_diagnostic: DispatcherDiagnosticState | None = None
+    dispatcher_diagnostic_history: tuple[DispatcherDiagnosticEntry, ...] = ()
 
     _float = staticmethod(_number)
 
@@ -452,6 +574,23 @@ class StoredInstallationState:
         installation_lock = _optional_string(data, "installation_safety_lock")
         if emergency_stop and installation_lock is None:
             installation_lock = "Emergency stop activated"
+        dispatcher_diagnostic = None
+        raw_dispatcher_diagnostic = data.get("dispatcher_diagnostic")
+        if isinstance(raw_dispatcher_diagnostic, dict):
+            with suppress(TypeError, ValueError):
+                dispatcher_diagnostic = DispatcherDiagnosticState.from_dict(
+                    raw_dispatcher_diagnostic
+                )
+        dispatcher_history: list[DispatcherDiagnosticEntry] = []
+        raw_dispatcher_history = data.get("dispatcher_diagnostic_history", [])
+        if isinstance(raw_dispatcher_history, list):
+            for item in raw_dispatcher_history:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    dispatcher_history.append(DispatcherDiagnosticEntry.from_dict(item))
+                except TypeError, ValueError:
+                    continue
         return cls(
             installation_total_liters=_number(data.get("installation_total_liters"), default=0.0),
             zone_totals_liters=cls._number_dict(data, "zone_totals_liters"),
@@ -508,6 +647,8 @@ class StoredInstallationState:
             automation_enabled=cls._optional_bool(data, "automation_enabled"),
             zone_operation_enabled=cls._bool_dict(data, "zone_operation_enabled"),
             zone_automation_enabled=cls._bool_dict(data, "zone_automation_enabled"),
+            dispatcher_diagnostic=dispatcher_diagnostic,
+            dispatcher_diagnostic_history=tuple(dispatcher_history[-100:]),
         )
 
     @staticmethod
@@ -590,4 +731,12 @@ class StoredInstallationState:
             "automation_enabled": self.automation_enabled,
             "zone_operation_enabled": dict(self.zone_operation_enabled),
             "zone_automation_enabled": dict(self.zone_automation_enabled),
+            "dispatcher_diagnostic": (
+                self.dispatcher_diagnostic.as_dict()
+                if self.dispatcher_diagnostic is not None
+                else None
+            ),
+            "dispatcher_diagnostic_history": [
+                event.as_dict() for event in self.dispatcher_diagnostic_history[-100:]
+            ],
         }

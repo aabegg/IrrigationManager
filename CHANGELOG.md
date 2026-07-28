@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0-rc19 - 2026-07-28
+
+### Added
+
+- Persist dispatcher decision transitions, blockers, wake times, and lifecycle evidence in
+  a versioned 100-entry diagnostic ring exposed through Home Assistant diagnostics.
+- Detect and retain evidence of an unclean previous Irrigation Manager runtime without
+  attributing the interruption to an unverified host cause.
+
+### Fixed
+
+- Back off exponentially after unexpected dispatcher failures so repeated exceptions cannot
+  monopolize the Home Assistant event loop.
+- Log blocked due orders once per reason transition and clean up terminal wait/error objects
+  after requests finish.
+- Wake the dispatcher after safety-lock reset and failed deferred reload completion.
+
 ## 0.1.0-rc18 - 2026-07-28
 
 ### Fixed
