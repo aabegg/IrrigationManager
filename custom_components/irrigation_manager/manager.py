@@ -35,6 +35,7 @@ from .const import (
     CONF_SEASONAL_MODULE_ENABLED,
     CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
+    CONF_WEATHER_SOURCES,
     CONF_WEEKLY_SCHEDULE,
     CONF_ZONE_VALVE,
     CONTROL_TYPE_VOLUME,
@@ -435,6 +436,34 @@ class IrrigationManager:
             self._async_reload_when_idle(),
             "Irrigation Manager deferred config reload",
         )
+
+    def requires_config_reload(self, updated_installation_data: Mapping[str, object]) -> bool:
+        """Return whether an entry update changes runtime-owned configuration."""
+        current = dict(self._installation_data)
+        updated = dict(updated_installation_data)
+        current.pop(CONF_WEATHER_SOURCES, None)
+        updated.pop(CONF_WEATHER_SOURCES, None)
+        if current != updated:
+            return True
+        current_zones = {
+            zone.subentry_id: (
+                zone.subentry_type,
+                zone.title,
+                zone.unique_id,
+                zone.data,
+            )
+            for zone in self._zone_configs
+        }
+        updated_zones = {
+            zone.subentry_id: (
+                zone.subentry_type,
+                zone.title,
+                zone.unique_id,
+                dict(zone.data),
+            )
+            for zone in self._entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE)
+        }
+        return current_zones != updated_zones
 
     async def _async_reload_when_idle(self) -> None:
         current = asyncio.current_task()

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.0-rc23 - 2026-07-28
+
+### Added
+
+- Add explicit local weather-source assignment for precipitation, reference
+  evapotranspiration, temperature, humidity, dew point, wind, solar irradiance, and
+  forecasts.
+- Normalize configured sources into canonical units and expose availability, age,
+  plausibility, completeness, and forecast capabilities in settings and diagnostics.
+
+### Changed
+
+- Keep weather-source assignment observational: it neither enables weather correction nor
+  reloads planning or an active irrigation execution.
+- Add a neutral config-entry migration with no automatically selected sources and no change to
+  existing irrigation behavior.
+
+## 0.1.0-rc22 - 2026-07-28
+
+### Changed
+
+- Format irrigation-history timestamps in the Home Assistant time zone, display durations as
+  hours, minutes, and seconds, round liter values to two decimal places, and present responsive
+  localized pagination.
+- Render malformed history values with a safe placeholder instead of exposing raw API values or
+  failing the history dialog.
+
 ## 0.1.0-rc21 - 2026-07-28
 
 ### Fixed

@@ -59,6 +59,19 @@ Das bestätigte Zeit- oder Mengenziel einer Bewässerungszone für einen fällig
 **Saisonales Basissoll**:
 Das mit dem für den Termin geltenden saisonalen Faktor korrigierte Basissoll. Es ist die Rückfallgrundlage, wenn eine wetterabhängige Berechnung deaktiviert ist oder nicht belastbar durchgeführt werden kann.
 
+**Wetterquelle**:
+Eine einer fachlichen Quellenrolle ausdrücklich zugeordnete Home-Assistant-Entity. Eine Wetterquelle wird niemals allein anhand ihres Namens, Geräts oder Bereichs automatisch ausgewählt.
+_Avoid_: Wettersensor
+
+**Quellenrolle**:
+Die fachliche Bedeutung, in der eine Wetterquelle verwendet wird, beispielsweise Niederschlagsmenge, Lufttemperatur oder Referenzverdunstung. Dieselbe Home-Assistant-Entity kann mehrere Rollen erfüllen, wenn sie die dafür benötigten Werte ausdrücklich bereitstellt.
+
+**Quellenbeobachtung**:
+Die zu einem bestimmten Zeitpunkt normalisierte Lesung einer Wetterquelle mit Wert, kanonischer Einheit, Herkunft, Beobachtungszeitpunkt und Quellenqualität. Sie ist noch keine Wetterkorrektur und verändert kein Bewässerungsziel.
+
+**Quellenqualität**:
+Die nachvollziehbare Bewertung, ob eine Quellenbeobachtung verfügbar, vollständig, aktuell und plausibel ist. Sie ist von der späteren Entscheidung über einen Rückfall auf das saisonale Basissoll getrennt.
+
 **Mengensteuerung**:
 Eine Bewässerung, die beim Erreichen der am Wasserzähler gemessenen Zielmenge endet. Ein maximales Zeitlimit begrenzt den Vorgang unabhängig vom Messwert.
 

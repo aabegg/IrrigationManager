@@ -31,6 +31,7 @@ from .const import (
     CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_WATER_METER,
     CONF_WEATHER_MODULE_ENABLED,
+    CONF_WEATHER_SOURCES,
     CONF_WEEKLY_SCHEDULE,
     CONF_ZONE_VALVE,
     CONFIG_ENTRY_MINOR_VERSION,
@@ -191,6 +192,8 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Apply persisted updates now or defer them until the runtime is completely idle."""
     manager = hass.data[DOMAIN].get(entry.entry_id)
     if isinstance(manager, IrrigationManager):
+        if not manager.requires_config_reload(entry.data):
+            return
         await manager.async_request_config_reload()
         return
     await hass.config_entries.async_reload(entry.entry_id)
@@ -216,6 +219,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_PLANT_SITE_MODULE_ENABLED: False,
             CONF_SEASONAL_MODULE_ENABLED: False,
             CONF_WEATHER_MODULE_ENABLED: False,
+            CONF_WEATHER_SOURCES: {},
             CONF_SOAK_MODULE_ENABLED: False,
         }
         if isinstance(entry.data.get(CONF_MAIN_VALVE), str):
@@ -262,7 +266,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         migrated_data = dict(entry.data)
         migrated_data.setdefault(CONF_PLANT_SITE_MODULE_ENABLED, False)
         migrated_data.setdefault(CONF_SEASONAL_MODULE_ENABLED, False)
-        migrated_data.setdefault(CONF_WEATHER_MODULE_ENABLED, False)
+        migrated_data[CONF_WEATHER_MODULE_ENABLED] = False
+        migrated_data.setdefault(CONF_WEATHER_SOURCES, {})
         migrated_data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
         for subentry in entry.get_subentries_of_type("zone"):
             zone_data = dict(subentry.data)

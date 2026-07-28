@@ -627,18 +627,37 @@ Ein direkter Anbieteradapter wird erst erwogen, wenn eine fachlich notwendige In
 
 Die Anlagenkonfiguration ordnet Entities fachlichen Rollen zu. Vorgesehen sind mindestens:
 
-- gemessener Niederschlag
-- aktueller Regen beziehungsweise Regenrate
+- gemessene kumulierte Niederschlagsmenge
+- aktuelle Niederschlagsrate
 - direkte Referenzverdunstung
-- Temperatur
-- Luftfeuchtigkeit oder Taupunkt
-- Wind
+- Lufttemperatur
+- relative Luftfeuchtigkeit
+- Taupunkt
+- Windgeschwindigkeit
 - Solarstrahlung
 - Wetterprognose
 
 Bodenfeuchte gehört fachlich zur betroffenen Zone oder Teilfläche und wird dort optional zugeordnet.
 
 Der erste Ausbau verwendet pro Rolle genau eine primäre Quelle. Mehrere Quellen können später als ausdrücklich priorisierte Fallback-Liste ergänzt werden. Prognosen verschiedener Anbieter werden nicht ungeprüft gemittelt.
+
+Die Quellenzuordnung wird als Abbildung von Quellenrolle auf Entity-ID in der Bewässerungsanlage gespeichert. Es gibt keine automatische Auswahl nach Entity-Name, Gerät, Bereich oder Integrationsherkunft. Eine leere oder nur teilweise Zuordnung ist gültig und schränkt den bisherigen Bewässerungsbetrieb nicht ein. Dieselbe `weather`-Entity darf für mehrere aktuelle Attributrollen ausgewählt werden; kumulierte Niederschlagsmenge, Niederschlagsrate, direkte Referenzverdunstung und Solarstrahlung benötigen dagegen jeweils eine ausdrücklich ausgewählte `sensor`-Entity.
+
+Stufe 3 verwendet folgende kanonische Einheiten, Aktualitätsgrenzen und harten Plausibilitätskorridore. Die Korridore sind bewusst breiter als ein erwarteter Normalbereich. Werte ausserhalb werden nicht begrenzt oder korrigiert, sondern als `unplausibel` abgelehnt.
+
+| Quellenrolle | Zulässiger HA-Vertrag | Kanonische Einheit | Maximalalter | Harter Plausibilitätskorridor |
+|---|---|---:|---:|---:|
+| kumulierte Niederschlagsmenge | `sensor` mit Device-Class `precipitation`, State-Class `total` oder `total_increasing` | `mm` | 6 Stunden | endlich und `>= 0`; kein oberes Limit, da der Rücksetzzeitraum quellenabhängig ist |
+| Niederschlagsrate | `sensor` mit Device-Class `precipitation_intensity` | `mm/h` | 30 Minuten | `0..1000 mm/h` |
+| direkte Referenzverdunstung | ausdrücklich ausgewählter `sensor` mit Längeneinheit und State-Class `total` oder `total_increasing`; Wert gilt für den durch den Quellenzeitstempel bezeichneten lokalen Kalendertag | `mm/Tag` | 36 Stunden | `0..30 mm/Tag` |
+| Lufttemperatur | `sensor` mit Device-Class `temperature` oder Attribut `temperature` einer `weather`-Entity | `°C` | 2 Stunden | `-90..60 °C` |
+| relative Luftfeuchtigkeit | `sensor` mit Device-Class `humidity` oder Attribut `humidity` einer `weather`-Entity | `%` | 2 Stunden | `0..100 %` |
+| Taupunkt | `sensor` mit Device-Class `temperature` oder Attribut `dew_point` einer `weather`-Entity | `°C` | 2 Stunden | `-100..60 °C`; bei gleichzeitig verfügbarer Lufttemperatur höchstens `2 °C` darüber |
+| Windgeschwindigkeit | `sensor` mit Device-Class `wind_speed` oder Attribut `wind_speed` einer `weather`-Entity | `m/s` | 2 Stunden | `0..120 m/s` |
+| Solarstrahlung | `sensor` mit Device-Class `irradiance` | `W/m²` | 2 Stunden | `0..1600 W/m²` |
+| Wetterprognose | `weather`-Entity mit mindestens einer von HA ausgewiesenen Prognoseart | noch keine Wertnormalisierung in Stufe 3 | 6 Stunden | Entity verfügbar und mindestens `hourly`, `daily` oder `twice_daily` unterstützt |
+
+Für die Aktualität wird der HA-Zeitstempel `last_reported` verwendet, der auch eine unveränderte, aber erneut gemeldete Messung abbildet. Nur falls er nicht verfügbar ist, wird `last_updated` verwendet. Alle Vergleiche erfolgen zeitzonenbewusst. Der Zustand einer `weather`-Entity wird nicht in eine Niederschlagsmenge oder -rate umgedeutet. Prognosedaten werden erst in Stufe 5 über die standardisierte HA-Wetteraktion abgerufen; Stufe 3 prüft und zeigt lediglich Quelle, Verfügbarkeit und unterstützte Prognosearten.
 
 Jeder verwendete Wetterwert besitzt mindestens:
 
@@ -649,7 +668,15 @@ Jeder verwendete Wetterwert besitzt mindestens:
 - Qualitätsstatus
 - gegebenenfalls den Grund seiner Ablehnung
 
-Die Oberfläche unterscheidet mindestens `verfügbar`, `veraltet`, `nicht verfügbar`, `unplausibel`, `unvollständig` und `Ersatzwert verwendet`.
+Die Quellenqualität unterscheidet `nicht konfiguriert`, `verfügbar`, `veraltet`, `nicht verfügbar`, `unplausibel` und `unvollständig`. Fehlende oder nicht unterstützte Einheit, Device-Class, State-Class oder benötigte `weather`-Attribute gelten als `unvollständig`; `unknown`, `unavailable` oder eine nicht mehr vorhandene Entity gelten als `nicht verfügbar`. Nicht endliche oder ausserhalb des Korridors liegende Werte gelten als `unplausibel`. Erst wenn diese Prüfungen bestanden sind, kann das Maximalalter zu `veraltet` führen.
+
+`Ersatzwert verwendet` ist keine Quellenqualität, sondern eine spätere Zielauflösungsentscheidung. Stufe 3 verwendet noch keinen Wetterwert für die Planung und kann diesen Zustand daher noch nicht erzeugen. Ab Stufe 4 wird bei nicht belastbarer Wetterberechnung sichtbar auf das saisonale Basissoll zurückgefallen.
+
+Die Quellenbeobachtungen werden bei Anzeige der Einstellungen und beim Erstellen der Home-Assistant-Integrationsdiagnose aus dem aktuellen HA-Zustand erzeugt. Stufe 3 persistiert weder rohe Wetterwerte noch einen eigenen Messverlauf. Der Diagnoseexport enthält pro Rolle Auswahl, normalisierten Wert, kanonische Einheit, verwendeten Zeitstempel, Alter, Qualitätsstatus und stabilen Grundcode; sensible Entity-Namen werden mit dem bestehenden HA-Diagnosemechanismus redigiert. Die Quellenzuordnung kann unabhängig vom späteren Wettermodul bearbeitet werden. Ihr Speichern löst keine Neuplanung aus und verändert keine offenen oder aktiven Bewässerungsvorgänge.
+
+Die Migration auf Stufe 3 ergänzt eine leere Quellenzuordnung und hält den anlagenweiten Wettermodulschalter ausdrücklich deaktiviert. Der reguläre Modulschalter und die zonenspezifische Wetterverwendung bleiben in Stufe 3 ausgeblendet. Damit ist die Quellenaufnahme und Diagnose vollständig prüfbar, ohne das bestehende Bewässerungsziel zu beeinflussen.
+
+Normative technische Grundlage dieser Stufe sind die HA-Verträge für [Sensor-Entities](https://developers.home-assistant.io/docs/core/entity/sensor/), [Weather-Entities](https://developers.home-assistant.io/docs/core/entity/weather/) und den Zeitstempel [`State.last_reported`](https://developers.home-assistant.io/blog/2024/03/20/state_reported_timestamp/). Anbieter- oder gerätespezifische Attribute ausserhalb dieser Verträge werden nicht vorausgesetzt.
 
 Für die Referenzverdunstung gilt folgende fachliche Priorität:
 
@@ -810,6 +837,8 @@ Abnahmekriterien sind ein reproduzierter fälliger, aber blockierter Auftrag ohn
 - Home-Assistant-Sensoren und `weather`-Entities nach Quellenrollen auswählen
 - Einheiten, Aktualität, Plausibilität und Qualitätsstatus normalisieren
 - Quellenzustand und verwendete Fallbacks in Einstellungen und Diagnose anzeigen
+- leere Quellenzuordnung verhaltensgleich migrieren und Teilkonfiguration ausdrücklich zulassen
+- keine Rohwert-Historie und keine automatische Quellenauswahl einführen
 - den anlagenweiten Laufzeit-Modulschalter und die zonenspezifische Wetterverwendung bis zur vollständigen Wasserbilanz der Stufe 4 noch nicht freigeben
 - noch keine automatische Zielkorrektur aktivieren, bevor Wasserbilanz und Ausfallregeln vollständig implementiert sind
 

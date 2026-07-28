@@ -166,7 +166,7 @@ async def test_stage1_migration_preserves_targets_as_day_overrides(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert entry.data["plant_site_module_enabled"] is False
     migrated = entry.subentries[zone.subentry_id].data
     assert migrated["base_target"] == 300.0
@@ -211,7 +211,7 @@ async def test_stage2_migration_adds_dormant_neutral_seasonal_configuration(
     assert await async_migrate_entry(hass, entry)
 
     migrated = entry.subentries[zone.subentry_id].data
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert migrated["use_seasonal_adjustment"] is False
     assert migrated["seasonal_factors"] == {
         month: 1.0
@@ -363,6 +363,7 @@ async def test_minimal_wizard_creates_installation_and_first_zone(
         "plant_site_module_enabled": False,
         "seasonal_module_enabled": False,
         "weather_module_enabled": False,
+        "weather_sources": {},
         "soak_module_enabled": False,
     }
     zone = next(iter(entry.subentries.values()))
@@ -478,7 +479,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
     assert await async_migrate_entry(hass, entry)
 
     assert entry.version == 2
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert entry.data == {
         "name": "Legacy garden",
         "main_valve": "switch.main",
@@ -491,6 +492,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
         "plant_site_module_enabled": False,
         "seasonal_module_enabled": False,
         "weather_module_enabled": False,
+        "weather_sources": {},
         "soak_module_enabled": False,
     }
     assert dict(entry.subentries[zone.subentry_id].data) == {
@@ -588,7 +590,7 @@ async def test_v2_minor_migration_removes_only_retired_entity_unique_ids(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert registry.async_get("sensor.renamed_zone_status") is not None
     assert all(registry.async_get(entity_id) is None for entity_id in retired)
 
@@ -825,6 +827,37 @@ async def test_actual_seasonal_config_change_defers_reload_during_active_executi
         active_execution=None,
     )
     manager._refresh_complete_idle_event()
+
+
+async def test_weather_source_only_change_does_not_reload_runtime(
+    hass: HomeAssistant,
+) -> None:
+    """Keep source assignment observational until weather correction is released."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    requests_before = manager._stored_state.manual_requests
+
+    with patch.object(manager, "async_request_config_reload", new_callable=AsyncMock) as reload:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                "weather_sources": {"air_temperature": "sensor.outdoor_temperature"},
+            },
+        )
+        await hass.async_block_till_done()
+
+        reload.assert_not_awaited()
+        assert manager._stored_state.manual_requests == requests_before
+        assert manager._config_reload_pending is False
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, "seasonal_module_enabled": True},
+        )
+        await hass.async_block_till_done()
+
+        reload.assert_awaited_once_with()
 
 
 async def test_seasonal_target_that_exceeds_window_is_reported_not_shortened(
@@ -1576,7 +1609,7 @@ async def test_no_meter_exposes_runtime_contract_without_water_entities(
     entry, zone = await _setup_v2_installation(hass)
     registry = er.async_get(hass)
 
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert (
         registry.async_get_entity_id("sensor", DOMAIN, "installation-v2-runtime_water_total")
         is None
@@ -1818,6 +1851,7 @@ async def test_v2_reconfiguration_clears_flag_only_after_validation(
     assert options["menu_options"] == [
         "configuration",
         "extensions",
+        "weather_sources",
         "releases",
         "replan",
     ]
@@ -2269,6 +2303,185 @@ async def test_due_blocked_request_is_diagnosed_once_without_busy_loop(
     ]
     assert len(transitions) == 1
     assert second["dispatcher_history"] == first["dispatcher_history"]
+
+
+async def test_diagnostics_normalize_weather_sources_without_changing_planning(
+    hass: HomeAssistant,
+) -> None:
+    """Expose canonical source observations while weather correction stays dormant."""
+    hass.states.async_set(
+        "sensor.outdoor_temperature",
+        "68",
+        {
+            "device_class": "temperature",
+            "state_class": "measurement",
+            "unit_of_measurement": "°F",
+        },
+    )
+    hass.states.async_set(
+        "sensor.outdoor_humidity",
+        "101",
+        {
+            "device_class": "humidity",
+            "state_class": "measurement",
+            "unit_of_measurement": "%",
+        },
+    )
+    hass.states.async_set(
+        "weather.forecast_home",
+        "sunny",
+        {
+            "temperature": 20,
+            "temperature_unit": "°C",
+            "humidity": 45,
+            "wind_speed": 18,
+            "wind_speed_unit": "km/h",
+            "supported_features": 3,
+        },
+    )
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={
+            "weather_module_enabled": False,
+            "weather_sources": {
+                "air_temperature": "sensor.outdoor_temperature",
+                "relative_humidity": "sensor.outdoor_humidity",
+                "wind_speed": "weather.forecast_home",
+                "forecast": "weather.forecast_home",
+            },
+        },
+    )
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    weather = diagnostics["weather_sources"]
+    assert weather["weather_correction_enabled"] is False
+    observations = weather["observations"]
+    temperature = observations["air_temperature"]
+    assert temperature["quality"] == "available"
+    assert temperature["reason"] is None
+    assert temperature["value"] == 20.0
+    assert temperature["unit"] == "°C"
+    assert observations["relative_humidity"]["quality"] == "implausible"
+    assert observations["relative_humidity"]["reason"] == "outside_plausible_range"
+    assert observations["wind_speed"]["value"] == 5.0
+    assert observations["wind_speed"]["unit"] == "m/s"
+    assert observations["forecast"]["quality"] == "available"
+    assert observations["forecast"]["supported_forecast_types"] == ["daily", "hourly"]
+    assert observations["solar_irradiance"]["quality"] == "not_configured"
+
+    manager = entry.runtime_data.manager
+    assert manager._installation_data["weather_module_enabled"] is False
+    assert all(
+        "weather" not in request.resolved_inputs
+        for request in manager._stored_state.manual_requests
+        if request.source == "automatic"
+    )
+
+
+async def test_weather_diagnostics_apply_role_contracts_and_cross_checks(
+    hass: HomeAssistant,
+) -> None:
+    """Normalize supported units and reject a dew point above air temperature."""
+    hass.states.async_set(
+        "sensor.rain_total",
+        "2",
+        {
+            "device_class": "precipitation",
+            "state_class": "total_increasing",
+            "unit_of_measurement": "in",
+        },
+    )
+    hass.states.async_set(
+        "sensor.daily_et",
+        "0.25",
+        {
+            "state_class": "total",
+            "unit_of_measurement": "in/d",
+        },
+    )
+    hass.states.async_set(
+        "sensor.solar_radiation",
+        "1",
+        {
+            "device_class": "irradiance",
+            "state_class": "measurement",
+            "unit_of_measurement": "BTU/(h⋅ft²)",
+        },
+    )
+    hass.states.async_set(
+        "weather.forecast_home",
+        "sunny",
+        {
+            "temperature": 20,
+            "dew_point": 23,
+            "temperature_unit": "°C",
+            "supported_features": 1,
+        },
+    )
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={
+            "weather_sources": {
+                "precipitation_total": "sensor.rain_total",
+                "precipitation_rate": "sensor.missing_rain_rate",
+                "reference_evapotranspiration": "sensor.daily_et",
+                "air_temperature": "weather.forecast_home",
+                "dew_point": "weather.forecast_home",
+                "solar_irradiance": "sensor.solar_radiation",
+            },
+        },
+    )
+
+    observations = (await async_get_config_entry_diagnostics(hass, entry))["weather_sources"][
+        "observations"
+    ]
+
+    assert observations["precipitation_total"]["value"] == 50.8
+    assert observations["precipitation_total"]["unit"] == "mm"
+    assert observations["reference_evapotranspiration"]["value"] == 6.35
+    assert observations["reference_evapotranspiration"]["unit"] == "mm/d"
+    assert observations["solar_irradiance"]["value"] == pytest.approx(3.15459075)
+    assert observations["solar_irradiance"]["unit"] == "W/m²"
+    assert observations["precipitation_rate"]["quality"] == "unavailable"
+    assert observations["precipitation_rate"]["reason"] == "entity_not_found"
+    assert observations["dew_point"]["quality"] == "implausible"
+    assert observations["dew_point"]["reason"] == "dew_point_above_temperature"
+
+
+async def test_weather_diagnostics_mark_old_source_reports_stale(
+    hass: HomeAssistant,
+) -> None:
+    """Use the source report timestamp and the role-specific maximum age."""
+    hass.states.async_set(
+        "sensor.outdoor_temperature",
+        "20",
+        {
+            "device_class": "temperature",
+            "state_class": "measurement",
+            "unit_of_measurement": "°C",
+        },
+    )
+    state = hass.states.get("sensor.outdoor_temperature")
+    assert state is not None
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={
+            "weather_sources": {
+                "air_temperature": "sensor.outdoor_temperature",
+            }
+        },
+    )
+
+    with patch("custom_components.irrigation_manager.weather_sources.datetime") as clock:
+        clock.now.return_value = state.last_reported + timedelta(hours=2, seconds=1)
+        observation = (await async_get_config_entry_diagnostics(hass, entry))["weather_sources"][
+            "observations"
+        ]["air_temperature"]
+
+    assert observation["quality"] == "stale"
+    assert observation["reason"] == "source_stale"
+    assert observation["age_seconds"] == 7201.0
 
 
 async def test_dispatcher_retries_unexpected_failure_with_backoff(

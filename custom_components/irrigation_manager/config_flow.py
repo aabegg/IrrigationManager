@@ -60,6 +60,7 @@ from .const import (
     CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
     CONF_WEATHER_MODULE_ENABLED,
+    CONF_WEATHER_SOURCES,
     CONF_WEEKLY_SCHEDULE,
     CONF_ZONE_VALVE,
     CONFIG_ENTRY_MINOR_VERSION,
@@ -91,6 +92,11 @@ from .seasonal import (
     MIN_SEASONAL_FACTOR,
     MONTHS,
     canonical_seasonal_factors,
+)
+from .weather_sources import (
+    WEATHER_SOURCE_ROLES,
+    WeatherSourceRole,
+    weather_source_status_summary,
 )
 from .zone_config import positive_number
 
@@ -226,6 +232,27 @@ def _extensions_schema() -> vol.Schema:
             vol.Required(CONF_SEASONAL_MODULE_ENABLED, default=False): BooleanSelector(),
         }
     )
+
+
+def _weather_sources_schema() -> vol.Schema:
+    """Select one explicit Home Assistant entity for each weather-source role."""
+    sensor = EntitySelector(EntitySelectorConfig(domain=Platform.SENSOR))
+    sensor_or_weather = EntitySelector(
+        EntitySelectorConfig(domain=[Platform.SENSOR, Platform.WEATHER])
+    )
+    forecast = EntitySelector(EntitySelectorConfig(domain=Platform.WEATHER))
+    selectors = {
+        WeatherSourceRole.PRECIPITATION_TOTAL: sensor,
+        WeatherSourceRole.PRECIPITATION_RATE: sensor,
+        WeatherSourceRole.REFERENCE_EVAPOTRANSPIRATION: sensor,
+        WeatherSourceRole.AIR_TEMPERATURE: sensor_or_weather,
+        WeatherSourceRole.RELATIVE_HUMIDITY: sensor_or_weather,
+        WeatherSourceRole.DEW_POINT: sensor_or_weather,
+        WeatherSourceRole.WIND_SPEED: sensor_or_weather,
+        WeatherSourceRole.SOLAR_IRRADIANCE: sensor,
+        WeatherSourceRole.FORECAST: forecast,
+    }
+    return vol.Schema({vol.Optional(role.value): selectors[role] for role in WEATHER_SOURCE_ROLES})
 
 
 def _target_selector(control_type: str) -> DurationSelector | NumberSelector:
@@ -846,6 +873,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                     ),
                     CONF_SEASONAL_MODULE_ENABLED: bool(user_input[CONF_SEASONAL_MODULE_ENABLED]),
                     CONF_WEATHER_MODULE_ENABLED: False,
+                    CONF_WEATHER_SOURCES: {},
                     CONF_SOAK_MODULE_ENABLED: False,
                 }
             )
@@ -2007,7 +2035,7 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                 "configuration_meter_only",
             ]
         )
-        options.extend(["extensions", "releases", "replan"])
+        options.extend(["extensions", "weather_sources", "releases", "replan"])
         if locked:
             options.append("reset_safety")
         if self.config_entry.data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
@@ -2136,8 +2164,41 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             CONF_PLANT_SITE_MODULE_ENABLED: bool(user_input[CONF_PLANT_SITE_MODULE_ENABLED]),
             CONF_SEASONAL_MODULE_ENABLED: bool(user_input[CONF_SEASONAL_MODULE_ENABLED]),
         }
-        data.setdefault(CONF_WEATHER_MODULE_ENABLED, False)
+        data[CONF_WEATHER_MODULE_ENABLED] = False
         data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
+        self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+        return self.async_create_entry(data={})
+
+    async def async_step_weather_sources(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Assign diagnostic weather sources without enabling weather correction."""
+        schema = _weather_sources_schema()
+        if user_input is None:
+            configured = self.config_entry.data.get(CONF_WEATHER_SOURCES, {})
+            suggested = dict(configured) if isinstance(configured, Mapping) else {}
+            return self.async_show_form(
+                step_id="weather_sources",
+                data_schema=self.add_suggested_values_to_schema(schema, suggested),
+                description_placeholders={
+                    "source_status": weather_source_status_summary(
+                        self.hass,
+                        configured,
+                        language=self.hass.config.language,
+                    )
+                },
+                last_step=True,
+            )
+        sources = {
+            role.value: entity_id
+            for role in WEATHER_SOURCE_ROLES
+            if isinstance((entity_id := user_input.get(role.value)), str) and entity_id
+        }
+        data = {
+            **self.config_entry.data,
+            CONF_WEATHER_SOURCES: sources,
+            CONF_WEATHER_MODULE_ENABLED: False,
+        }
         self.hass.config_entries.async_update_entry(self.config_entry, data=data)
         return self.async_create_entry(data={})
 

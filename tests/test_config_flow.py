@@ -95,7 +95,7 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["result"].version == 2
-    assert result["result"].minor_version == IrrigationManagerConfigFlow.MINOR_VERSION == 3
+    assert result["result"].minor_version == IrrigationManagerConfigFlow.MINOR_VERSION == 4
     assert result["data"] == {
         "name": "Garden",
         "operation_enabled": True,
@@ -106,6 +106,7 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
         "plant_site_module_enabled": False,
         "seasonal_module_enabled": False,
         "weather_module_enabled": False,
+        "weather_sources": {},
         "soak_module_enabled": False,
     }
     zone = next(iter(result["result"].subentries.values()))
@@ -167,7 +168,7 @@ async def test_home_assistant_migrates_rc19_entry_without_changing_behavior(
 
     assert await entry.async_migrate(hass)
 
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert entry.data["operation_enabled"] is True
     assert entry.data["automation_enabled"] is True
     migrated = entry.subentries[zone.subentry_id].data
@@ -193,6 +194,67 @@ async def test_home_assistant_migrates_rc19_entry_without_changing_behavior(
             "december",
         )
     }
+
+
+async def test_stage3_migration_adds_only_dormant_weather_source_configuration(
+    hass: HomeAssistant,
+) -> None:
+    """Upgrade rc22 without enabling weather correction or changing zone behavior."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={
+            "name": "Garden",
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": True,
+            "plant_site_module_enabled": True,
+            "seasonal_module_enabled": True,
+            "weather_module_enabled": True,
+            "soak_module_enabled": False,
+        },
+        unique_id="stage3-weather-sources",
+        version=2,
+        minor_version=3,
+    )
+    entry.add_to_hass(hass)
+    schedule = [
+        {
+            "weekday": weekday,
+            "start": "05:00:00" if weekday == "monday" else None,
+            "end": "06:00:00" if weekday == "monday" else None,
+            "target": 600.0 if weekday == "monday" else None,
+        }
+        for weekday in WEEKDAYS
+    ]
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "operation_enabled": True,
+            "automation_enabled": True,
+            "base_target": 600.0,
+            "weekly_schedule": schedule,
+            "use_seasonal_adjustment": True,
+            "seasonal_factors": {"january": 0.8},
+        },
+        subentry_id="stage3-zone",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="stage3-zone",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    assert await entry.async_migrate(hass)
+
+    assert entry.minor_version == 4
+    assert entry.data["weather_sources"] == {}
+    assert entry.data["weather_module_enabled"] is False
+    assert entry.data["operation_enabled"] is True
+    assert entry.data["automation_enabled"] is True
+    assert entry.subentries[zone.subentry_id].data["weekly_schedule"] == schedule
+    assert entry.subentries[zone.subentry_id].data["use_seasonal_adjustment"] is True
 
 
 async def test_creation_collects_and_confirms_seasonal_curve_before_schedule(
@@ -390,7 +452,12 @@ async def test_disabling_plant_module_preserves_zone_profiles(hass: HomeAssistan
     """Keep profile configuration dormant while the installation module is disabled."""
     entry = await _create_v2_entry(hass)
     hass.config_entries.async_update_entry(
-        entry, data={**entry.data, "plant_site_module_enabled": True}
+        entry,
+        data={
+            **entry.data,
+            "plant_site_module_enabled": True,
+            "weather_module_enabled": True,
+        },
     )
     zone = ConfigSubentry(
         data={
@@ -419,6 +486,7 @@ async def test_disabling_plant_module_preserves_zone_profiles(hass: HomeAssistan
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.data["plant_site_module_enabled"] is False
+    assert entry.data["weather_module_enabled"] is False
     assert entry.subentries[zone.subentry_id].data["use_plant_site_model"] is True
     assert entry.subentries[zone.subentry_id].data["subareas"] == [
         {"id": "subarea-1", "name": "Beds"}
@@ -818,6 +886,7 @@ async def test_installation_configuration_areas_are_directly_editable(
         "configuration_main_valve_only",
         "configuration_meter_only",
         "extensions",
+        "weather_sources",
         "releases",
         "replan",
         "physical_meter_correction",
@@ -875,6 +944,69 @@ async def test_installation_configuration_areas_are_directly_editable(
     assert entry.data["meter_entity"] == "sensor.pulses"
     assert entry.data["liters_per_pulse"] == 0.25
     assert "needs_reconfiguration" not in entry.data
+
+
+async def test_weather_sources_are_configurable_without_enabling_weather_correction(
+    hass: HomeAssistant,
+) -> None:
+    """Assign diagnostic sources while weather-dependent planning remains dormant."""
+    hass.states.async_set(
+        "sensor.outdoor_temperature",
+        "20",
+        {
+            "device_class": "temperature",
+            "state_class": "measurement",
+            "unit_of_measurement": "°C",
+        },
+    )
+    entry = await _create_v2_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert "weather_sources" in result["menu_options"]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "weather_sources"}
+    )
+
+    assert result["step_id"] == "weather_sources"
+    source_status = result["description_placeholders"]["source_status"]
+    assert "Precipitation total: Not configured" in source_status
+    assert "Forecast: Not configured" in source_status
+    assert source_status.count("\n") == 8
+    assert {str(key) for key in result["data_schema"].schema} == {
+        "precipitation_total",
+        "precipitation_rate",
+        "reference_evapotranspiration",
+        "air_temperature",
+        "relative_humidity",
+        "dew_point",
+        "wind_speed",
+        "solar_irradiance",
+        "forecast",
+    }
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "air_temperature": "sensor.outdoor_temperature",
+            "relative_humidity": "weather.forecast_home",
+            "forecast": "weather.forecast_home",
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["weather_sources"] == {
+        "air_temperature": "sensor.outdoor_temperature",
+        "relative_humidity": "weather.forecast_home",
+        "forecast": "weather.forecast_home",
+    }
+    assert entry.data["weather_module_enabled"] is False
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "weather_sources"}
+    )
+    assert "Air temperature: Available" in result["description_placeholders"]["source_status"]
+    assert "Relative humidity: Unavailable" in result["description_placeholders"]["source_status"]
 
 
 async def test_configuration_is_prominent_during_required_reconfiguration(
@@ -1245,6 +1377,7 @@ async def test_init_menu_tracks_release_and_safety_state(hass: HomeAssistant) ->
         "configuration_main_valve_only",
         "configuration_meter_only",
         "extensions",
+        "weather_sources",
         "releases",
         "replan",
         "reset_safety",
