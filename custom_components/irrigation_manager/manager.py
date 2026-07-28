@@ -200,6 +200,7 @@ class IrrigationManager:
 
         self._command_lock = asyncio.Lock()
         self._planning_lock = asyncio.Lock()
+        self._shutdown_lock = asyncio.Lock()
         self._queue_event = asyncio.Event()
         self._planning_event = asyncio.Event()
         self._complete_idle_event = asyncio.Event()
@@ -219,6 +220,7 @@ class IrrigationManager:
         self._cancelled_calibrations: set[str] = set()
         self._automatic_planning_in_progress = False
         self._shutting_down = False
+        self._shutdown_complete = False
         self._watering = False
         self._refresh_complete_idle_event()
 
@@ -387,32 +389,41 @@ class IrrigationManager:
 
     async def async_shutdown(self) -> None:
         """Stop manager-owned tasks and safely recover an active execution."""
-        self._shutting_down = True
-        tasks = [
-            task
-            for task in (
-                self._pending_reload_task,
-                self._dispatcher_task,
-                self._automatic_planner_task,
-                self._active_task,
-                self._calibration_task,
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            self._shutting_down = True
+            tasks = [
+                task
+                for task in (
+                    self._pending_reload_task,
+                    self._dispatcher_task,
+                    self._automatic_planner_task,
+                    self._active_task,
+                    self._calibration_task,
+                )
+                if task is not None and task is not asyncio.current_task()
+            ]
+            self._dispatcher_task = None
+            self._automatic_planner_task = None
+            self._pending_reload_task = None
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if self._stored_state.active_execution is not None:
+                await self._async_recover_interrupted_execution()
+            await self._async_close_boot_diagnostics(
+                DispatchReason.CONFIG_RELOAD
+                if self._config_reload_pending
+                else DispatchReason.CLEAN_SHUTDOWN
             )
-            if task is not None and task is not asyncio.current_task()
-        ]
-        self._dispatcher_task = None
-        self._automatic_planner_task = None
-        self._pending_reload_task = None
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if self._stored_state.active_execution is not None:
-            await self._async_recover_interrupted_execution()
-        await self._async_close_boot_diagnostics(
-            DispatchReason.CONFIG_RELOAD
-            if self._config_reload_pending
-            else DispatchReason.CLEAN_SHUTDOWN
-        )
+            if self._diagnostics_dirty:
+                await self._async_save_diagnostics()
+            diagnostic = self._stored_state.dispatcher_diagnostic
+            self._shutdown_complete = (
+                not self._diagnostics_dirty and diagnostic is not None and diagnostic.clean_shutdown
+            )
 
     async def async_request_config_reload(self) -> None:
         """Coalesce one reload and apply it when no execution owns old config."""
@@ -2679,6 +2690,10 @@ class IrrigationManager:
         """Persist an explicit clean shutdown or configuration reload."""
         previous = self._stored_state.dispatcher_diagnostic
         if previous is None:
+            return
+        if previous.clean_shutdown:
+            if self._diagnostics_dirty:
+                await self._async_save_diagnostics()
             return
         now = datetime.now(UTC).isoformat()
         event = DispatcherDiagnosticEntry(

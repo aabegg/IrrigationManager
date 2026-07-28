@@ -4,8 +4,8 @@ import logging
 import math
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
+from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
@@ -170,6 +170,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
     )
     hass.data[DOMAIN][entry.entry_id] = entry.runtime_data.manager
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
+    async def _async_stop_on_home_assistant_stop(_event: Event) -> None:
+        """Persist the final runtime state before Home Assistant stops."""
+        await manager.async_shutdown()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STOP,
+            _async_stop_on_home_assistant_stop,
+        )
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await async_register_frontend(hass, entry.entry_id)

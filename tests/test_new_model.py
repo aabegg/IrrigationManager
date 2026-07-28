@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.config_entries import SOURCE_USER, ConfigSubentry
-from homeassistant.const import STATE_OFF
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, STATE_OFF
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
@@ -2657,6 +2657,78 @@ async def test_clean_shutdown_and_unclean_restart_are_durable(
     await manager.async_shutdown()
     after_shutdown = await IrrigationStore(hass, entry.entry_id).async_load()
     stopped = after_shutdown.dispatcher_diagnostic
+    assert stopped is not None
+    assert stopped.current_reason == "clean_shutdown"
+    assert stopped.clean_shutdown is True
+
+
+async def test_home_assistant_stop_persists_clean_dispatcher_shutdown(
+    hass: HomeAssistant,
+) -> None:
+    """Close dispatcher diagnostics when Home Assistant itself stops."""
+    entry, _zone = await _setup_v2_installation(hass)
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    stopped = (await IrrigationStore(hass, entry.entry_id).async_load()).dispatcher_diagnostic
+    assert stopped is not None
+    assert stopped.current_reason == "clean_shutdown"
+    assert stopped.clean_shutdown is True
+
+
+async def test_concurrent_shutdown_callers_wait_for_persistence(
+    hass: HomeAssistant,
+) -> None:
+    """Make every shutdown caller await the same durable completion."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    save_started = asyncio.Event()
+    allow_save = asyncio.Event()
+    original_save = manager._store.async_save
+
+    async def delayed_save(state) -> None:
+        save_started.set()
+        await allow_save.wait()
+        await original_save(state)
+
+    with patch.object(manager._store, "async_save", side_effect=delayed_save):
+        first = hass.async_create_task(manager.async_shutdown())
+        await save_started.wait()
+        second = hass.async_create_task(manager.async_shutdown())
+        await asyncio.sleep(0)
+
+        assert not second.done()
+        allow_save.set()
+        await asyncio.gather(first, second)
+
+    stopped = (await IrrigationStore(hass, entry.entry_id).async_load()).dispatcher_diagnostic
+    assert stopped is not None
+    assert stopped.current_reason == "clean_shutdown"
+    assert stopped.clean_shutdown is True
+
+
+async def test_failed_shutdown_persistence_can_be_retried(
+    hass: HomeAssistant,
+) -> None:
+    """Retry a clean shutdown after its first durable write fails."""
+    entry, _zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    original_save = manager._store.async_save
+    attempts = 0
+
+    async def flaky_save(state) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary store failure")
+        await original_save(state)
+
+    with patch.object(manager._store, "async_save", side_effect=flaky_save):
+        await manager.async_shutdown()
+
+    assert attempts == 2
+    stopped = (await IrrigationStore(hass, entry.entry_id).async_load()).dispatcher_diagnostic
     assert stopped is not None
     assert stopped.current_reason == "clean_shutdown"
     assert stopped.clean_shutdown is True

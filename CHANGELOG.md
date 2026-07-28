@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-rc21 - 2026-07-28
+
+### Fixed
+
+- Persist a clean dispatcher shutdown from Home Assistant's core stop event so controlled
+  restarts are not reported as unclean previous runtimes.
+- Serialize overlapping stop and unload paths and retry a transient final diagnostics write
+  before Home Assistant exits.
+
 ## 0.1.0-rc20 - 2026-07-28
 
 ### Added
