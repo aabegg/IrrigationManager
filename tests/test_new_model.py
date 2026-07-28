@@ -926,9 +926,16 @@ async def test_reconfiguration_flags_block_activation_manual_dispatch_and_calibr
         operation_deadline_at=(now + timedelta(minutes=5)).isoformat(),
     )
     manager._stored_state = replace(manager._stored_state, manual_requests=(pending,))
-    manager._dispatcher_task = hass.async_create_task(manager._async_dispatch_requests())
-    manager._queue_event.set()
-    await asyncio.sleep(0.01)
+    with patch.object(
+        manager,
+        "_async_expire_requests",
+        wraps=manager._async_expire_requests,
+    ) as expire_requests:
+        manager._dispatcher_task = hass.async_create_task(manager._async_dispatch_requests())
+        manager._queue_event.set()
+        await asyncio.sleep(0.01)
+
+        assert expire_requests.await_count < 10
 
     assert hass.states.get("switch.lawn").state == STATE_OFF
     assert manager.list_manual_requests()[0]["status"] == "pending"
@@ -1833,6 +1840,36 @@ async def test_dispatch_wake_timeout_includes_future_requested_start(
 
     assert timeout is not None
     assert 0 < timeout <= 10
+
+
+async def test_dispatch_wake_timeout_ignores_past_requested_start(
+    hass: HomeAssistant,
+) -> None:
+    """Do not spin on a due request that remains pending until its future deadline."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    request = ManualIrrigationRequest(
+        request_id="due-but-blocked",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=1,
+        remaining_value=1,
+        created_at=(now - timedelta(minutes=1)).isoformat(),
+        requested_start_at=(now - timedelta(seconds=1)).isoformat(),
+        expires_at=(now + timedelta(minutes=5)).isoformat(),
+    )
+    manager._stored_state = replace(manager._stored_state, manual_requests=(request,))
+
+    timeout = manager._seconds_until_next_request_change()
+
+    assert timeout is not None
+    assert 299 < timeout <= 300
 
 
 async def test_planner_accounts_for_queued_predecessor_inside_window(

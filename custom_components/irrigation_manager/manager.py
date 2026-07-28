@@ -2361,7 +2361,11 @@ class IrrigationManager:
             moments.append(
                 datetime.fromisoformat(request.operation_deadline_at or request.expires_at)
             )
-            moments.append(datetime.fromisoformat(request.requested_start_at or request.created_at))
+            requested_start = datetime.fromisoformat(
+                request.requested_start_at or request.created_at
+            )
+            if requested_start > now:
+                moments.append(requested_start)
         return (
             max(0.0, min((moment - now).total_seconds() for moment in moments)) if moments else None
         )

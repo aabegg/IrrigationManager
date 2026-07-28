@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-rc18 - 2026-07-28
+
+### Fixed
+
+- Prevent the request dispatcher from spinning without delay when a due irrigation order
+  remains pending because a release or configuration barrier temporarily blocks execution.
+
 ## 0.1.0-rc17 - 2026-07-27
 
 ### Added
