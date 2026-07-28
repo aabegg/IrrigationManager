@@ -19,6 +19,8 @@ import { displayState, localize, translatedValue } from "./localize";
 import { cardStyles } from "./styles";
 import type { HassEntity, HomeAssistant, ZoneCardConfig } from "./types";
 
+const HISTORY_PAGE_SIZE = 20;
+
 function translatedHistory(hass: HomeAssistant, value: unknown): string {
   return value == null ? "–" : translatedValue(hass, String(value));
 }
@@ -204,7 +206,7 @@ export class IrrigationManagerZoneCard extends LitElement {
     this._busy = true;
     this._error = undefined;
     try {
-      const filters: Record<string, unknown> = { ...context, offset, limit: 20 };
+      const filters: Record<string, unknown> = { ...context, offset, limit: HISTORY_PAGE_SIZE };
       if (this._historySource) filters.source = this._historySource;
       if (this._historyResult) filters.result = this._historyResult;
       const result = await this.hass.callService(
@@ -230,8 +232,56 @@ export class IrrigationManagerZoneCard extends LitElement {
     }
   }
 
+  private parseNonNegativeNumber(value: unknown): number | undefined {
+    if (value == null || value === "") return undefined;
+    const parsed = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  }
+
+  private formatHistoryDate(value: unknown): string {
+    if (typeof value !== "string" || value === "") return "–";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "–";
+    const options: Intl.DateTimeFormatOptions = {
+      dateStyle: "medium",
+      timeStyle: "medium",
+      timeZone: this.hass.config?.time_zone,
+    };
+    try {
+      return new Intl.DateTimeFormat(this.hass.language || "en", options).format(date);
+    } catch {
+      return new Intl.DateTimeFormat("en", {
+        dateStyle: "medium",
+        timeStyle: "medium",
+      }).format(date);
+    }
+  }
+
+  private formatHistoryDuration(value: unknown): string {
+    const seconds = this.parseNonNegativeNumber(value);
+    return seconds === undefined ? "–" : formatDuration(seconds);
+  }
+
+  private formatLiters(value: unknown): string {
+    const liters = this.parseNonNegativeNumber(value);
+    if (liters === undefined) return "–";
+    const options: Intl.NumberFormatOptions = {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    };
+    let formatted: string;
+    try {
+      formatted = new Intl.NumberFormat(this.hass.language || "en", options).format(liters);
+    } catch {
+      formatted = new Intl.NumberFormat("en", options).format(liters);
+    }
+    return `${formatted} ${localize(this.hass, "liters")}`;
+  }
+
   private historyTarget(item: Record<string, unknown>): string {
-    return `${String(item.target_value)} ${item.target_type === "volume" ? localize(this.hass, "liters") : localize(this.hass, "seconds")}`;
+    return item.target_type === "volume"
+      ? this.formatLiters(item.target_value)
+      : this.formatHistoryDuration(item.target_value);
   }
 
   render(): TemplateResult | typeof nothing {
@@ -258,6 +308,10 @@ export class IrrigationManagerZoneCard extends LitElement {
     );
     const maxDuration = numberAttribute(zone, "max_manual_duration_seconds") ?? 604800;
     const maxVolumeRuntime = numberAttribute(zone, "max_manual_volume_runtime_seconds") ?? 604800;
+    const historyFrom = this._historyTotal === 0 ? 0 : this._historyOffset + 1;
+    const historyTo = Math.min(this._historyOffset + this._history.length, this._historyTotal);
+    const historyPage = Math.floor(this._historyOffset / HISTORY_PAGE_SIZE) + 1;
+    const historyPageCount = Math.max(1, Math.ceil(this._historyTotal / HISTORY_PAGE_SIZE));
 
     return html`
       <ha-card>
@@ -301,8 +355,37 @@ export class IrrigationManagerZoneCard extends LitElement {
             <dialog open aria-labelledby="history-title">
               <div class="dialog-header"><h2 id="history-title">${localize(this.hass, "irrigation_history")}</h2><button class="icon-button" aria-label=${localize(this.hass, "close")} @click=${() => { this._historyOpen = false; }}>×</button></div>
               <div class="filters"><label class="field"><span>${localize(this.hass, "source")}</span><select .value=${this._historySource} @change=${(event: Event) => { this._historySource = (event.target as HTMLSelectElement).value; void this.loadHistory(0); }}><option value="">${localize(this.hass, "all")}</option><option value="manual">${localize(this.hass, "manual")}</option><option value="automatic">${localize(this.hass, "automatic")}</option></select></label><label class="field"><span>${localize(this.hass, "result")}</span><select .value=${this._historyResult} @change=${(event: Event) => { this._historyResult = (event.target as HTMLSelectElement).value; void this.loadHistory(0); }}><option value="">${localize(this.hass, "all")}</option><option value="completed">${localize(this.hass, "completed")}</option><option value="failed">${localize(this.hass, "failed")}</option><option value="cancelled">${localize(this.hass, "cancelled")}</option></select></label></div>
-              ${this._busy ? html`<p aria-live="polite">${localize(this.hass, "loading")}</p>` : html`<div class="history-list">${this._history.map((item) => html`<article><strong>${this.historyTarget(item)}</strong><span>${String(item.started_at)} – ${String(item.ended_at ?? "")}</span><span>${translatedHistory(this.hass, item.source)} · ${translatedHistory(this.hass, item.result)} · ${String(item.actual_duration)} s${item.actual_water == null ? "" : ` · ${String(item.actual_water)} L`} · ${translatedHistory(this.hass, item.completion_reason)}</span></article>`)}</div>`}
-              <div class="actions"><button ?disabled=${this._busy || this._historyOffset === 0} @click=${() => this.loadHistory(Math.max(0, this._historyOffset - 20))}>${localize(this.hass, "previous")}</button><span>${this._historyTotal === 0 ? 0 : this._historyOffset + 1}–${Math.min(this._historyOffset + this._history.length, this._historyTotal)} / ${this._historyTotal}</span><button ?disabled=${this._busy || this._historyOffset + this._history.length >= this._historyTotal} @click=${() => this.loadHistory(this._historyOffset + 20)}>${localize(this.hass, "next_page")}</button></div>
+              ${this._busy ? html`<p aria-live="polite">${localize(this.hass, "loading")}</p>` : html`
+                <div class="history-list">
+                  ${this._history.map((item) => html`
+                    <article>
+                      <strong>${localize(this.hass, "target")}: ${this.historyTarget(item)}</strong>
+                      <span class="history-period">
+                        <time datetime=${String(item.started_at ?? "")}>${this.formatHistoryDate(item.started_at)}</time>
+                        <span aria-hidden="true">–</span>
+                        <time datetime=${String(item.ended_at ?? "")}>${this.formatHistoryDate(item.ended_at)}</time>
+                      </span>
+                      <span>
+                        ${translatedHistory(this.hass, item.source)} ·
+                        ${translatedHistory(this.hass, item.result)} ·
+                        ${localize(this.hass, "runtime")}: ${this.formatHistoryDuration(item.actual_duration)}
+                        ${item.actual_water == null ? nothing : html` · ${localize(this.hass, "water_amount")}: ${this.formatLiters(item.actual_water)}`}
+                        · ${translatedHistory(this.hass, item.completion_reason)}
+                      </span>
+                    </article>
+                  `)}
+                </div>
+              `}
+              <nav class="pagination" aria-label=${localize(this.hass, "pagination")}>
+                <button ?disabled=${this._busy || this._historyOffset === 0} @click=${() => this.loadHistory(Math.max(0, this._historyOffset - HISTORY_PAGE_SIZE))}>${localize(this.hass, "previous")}</button>
+                <span class="pagination-summary" aria-live="polite">
+                  <strong>${localize(this.hass, "page")} ${historyPage} ${localize(this.hass, "of")} ${historyPageCount}</strong>
+                  <span>${this._historyTotal === 0
+                    ? `0 ${localize(this.hass, "entries")}`
+                    : `${localize(this.hass, "entries")} ${historyFrom}–${historyTo} ${localize(this.hass, "of")} ${this._historyTotal}`}</span>
+                </span>
+                <button ?disabled=${this._busy || this._historyOffset + this._history.length >= this._historyTotal} @click=${() => this.loadHistory(this._historyOffset + HISTORY_PAGE_SIZE)}>${localize(this.hass, "next_page")}</button>
+              </nav>
             </dialog>` : nothing}
         </div>
       </ha-card>

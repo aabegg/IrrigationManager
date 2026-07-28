@@ -44,7 +44,11 @@ export const cardStyles = css`
   .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
   .history-list { display: grid; gap: 8px; }
   .history-list article { display: grid; gap: 3px; padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
-  .history-list article span { color: var(--secondary-text-color); font-size: 0.82rem; }
+  .history-list article span, .history-list article time { color: var(--secondary-text-color); font-size: 0.82rem; }
+  .history-period { display: flex; flex-wrap: wrap; gap: 4px; }
+  .pagination { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-top: 12px; }
+  .pagination-summary { display: grid; gap: 2px; text-align: center; color: var(--secondary-text-color); font-size: 0.78rem; }
+  .pagination-summary strong { color: var(--primary-text-color); font-size: 0.88rem; font-weight: 500; }
   .dialog-actions { margin-top: 16px; justify-content: flex-end; }
   .date-navigation { display: grid; grid-template-columns: 40px minmax(160px, 240px) 40px; justify-content: center; align-items: end; gap: 8px; margin-bottom: 14px; }
   .selected-date { margin-bottom: 8px; text-transform: capitalize; }
@@ -60,6 +64,9 @@ export const cardStyles = css`
     .card { padding: 14px; }
     .form-grid { grid-template-columns: 1fr; }
     .actions button { flex: 1 1 calc(50% - 8px); }
+    .pagination { grid-template-columns: 1fr 1fr; }
+    .pagination-summary { grid-column: 1 / -1; grid-row: 1; }
+    .pagination button { width: 100%; }
   }
 `;
 

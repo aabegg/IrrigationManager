@@ -568,7 +568,7 @@ describe("dashboard card interactions", () => {
           target_value: 600,
           result: "completed",
           actual_duration: 600,
-          actual_water: null,
+          actual_water: 1044.0001487731902,
           completion_reason: "target_reached",
         }],
         offset: 0,
@@ -585,7 +585,7 @@ describe("dashboard card interactions", () => {
         volume_control_available: false,
         card_entities: { anchor: "sensor.lawn_status", status: "sensor.lawn_status" },
       }),
-    ], callService);
+    ], callService, "Europe/Zurich");
     const card = await renderCard("irrigation-manager-zone-card", hass, {
       type: "custom:irrigation-manager-zone-card",
       entity: "sensor.lawn_status",
@@ -595,7 +595,15 @@ describe("dashboard card interactions", () => {
     await Promise.resolve();
     await card.updateComplete;
 
-    expect(card.shadowRoot.querySelector("dialog[open]")?.textContent).toContain("600 s");
+    const dialogText = card.shadowRoot.querySelector("dialog[open]")?.textContent ?? "";
+    expect(dialogText).toContain("24.07.2026, 07:00:00");
+    expect(dialogText).toContain("24.07.2026, 07:10:00");
+    expect(dialogText).toContain("00:10:00");
+    expect(dialogText).toContain("1.044,00 L");
+    expect(dialogText).toContain("Seite 1 von 1");
+    expect(dialogText).toContain("Einträge 1–1 von 1");
+    expect(dialogText).not.toContain("2026-07-24T05:00:00+00:00");
+    expect(dialogText).not.toContain("600 s");
     expect(callService).toHaveBeenCalledWith(
       "irrigation_manager",
       "list_zone_history",
