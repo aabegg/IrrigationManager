@@ -33,6 +33,7 @@ from .const import (
     CONF_WEATHER_MODULE_ENABLED,
     CONF_WEEKLY_SCHEDULE,
     CONF_ZONE_VALVE,
+    CONFIG_ENTRY_MINOR_VERSION,
     CONTROL_TYPE_TIME,
     DOMAIN,
     METER_TYPE_CUMULATIVE,
@@ -54,7 +55,6 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 LOGGER = logging.getLogger(__name__)
 
 ENTITY_SURFACE_MINOR_VERSION = 1
-CONFIG_MINOR_VERSION = 3
 METER_INSTALLATION_ENTITY_SUFFIXES = frozenset(
     {"water_total", "unassigned_water_total", "water_today", "water_month", "physical_meter"}
 )
@@ -238,7 +238,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry,
             data=migrated_data,
             version=2,
-            minor_version=CONFIG_MINOR_VERSION,
+            minor_version=CONFIG_ENTRY_MINOR_VERSION,
         )
         _remove_legacy_entity_surface(hass, entry)
         return True
@@ -247,7 +247,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     original_minor = entry.minor_version
     if original_minor < ENTITY_SURFACE_MINOR_VERSION:
         _remove_legacy_entity_surface(hass, entry)
-    if original_minor < CONFIG_MINOR_VERSION:
+    if original_minor < CONFIG_ENTRY_MINOR_VERSION:
         migrated_data = dict(entry.data)
         migrated_data.setdefault(CONF_PLANT_SITE_MODULE_ENABLED, False)
         migrated_data.setdefault(CONF_SEASONAL_MODULE_ENABLED, False)
@@ -278,7 +278,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(
             entry,
             data=migrated_data,
-            minor_version=CONFIG_MINOR_VERSION,
+            minor_version=CONFIG_ENTRY_MINOR_VERSION,
         )
     return True
 

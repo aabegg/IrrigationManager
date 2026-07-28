@@ -14,8 +14,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_manager.const import DOMAIN
 from custom_components.irrigation_manager.models import (
+    ActiveExecutionState,
     DispatcherDiagnosticEntry,
     DispatcherDiagnosticState,
+    IrrigationExecutionState,
+    ManualIrrigationRequest,
     StoredInstallationState,
 )
 from custom_components.irrigation_manager.services import START_MANUAL_SCHEMA
@@ -238,8 +241,94 @@ async def test_store_minor_migration_adds_empty_dispatch_diagnostics(
 async def test_store_minor_migration_adds_persistent_planning_rejections(
     hass: HomeAssistant,
 ) -> None:
-    """Upgrade rc19 storage with an empty current planning-rejection state."""
-    old_data = StoredInstallationState(installation_total_liters=23).as_dict()
+    """Upgrade a complete rc19 runtime without changing operational state."""
+    manual = ManualIrrigationRequest(
+        request_id="manual-pending",
+        sequence=1,
+        zone_id="zone-1",
+        zone_subentry_id="zone-subentry-1",
+        zone_name="Lawn",
+        zone_valve="switch.lawn",
+        main_valve="switch.main",
+        target_type="duration",
+        target_value=300,
+        remaining_value=300,
+        created_at="2026-07-28T04:00:00+00:00",
+        expires_at="2026-07-28T06:00:00+00:00",
+    )
+    automatic = ManualIrrigationRequest(
+        request_id="automatic-pending",
+        sequence=2,
+        zone_id="zone-1",
+        zone_subentry_id="zone-subentry-1",
+        zone_name="Lawn",
+        zone_valve="switch.lawn",
+        main_valve="switch.main",
+        target_type="duration",
+        target_value=600,
+        remaining_value=600,
+        created_at="2026-07-28T04:00:00+00:00",
+        expires_at="2026-07-29T05:00:00+00:00",
+        requested_start_at="2026-07-29T04:00:00+00:00",
+        status="pending",
+        source="automatic",
+        automatic_window_end="2026-07-29T05:00:00+00:00",
+        resolved_inputs={"base_target": 600.0},
+    )
+    executing = ManualIrrigationRequest(
+        request_id="automatic-active",
+        sequence=3,
+        zone_id="zone-2",
+        zone_subentry_id="zone-subentry-2",
+        zone_name="Beds",
+        zone_valve="switch.beds",
+        main_valve="switch.main",
+        target_type="duration",
+        target_value=420,
+        remaining_value=240,
+        created_at="2026-07-28T04:00:00+00:00",
+        expires_at="2026-07-28T05:00:00+00:00",
+        status="executing",
+        source="automatic",
+        execution_id="execution-active",
+    )
+    execution = IrrigationExecutionState(
+        execution_id="execution-active",
+        request_id=executing.request_id,
+        zone_id=executing.zone_id,
+        target_type="duration",
+        target_value=420,
+        remaining_value=240,
+        status="watering",
+        created_at="2026-07-28T04:00:00+00:00",
+        delivered_duration_seconds=180,
+    )
+    active = ActiveExecutionState(
+        zone_id=executing.zone_id,
+        zone_valve=executing.zone_valve,
+        main_valve=executing.main_valve,
+        meter_raw_baseline_liters=1200,
+        prepared_at="2026-07-28T04:00:00+00:00",
+        watering_started_at="2026-07-28T04:00:05+00:00",
+        requested_duration_seconds=420,
+        request_id=executing.request_id,
+        execution_id=execution.execution_id,
+    )
+    rc19_state = StoredInstallationState(
+        installation_total_liters=23,
+        emergency_stop=False,
+        installation_safety_lock="maintenance_lock",
+        installation_safety_lock_at="2026-07-28T03:55:00+00:00",
+        active_execution=active,
+        manual_requests=(manual, automatic, executing),
+        irrigation_executions=(execution,),
+        next_request_sequence=4,
+        operation_enabled=False,
+        automation_enabled=True,
+        zone_operation_enabled={"zone-1": True, "zone-2": False},
+        zone_automation_enabled={"zone-1": True, "zone-2": True},
+    )
+    old_data = rc19_state.as_dict()
     old_data.pop("planning_rejections")
     await Store[dict[str, object]](
         hass,
@@ -251,8 +340,7 @@ async def test_store_minor_migration_adds_persistent_planning_rejections(
 
     state = await IrrigationStore(hass, "pre-planning-rejections").async_load()
 
-    assert state.installation_total_liters == 23
-    assert state.planning_rejections == ()
+    assert state == rc19_state
     assert state.as_dict()["planning_rejections"] == []
 
 

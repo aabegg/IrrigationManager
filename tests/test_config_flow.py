@@ -1,6 +1,7 @@
 """Version 2 config-flow behavior tests for Irrigation Manager."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -10,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, section
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.irrigation_manager.config_flow import IrrigationManagerConfigFlow
 from custom_components.irrigation_manager.const import DOMAIN, WEEKDAYS
 
 
@@ -93,6 +95,7 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["result"].version == 2
+    assert result["result"].minor_version == IrrigationManagerConfigFlow.MINOR_VERSION == 3
     assert result["data"] == {
         "name": "Garden",
         "operation_enabled": True,
@@ -109,6 +112,87 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
     assert len(zone.data["weekly_schedule"]) == 7
     assert zone.data["base_target"] == 600
     assert zone.data["weekly_schedule"][0]["target"] is None
+
+
+async def test_home_assistant_migrates_rc19_entry_without_changing_behavior(
+    hass: HomeAssistant,
+) -> None:
+    """Run the public HA migration path and preserve existing irrigation behavior."""
+    schedule = [
+        {
+            "weekday": weekday,
+            "start": "04:00:00" if weekday == "monday" else None,
+            "end": "05:00:00" if weekday == "monday" else None,
+            "target": 600.0 if weekday == "monday" else None,
+        }
+        for weekday in WEEKDAYS
+    ]
+    expected_schedule = deepcopy(schedule)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={
+            "name": "Garden",
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": True,
+            "plant_site_module_enabled": False,
+            "seasonal_module_enabled": False,
+            "weather_module_enabled": False,
+            "soak_module_enabled": False,
+        },
+        unique_id="irrigation-rc19-migration",
+        version=2,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "operation_enabled": True,
+            "automation_enabled": True,
+            "base_target": 600.0,
+            "weekly_schedule": schedule,
+            "use_plant_site_model": False,
+            "subareas": [],
+        },
+        subentry_id="zone-rc19-migration",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="zone-rc19-migration",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    assert await entry.async_migrate(hass)
+
+    assert entry.minor_version == 3
+    assert entry.data["operation_enabled"] is True
+    assert entry.data["automation_enabled"] is True
+    migrated = entry.subentries[zone.subentry_id].data
+    assert migrated["operation_enabled"] is True
+    assert migrated["automation_enabled"] is True
+    assert migrated["base_target"] == 600.0
+    assert migrated["weekly_schedule"] == expected_schedule
+    assert migrated["use_seasonal_adjustment"] is False
+    assert migrated["seasonal_factors"] == {
+        month: 1.0
+        for month in (
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        )
+    }
 
 
 async def test_creation_collects_and_confirms_seasonal_curve_before_schedule(

@@ -62,6 +62,8 @@ from .const import (
     CONF_WEATHER_MODULE_ENABLED,
     CONF_WEEKLY_SCHEDULE,
     CONF_ZONE_VALVE,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
     CONTROL_TYPE_TIME,
     CONTROL_TYPE_VOLUME,
     DOMAIN,
@@ -747,8 +749,8 @@ def _meter_data(user_input: Mapping[str, object]) -> tuple[dict[str, object], st
 class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create one v2 irrigation installation with its mandatory first zone."""
 
-    VERSION = 2
-    MINOR_VERSION = 2
+    VERSION = CONFIG_ENTRY_VERSION
+    MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
     def __init__(self) -> None:
         """Initialize wizard state."""

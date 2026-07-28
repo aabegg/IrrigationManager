@@ -4,6 +4,8 @@ from typing import Final
 
 DOMAIN: Final = "irrigation_manager"
 INTEGRATION_NAME: Final = "Irrigation Manager"
+CONFIG_ENTRY_VERSION: Final = 2
+CONFIG_ENTRY_MINOR_VERSION: Final = 3
 
 CONF_MAIN_VALVE: Final = "main_valve"
 CONF_WATER_METER: Final = "water_meter"

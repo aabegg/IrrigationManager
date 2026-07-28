@@ -21,6 +21,12 @@
   rejections for diagnostics across restarts.
 - Migrate existing zones to a disabled neutral seasonal curve without changing behavior.
 
+### Fixed
+
+- Align the Config Flow version with the rc20 migration target so Home Assistant executes the
+  additive rc19-to-rc20 migration while preserving schedules, targets, releases, queued work,
+  active executions, and safety state.
+
 ## 0.1.0-rc19 - 2026-07-28
 
 ### Added
