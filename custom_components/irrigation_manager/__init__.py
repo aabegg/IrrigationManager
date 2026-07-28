@@ -23,10 +23,12 @@ from .const import (
     CONF_OPERATION_ENABLED,
     CONF_PLANT_SITE_MODULE_ENABLED,
     CONF_RAW_METER,
+    CONF_SEASONAL_FACTORS,
     CONF_SEASONAL_MODULE_ENABLED,
     CONF_SOAK_MODULE_ENABLED,
     CONF_SUBAREAS,
     CONF_USE_PLANT_SITE_MODEL,
+    CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_WATER_METER,
     CONF_WEATHER_MODULE_ENABLED,
     CONF_WEEKLY_SCHEDULE,
@@ -43,6 +45,7 @@ from .frontend import async_register_frontend, async_unregister_frontend
 from .manager import IrrigationManager
 from .models import InstallationSnapshot
 from .runtime import IrrigationConfigEntry, IrrigationRuntimeData
+from .seasonal import MONTHS
 from .services import async_register_services
 from .storage import IrrigationStore
 
@@ -51,7 +54,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 LOGGER = logging.getLogger(__name__)
 
 ENTITY_SURFACE_MINOR_VERSION = 1
-CONFIG_MINOR_VERSION = 2
+CONFIG_MINOR_VERSION = 3
 METER_INSTALLATION_ENTITY_SUFFIXES = frozenset(
     {"water_total", "unassigned_water_total", "water_today", "water_month", "physical_meter"}
 )
@@ -224,6 +227,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 ],
                 CONF_NEEDS_RECONFIGURATION: True,
                 CONF_USE_PLANT_SITE_MODEL: False,
+                CONF_USE_SEASONAL_ADJUSTMENT: False,
+                CONF_SEASONAL_FACTORS: {month: 1.0 for month in MONTHS},
                 CONF_SUBAREAS: [],
             }
             if isinstance(subentry.data.get(CONF_ZONE_VALVE), str):
@@ -252,6 +257,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             zone_data = dict(subentry.data)
             zone_data.setdefault(CONF_USE_PLANT_SITE_MODEL, False)
             zone_data.setdefault(CONF_SUBAREAS, [])
+            zone_data.setdefault(CONF_USE_SEASONAL_ADJUSTMENT, False)
+            zone_data.setdefault(CONF_SEASONAL_FACTORS, {month: 1.0 for month in MONTHS})
             if CONF_BASE_TARGET not in zone_data:
                 schedule = zone_data.get(CONF_WEEKLY_SCHEDULE)
                 if isinstance(schedule, list):

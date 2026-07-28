@@ -20,7 +20,6 @@ from homeassistant.util import dt as dt_util
 from .adapters import HomeAssistantActuators, HomeAssistantClock, HomeAssistantMeter
 from .const import (
     CONF_AUTOMATION_ENABLED,
-    CONF_BASE_TARGET,
     CONF_CONTROL_TYPE,
     CONF_EXPECTED_FLOW_L_MIN,
     CONF_LITERS_PER_COUNT,
@@ -32,6 +31,9 @@ from .const import (
     CONF_METER_TYPE,
     CONF_NEEDS_RECONFIGURATION,
     CONF_OPERATION_ENABLED,
+    CONF_SEASONAL_FACTORS,
+    CONF_SEASONAL_MODULE_ENABLED,
+    CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
     CONF_WEEKLY_SCHEDULE,
     CONF_ZONE_VALVE,
@@ -59,6 +61,8 @@ from .models import (
     IrrigationExecutionState,
     ManualIrrigationRequest,
     MeterCorrectionRecord,
+    PlanningRejection,
+    PlanningRejectionReason,
     StoredInstallationState,
     WaterConsumptionRecord,
 )
@@ -69,6 +73,7 @@ from .scheduler import (
     select_manual_request,
 )
 from .storage import IrrigationStore
+from .target_resolution import TargetResolutionOutcome, resolve_automatic_target
 from .zone_config import effective_schedule_target
 
 _FINAL_REQUEST_STATUSES = {"completed", "cancelled", "expired"}
@@ -202,6 +207,8 @@ class IrrigationManager:
         self._request_error_waiters: set[str] = set()
         self._request_errors: dict[str, Exception] = {}
         self._diagnostics_dirty = False
+        self._planning_rejections_dirty = False
+        self._target_resolution_warnings: frozenset[tuple[str, str, str]] = frozenset()
         self._cancel_requested: set[str] = set()
         self._active_task: asyncio.Task[ExecutionResult] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
@@ -468,7 +475,14 @@ class IrrigationManager:
         """Plan while excluding concurrent replans from the dispatch commit."""
         planning_now = (now or dt_util.now()).astimezone(UTC)
         local_now = dt_util.as_local(planning_now)
+        active_request_id = (
+            self._stored_state.active_execution.request_id
+            if self._stored_state.active_execution is not None
+            else None
+        )
         candidates: list[ManualIrrigationRequest] = []
+        not_plannable: list[PlanningRejection] = []
+        target_warnings: set[tuple[str, str, str]] = set()
         releases_allow = (
             self._operation_enabled
             and self._automation_enabled
@@ -517,6 +531,34 @@ class IrrigationManager:
                         )
                     if end <= planning_now:
                         continue
+                    raw_curve = zone.data.get(CONF_SEASONAL_FACTORS, {})
+                    seasonal_curve: Mapping[str, object] = (
+                        raw_curve
+                        if isinstance(raw_curve, Mapping)
+                        else {"invalid_curve": raw_curve}
+                    )
+                    request_id = f"automatic:{zone.zone_id}:{day.isoformat()}"
+                    if request_id == active_request_id:
+                        continue
+                    target_resolution = resolve_automatic_target(
+                        base_target=target,
+                        local_date=day,
+                        seasonal_module_enabled=(
+                            self._entry.data.get(CONF_SEASONAL_MODULE_ENABLED) is True
+                        ),
+                        zone_seasonal_enabled=(zone.data.get(CONF_USE_SEASONAL_ADJUSTMENT) is True),
+                        monthly_factors=seasonal_curve,
+                    )
+                    if target_resolution.outcome is not TargetResolutionOutcome.EXECUTE:
+                        continue
+                    resolved_target = target_resolution.final_target
+                    if resolved_target is None:
+                        raise HomeAssistantError("Executable target resolution has no target")
+                    target = resolved_target
+                    target_warnings.update(
+                        (request_id, zone.zone_id, warning)
+                        for warning in target_resolution.warnings
+                    )
                     control_type = str(zone.data.get(CONF_CONTROL_TYPE, "time"))
                     hard_limit = (
                         self._optional_float(zone.data, CONF_VOLUME_MAX_RUNTIME)
@@ -539,6 +581,27 @@ class IrrigationManager:
                         else target
                     )
                     if start + timedelta(seconds=required_duration) > end:
+                        base_required_duration = (
+                            planned_volume_duration_seconds(
+                                target_liters=target_resolution.base_target,
+                                max_runtime_seconds=hard_limit,
+                                expected_flow_l_min=expected_flow,
+                            )
+                            if hard_limit is not None
+                            else target_resolution.base_target
+                        )
+                        if (
+                            target_resolution.seasonal_factor > 1.0
+                            and start + timedelta(seconds=base_required_duration) <= end
+                        ):
+                            not_plannable.append(
+                                PlanningRejection(
+                                    request_id=request_id,
+                                    zone_id=zone.zone_id,
+                                    reason=(PlanningRejectionReason.SEASONAL_TARGET_DOES_NOT_FIT),
+                                )
+                            )
+                            continue
                         raise HomeAssistantError(
                             f"Weekly target for zone {zone.title} does not fit its window"
                         )
@@ -546,7 +609,7 @@ class IrrigationManager:
                         continue
                     candidates.append(
                         ManualIrrigationRequest(
-                            request_id=f"automatic:{zone.zone_id}:{day.isoformat()}",
+                            request_id=request_id,
                             sequence=0,
                             zone_id=zone.zone_id,
                             zone_subentry_id=zone.subentry_id,
@@ -567,9 +630,19 @@ class IrrigationManager:
                             delivery_runtime_limit_seconds=hard_limit or target,
                             operation_deadline_at=end.isoformat(),
                             resolved_inputs={
-                                "base_target": zone.data.get(CONF_BASE_TARGET),
+                                "target_resolution_outcome": (target_resolution.outcome.value),
+                                "base_target": target_resolution.base_target,
                                 "day_target_override": row.get("target"),
                                 "used_day_target_override": uses_override,
+                                "seasonal_module_enabled": (
+                                    target_resolution.seasonal_module_enabled
+                                ),
+                                "seasonal_zone_enabled": (target_resolution.zone_seasonal_enabled),
+                                "seasonal_factor": target_resolution.seasonal_factor,
+                                "seasonal_base_target": (target_resolution.seasonal_base_target),
+                                "fallback_strategy": target_resolution.fallback_strategy,
+                                "quality": target_resolution.quality,
+                                "warnings": list(target_resolution.warnings),
                                 "effective_target": target,
                                 "weekly_window_start": start.isoformat(),
                                 "planned_delivery_duration_seconds": required_duration,
@@ -585,6 +658,11 @@ class IrrigationManager:
         candidates = self._automatic_candidates_that_fit(candidates, planning_now)
 
         async with self._command_lock:
+            observability_changed = False
+            if not dry_run:
+                observability_changed = self._update_planning_observability(
+                    not_plannable, target_warnings
+                )
             pending = {
                 request.request_id: request
                 for request in self._stored_state.manual_requests
@@ -630,13 +708,19 @@ class IrrigationManager:
             created.sort()
             replaced_ids.sort()
             changed = bool(created or replaced_ids or removed)
-            if changed and not dry_run:
+            if (changed or observability_changed) and not dry_run:
                 next_state = replace(
                     self._stored_state,
                     manual_requests=(*retained, *reconciled),
                     next_request_sequence=sequence,
                 )
-                await self._store.async_save(next_state)
+                try:
+                    await self._store.async_save(next_state)
+                except Exception:
+                    if observability_changed:
+                        self._planning_rejections_dirty = True
+                    raise
+                self._planning_rejections_dirty = False
                 self._stored_state = next_state
                 await self._async_record_terminal_requests(
                     (
@@ -661,7 +745,40 @@ class IrrigationManager:
                 "would_create_request_ids": created if dry_run else [],
                 "replaced_request_ids": replaced_ids,
                 "removed_request_ids": removed,
+                "not_plannable": [rejection.as_dict() for rejection in not_plannable],
             }
+
+    def _update_planning_observability(
+        self,
+        rejections: list[PlanningRejection],
+        target_warnings: set[tuple[str, str, str]],
+    ) -> bool:
+        """Expose current planning problems and log each transition only once."""
+        previous_rejections = {
+            (item.request_id, item.zone_id, item.reason)
+            for item in self._stored_state.planning_rejections
+        }
+        for rejection in rejections:
+            identity = (rejection.request_id, rejection.zone_id, rejection.reason)
+            if identity not in previous_rejections:
+                _LOGGER.warning(
+                    "Automatic irrigation order %s for zone %s was not planned: %s",
+                    rejection.request_id,
+                    rejection.zone_id,
+                    rejection.reason.value,
+                )
+        for request_id, zone_id, warning in target_warnings - self._target_resolution_warnings:
+            _LOGGER.warning(
+                "Automatic target resolution for order %s in zone %s used a fallback: %s",
+                request_id,
+                zone_id,
+                warning,
+            )
+        changed = tuple(rejections) != self._stored_state.planning_rejections
+        if changed:
+            self._stored_state = replace(self._stored_state, planning_rejections=tuple(rejections))
+        self._target_resolution_warnings = frozenset(target_warnings)
+        return changed or self._planning_rejections_dirty
 
     def _automatic_candidates_that_fit(
         self,
@@ -2736,6 +2853,9 @@ class IrrigationManager:
             "dispatcher": diagnostic.as_dict() if diagnostic is not None else None,
             "dispatcher_history": [
                 event.as_dict() for event in self._stored_state.dispatcher_diagnostic_history
+            ],
+            "planning_rejections": [
+                rejection.as_dict() for rejection in self._stored_state.planning_rejections
             ],
         }
 

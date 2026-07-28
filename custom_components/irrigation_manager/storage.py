@@ -17,7 +17,7 @@ from .models import (
 )
 
 STORAGE_VERSION = 2
-STORAGE_MINOR_VERSION = 1
+STORAGE_MINOR_VERSION = 2
 
 
 def _valid_records[T](value: object, loader: Callable[[dict[str, object]], T]) -> tuple[T, ...]:
@@ -227,9 +227,10 @@ class _StateStore(Store[dict[str, object]]):
         old_minor_version: int,
         old_data: dict[str, object],
     ) -> dict[str, object]:
-        del old_minor_version
         if old_major_version == 1:
             return _migrate_rc6(old_data)
+        if old_major_version == 2 and old_minor_version < STORAGE_MINOR_VERSION:
+            return StoredInstallationState.from_dict(old_data).as_dict()
         raise NotImplementedError
 
 

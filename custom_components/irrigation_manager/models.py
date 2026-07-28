@@ -410,6 +410,38 @@ class DispatchReason(StrEnum):
     AUTOMATIC_PLANNING_ERROR = "automatic_planning_error"
 
 
+class PlanningRejectionReason(StrEnum):
+    """Closed vocabulary for automatic orders rejected during planning."""
+
+    SEASONAL_TARGET_DOES_NOT_FIT = "seasonal_target_does_not_fit"
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningRejection:
+    """Current reason why one expected automatic order could not be planned."""
+
+    request_id: str
+    zone_id: str
+    reason: PlanningRejectionReason
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> PlanningRejection:
+        """Deserialize one current planning rejection."""
+        return cls(
+            request_id=_required_string(data, "request_id"),
+            zone_id=_required_string(data, "zone_id"),
+            reason=PlanningRejectionReason(_required_string(data, "reason")),
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        """Return a diagnostics-safe representation."""
+        return {
+            "request_id": self.request_id,
+            "zone_id": self.zone_id,
+            "reason": self.reason.value,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class DispatcherDiagnosticEntry:
     """One durable dispatcher decision transition."""
@@ -536,6 +568,7 @@ class StoredInstallationState:
     automation_enabled: bool | None = None
     zone_operation_enabled: dict[str, bool] = field(default_factory=dict)
     zone_automation_enabled: dict[str, bool] = field(default_factory=dict)
+    planning_rejections: tuple[PlanningRejection, ...] = ()
     dispatcher_diagnostic: DispatcherDiagnosticState | None = None
     dispatcher_diagnostic_history: tuple[DispatcherDiagnosticEntry, ...] = ()
 
@@ -589,6 +622,16 @@ class StoredInstallationState:
                     continue
                 try:
                     dispatcher_history.append(DispatcherDiagnosticEntry.from_dict(item))
+                except TypeError, ValueError:
+                    continue
+        planning_rejections: list[PlanningRejection] = []
+        raw_planning_rejections = data.get("planning_rejections", [])
+        if isinstance(raw_planning_rejections, list):
+            for item in raw_planning_rejections:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    planning_rejections.append(PlanningRejection.from_dict(item))
                 except TypeError, ValueError:
                     continue
         return cls(
@@ -647,6 +690,7 @@ class StoredInstallationState:
             automation_enabled=cls._optional_bool(data, "automation_enabled"),
             zone_operation_enabled=cls._bool_dict(data, "zone_operation_enabled"),
             zone_automation_enabled=cls._bool_dict(data, "zone_automation_enabled"),
+            planning_rejections=tuple(planning_rejections),
             dispatcher_diagnostic=dispatcher_diagnostic,
             dispatcher_diagnostic_history=tuple(dispatcher_history[-100:]),
         )
@@ -731,6 +775,7 @@ class StoredInstallationState:
             "automation_enabled": self.automation_enabled,
             "zone_operation_enabled": dict(self.zone_operation_enabled),
             "zone_automation_enabled": dict(self.zone_automation_enabled),
+            "planning_rejections": [rejection.as_dict() for rejection in self.planning_rejections],
             "dispatcher_diagnostic": (
                 self.dispatcher_diagnostic.as_dict()
                 if self.dispatcher_diagnostic is not None

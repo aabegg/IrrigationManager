@@ -166,7 +166,7 @@ async def test_stage1_migration_preserves_targets_as_day_overrides(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert entry.data["plant_site_module_enabled"] is False
     migrated = entry.subentries[zone.subentry_id].data
     assert migrated["base_target"] == 300.0
@@ -174,6 +174,62 @@ async def test_stage1_migration_preserves_targets_as_day_overrides(
     assert migrated["weekly_schedule"][4]["target"] == 600.0
     assert migrated["use_plant_site_model"] is False
     assert migrated["subareas"] == []
+
+
+async def test_stage2_migration_adds_dormant_neutral_seasonal_configuration(
+    hass: HomeAssistant,
+) -> None:
+    """Make existing zones season-ready without changing any planned target."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Garden",
+        data={
+            "name": "Garden",
+            "meter_type": "none",
+            "seasonal_module_enabled": False,
+        },
+        unique_id="stage2-migration",
+        version=2,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "base_target": 600.0,
+            "weekly_schedule": [],
+        },
+        subentry_id="zone-stage2",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="zone-stage2",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    assert await async_migrate_entry(hass, entry)
+
+    migrated = entry.subentries[zone.subentry_id].data
+    assert entry.minor_version == 3
+    assert migrated["use_seasonal_adjustment"] is False
+    assert migrated["seasonal_factors"] == {
+        month: 1.0
+        for month in (
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        )
+    }
 
 
 async def test_stage1_migration_handles_empty_and_equal_target_schedules(
@@ -422,7 +478,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
     assert await async_migrate_entry(hass, entry)
 
     assert entry.version == 2
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert entry.data == {
         "name": "Legacy garden",
         "main_valve": "switch.main",
@@ -457,6 +513,24 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
         ],
         "needs_reconfiguration": True,
         "use_plant_site_model": False,
+        "use_seasonal_adjustment": False,
+        "seasonal_factors": {
+            month: 1.0
+            for month in (
+                "january",
+                "february",
+                "march",
+                "april",
+                "may",
+                "june",
+                "july",
+                "august",
+                "september",
+                "october",
+                "november",
+                "december",
+            )
+        },
         "subareas": [],
     }
 
@@ -514,7 +588,7 @@ async def test_v2_minor_migration_removes_only_retired_entity_unique_ids(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert registry.async_get("sensor.renamed_zone_status") is not None
     assert all(registry.async_get(entity_id) is None for entity_id in retired)
 
@@ -566,6 +640,272 @@ async def test_weekly_replan_atomically_replaces_only_pending_automatic_requests
     ]
     assert all(request.target_type == "duration" for request in automatic)
     assert all(request.target_value == 600 for request in automatic)
+
+
+async def test_seasonal_plan_snapshots_interpolated_target_inputs(
+    hass: HomeAssistant,
+) -> None:
+    """Resolve a scheduled baseline through the local seasonal curve once per order."""
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={"seasonal_module_enabled": True},
+        zone_overrides={
+            "use_seasonal_adjustment": True,
+            "seasonal_factors": {"january": 1.0, "february": 2.0},
+        },
+    )
+    manager = entry.runtime_data.manager
+
+    report = await manager.async_plan_automatic(now=datetime(2026, 1, 4, 12, tzinfo=UTC))
+
+    request = manager._request(report["created_request_ids"][0])
+    assert request is not None
+    assert request.target_value == pytest.approx(600.0 * (1.0 + 4 / 31))
+    assert request.resolved_inputs["base_target"] == 600.0
+    assert request.resolved_inputs["seasonal_factor"] == pytest.approx(1.0 + 4 / 31)
+    assert request.resolved_inputs["seasonal_base_target"] == pytest.approx(600.0 * (1.0 + 4 / 31))
+    assert request.resolved_inputs["target_resolution_outcome"] == "execute"
+    assert request.resolved_inputs["fallback_strategy"] == "none"
+    assert request.resolved_inputs["quality"] == "valid"
+    assert request.resolved_inputs["warnings"] == []
+
+
+async def test_invalid_seasonal_curve_fallback_is_snapshotted_and_logged_once(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Keep baseline irrigation safe while exposing corrupt curve evidence."""
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={"seasonal_module_enabled": True},
+        zone_overrides={
+            "use_seasonal_adjustment": True,
+            "seasonal_factors": {"january": 0.0},
+        },
+    )
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 1, 4, 12, tzinfo=UTC)
+    caplog.clear()
+
+    report = await manager.async_plan_automatic(now=now)
+
+    request = manager._request(report["created_request_ids"][0])
+    assert request is not None
+    assert request.target_value == 600.0
+    assert request.resolved_inputs["fallback_strategy"] == "base_target"
+    assert request.resolved_inputs["quality"] == "fallback"
+    assert request.resolved_inputs["warnings"] == ["invalid_seasonal_curve"]
+    assert any("invalid_seasonal_curve" in record.getMessage() for record in caplog.records)
+    caplog.clear()
+    await manager.async_plan_automatic(now=now)
+    assert not any("invalid_seasonal_curve" in record.getMessage() for record in caplog.records)
+
+
+async def test_seasonal_curve_change_atomically_replaces_only_pending_automatic_work(
+    hass: HomeAssistant,
+) -> None:
+    """Recalculate pending automatic orders while retaining manual work unchanged."""
+    entry, zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={"seasonal_module_enabled": True},
+        zone_overrides={
+            "use_seasonal_adjustment": True,
+            "seasonal_factors": {"january": 1.0, "february": 1.0},
+        },
+    )
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 1, 4, 12, tzinfo=UTC)
+    first = await manager.async_plan_automatic(now=now)
+    original = manager._request(first["created_request_ids"][0])
+    assert original is not None
+    manual = ManualIrrigationRequest(
+        request_id="manual-seasonal-proof",
+        sequence=99,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=60.0,
+        remaining_value=60.0,
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(days=1)).isoformat(),
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=(*manager._stored_state.manual_requests, manual),
+    )
+    manager._zone_configs[0].data["seasonal_factors"] = {
+        "january": 1.5,
+        "february": 1.5,
+    }
+
+    report = await manager.async_plan_automatic(now=now)
+
+    replacement = manager._request(original.request_id)
+    assert original.request_id in report["replaced_request_ids"]
+    assert report["replaced"] == 2
+    assert replacement is not None
+    assert replacement.target_value == 900.0
+    assert replacement.revision == original.revision + 1
+    assert manager._request(manual.request_id) == manual
+
+
+async def test_actual_seasonal_config_change_defers_reload_during_active_execution(
+    hass: HomeAssistant,
+) -> None:
+    """Keep the immutable target snapshot of an already active automatic order."""
+    entry, zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={"seasonal_module_enabled": True},
+        zone_overrides={
+            "use_seasonal_adjustment": True,
+            "seasonal_factors": {"january": 1.0, "february": 1.0},
+        },
+    )
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 1, 4, 12, tzinfo=UTC)
+    first = await manager.async_plan_automatic(now=now)
+    original = manager._request(first["created_request_ids"][0])
+    assert original is not None
+    executing = replace(original, status="executing", execution_id="seasonal-active")
+    active = ActiveExecutionState(
+        zone_id=zone.unique_id,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        meter_raw_baseline_liters=None,
+        prepared_at=now.isoformat(),
+        watering_started_at=now.isoformat(),
+        requested_duration_seconds=original.target_value,
+        request_id=original.request_id,
+        execution_id="seasonal-active",
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=tuple(
+            executing if request.request_id == original.request_id else request
+            for request in manager._stored_state.manual_requests
+        ),
+        active_execution=active,
+    )
+    changed_curve = {**zone.data["seasonal_factors"], "january": 1.5, "february": 1.5}
+    hass.config_entries.async_update_subentry(
+        entry,
+        zone,
+        data={**zone.data, "seasonal_factors": changed_curve},
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+        if manager._config_reload_pending:
+            break
+
+    assert manager._config_reload_pending is True
+    assert entry.subentries[zone.subentry_id].data["seasonal_factors"] == changed_curve
+    assert manager._stored_state.active_execution == active
+    assert manager._request(original.request_id) == executing
+    assert (
+        sum(
+            request.request_id == original.request_id
+            for request in manager._stored_state.manual_requests
+        )
+        == 1
+    )
+    assert manager._pending_reload_task is not None
+    manager._pending_reload_task.cancel()
+    await asyncio.gather(manager._pending_reload_task, return_exceptions=True)
+    manager._stored_state = replace(
+        manager._stored_state,
+        manual_requests=tuple(
+            replace(request, status="cancelled")
+            if request.request_id == original.request_id
+            else request
+            for request in manager._stored_state.manual_requests
+        ),
+        active_execution=None,
+    )
+    manager._refresh_complete_idle_event()
+
+
+async def test_seasonal_target_that_exceeds_window_is_reported_not_shortened(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Keep an enlarged seasonal target whole and expose why no order was created."""
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={"seasonal_module_enabled": True},
+        zone_overrides={
+            "use_seasonal_adjustment": True,
+            "seasonal_factors": {"january": 3.0, "february": 3.0},
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._zone_configs[0].data["weekly_schedule"][0]["target"] = 1800.0
+
+    report = await manager.async_plan_automatic(now=datetime(2026, 1, 4, 12, tzinfo=UTC))
+
+    assert report["created"] == 0
+    assert report["not_plannable"] == [
+        {
+            "request_id": "automatic:zone-v2-runtime:2026-01-05",
+            "zone_id": "zone-v2-runtime",
+            "reason": "seasonal_target_does_not_fit",
+        },
+        {
+            "request_id": "automatic:zone-v2-runtime:2026-01-12",
+            "zone_id": "zone-v2-runtime",
+            "reason": "seasonal_target_does_not_fit",
+        },
+    ]
+    assert manager.diagnostics_state_decisions()["planning_rejections"] == report["not_plannable"]
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert [rejection.as_dict() for rejection in stored.planning_rejections] == report[
+        "not_plannable"
+    ]
+    manager._stored_state = replace(manager._stored_state, planning_rejections=())
+    caplog.clear()
+    rejections = list(stored.planning_rejections)
+    assert manager._update_planning_observability(rejections, set()) is True
+    assert manager._update_planning_observability(rejections, set()) is False
+    assert (
+        sum("seasonal_target_does_not_fit" in record.getMessage() for record in caplog.records) == 2
+    )
+    manager._zone_configs[0].data["seasonal_factors"] = {
+        "january": 1.0,
+        "february": 1.0,
+    }
+    await manager.async_plan_automatic(now=datetime(2026, 1, 4, 12, tzinfo=UTC))
+    assert manager.diagnostics_state_decisions()["planning_rejections"] == []
+    stored = await IrrigationStore(hass, entry.entry_id).async_load()
+    assert stored.planning_rejections == ()
+
+
+async def test_failed_planning_rejection_persistence_is_retried(
+    hass: HomeAssistant,
+) -> None:
+    """Keep unchanged rejection evidence dirty until a later store write succeeds."""
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={"seasonal_module_enabled": True},
+        zone_overrides={
+            "use_seasonal_adjustment": True,
+            "seasonal_factors": {"january": 3.0, "february": 3.0},
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._stored_state = replace(manager._stored_state, manual_requests=())
+    manager._zone_configs[0].data["weekly_schedule"][0]["target"] = 1800.0
+    manager._store.async_save = AsyncMock(side_effect=[OSError("disk unavailable"), None])
+    now = datetime(2026, 1, 4, 12, tzinfo=UTC)
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        await manager.async_plan_automatic(now=now)
+
+    assert manager._planning_rejections_dirty is True
+    await manager.async_plan_automatic(now=now)
+    assert manager._store.async_save.await_count == 2
+    assert manager._planning_rejections_dirty is False
 
 
 async def test_weekly_volume_plan_uses_calibrated_flow_without_weakening_hard_limit(
@@ -1236,7 +1576,7 @@ async def test_no_meter_exposes_runtime_contract_without_water_entities(
     entry, zone = await _setup_v2_installation(hass)
     registry = er.async_get(hass)
 
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert (
         registry.async_get_entity_id("sensor", DOMAIN, "installation-v2-runtime_water_total")
         is None

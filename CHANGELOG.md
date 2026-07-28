@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.0-rc20 - 2026-07-28
+
+### Added
+
+- Add per-zone seasonal adjustment with twelve bounded monthly factors and daily local-date
+  interpolation between month anchors.
+- Add native Home Assistant configuration flows for global module availability, zone opt-in,
+  curve editing, target preview, and explicit confirmation.
+- Snapshot the baseline, applied seasonal factor, resulting target, resolution outcome,
+  fallback strategy, quality, and warnings in every automatic irrigation order.
+- Add the shared execute, skip, and defer target-resolution contract for later modules.
+
+### Changed
+
+- Replan only pending automatic orders atomically after seasonal configuration changes while
+  retaining active executions, manual orders, and dormant curves.
+- Report seasonally enlarged targets that no longer fit as `seasonal_target_does_not_fit`
+  instead of shortening them or failing the complete planning pass, and persist the current
+  rejections for diagnostics across restarts.
+- Migrate existing zones to a disabled neutral seasonal curve without changing behavior.
+
 ## 0.1.0-rc19 - 2026-07-28
 
 ### Added

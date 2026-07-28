@@ -3,6 +3,7 @@
 import asyncio
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import time
 from typing import Any, cast, override
 from uuid import uuid4
@@ -51,10 +52,12 @@ from .const import (
     CONF_NEEDS_RECONFIGURATION,
     CONF_OPERATION_ENABLED,
     CONF_PLANT_SITE_MODULE_ENABLED,
+    CONF_SEASONAL_FACTORS,
     CONF_SEASONAL_MODULE_ENABLED,
     CONF_SOAK_MODULE_ENABLED,
     CONF_SUBAREAS,
     CONF_USE_PLANT_SITE_MODEL,
+    CONF_USE_SEASONAL_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
     CONF_WEATHER_MODULE_ENABLED,
     CONF_WEEKLY_SCHEDULE,
@@ -80,6 +83,13 @@ from .profiles import (
     recommend_profiles,
 )
 from .scheduler import planned_volume_duration_seconds
+from .seasonal import (
+    DEFAULT_SEASONAL_FACTOR,
+    MAX_SEASONAL_FACTOR,
+    MIN_SEASONAL_FACTOR,
+    MONTHS,
+    canonical_seasonal_factors,
+)
 from .zone_config import positive_number
 
 _ACTUATOR_OWNERSHIP_LOCK = asyncio.Lock()
@@ -209,7 +219,10 @@ def _meter_details_schema(meter_type: str) -> vol.Schema:
 def _extensions_schema() -> vol.Schema:
     """Expose only extension modules completed in the current stage."""
     return vol.Schema(
-        {vol.Required(CONF_PLANT_SITE_MODULE_ENABLED, default=False): BooleanSelector()}
+        {
+            vol.Required(CONF_PLANT_SITE_MODULE_ENABLED, default=False): BooleanSelector(),
+            vol.Required(CONF_SEASONAL_MODULE_ENABLED, default=False): BooleanSelector(),
+        }
     )
 
 
@@ -250,6 +263,151 @@ def _set_optional_baseline(
 
 def _plant_usage_schema(default: bool = False) -> vol.Schema:
     return vol.Schema({vol.Required(CONF_USE_PLANT_SITE_MODEL, default=default): BooleanSelector()})
+
+
+def _seasonal_usage_schema(default: bool = False) -> vol.Schema:
+    """Choose whether one zone uses seasonal adjustment."""
+    return vol.Schema(
+        {vol.Required(CONF_USE_SEASONAL_ADJUSTMENT, default=default): BooleanSelector()}
+    )
+
+
+def _seasonal_curve_schema(factors: Mapping[str, object] | None = None) -> vol.Schema:
+    """Collect a complete bounded twelve-month curve with native selectors."""
+    existing = factors or {}
+    return vol.Schema(
+        {
+            vol.Required(
+                month, default=existing.get(month, DEFAULT_SEASONAL_FACTOR)
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=MIN_SEASONAL_FACTOR,
+                    max=MAX_SEASONAL_FACTOR,
+                    step=0.01,
+                    mode=NumberSelectorMode.BOX,
+                )
+            )
+            for month in MONTHS
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _SeasonalCurveSubmission:
+    """Shared validation result for every seasonal curve flow."""
+
+    schema: vol.Schema
+    factors: dict[str, float] | None
+    errors: dict[str, str] | None
+
+
+def _seasonal_curve_submission(
+    user_input: Mapping[str, object] | None,
+    *,
+    existing: Mapping[str, object] | None = None,
+) -> _SeasonalCurveSubmission:
+    """Validate one seasonal curve submission for any config-flow context."""
+    schema = _seasonal_curve_schema(existing)
+    if user_input is None:
+        return _SeasonalCurveSubmission(schema, None, None)
+    try:
+        factors = canonical_seasonal_factors(user_input)
+    except ValueError:
+        return _SeasonalCurveSubmission(schema, None, {"base": "seasonal_curve_invalid"})
+    return _SeasonalCurveSubmission(schema, factors, None)
+
+
+@dataclass(frozen=True, slots=True)
+class _SeasonalReviewSubmission:
+    """Shared preview and confirmation state for every seasonal flow."""
+
+    preview: str
+    confirmed: bool
+    errors: dict[str, str] | None
+
+
+def _seasonal_review_submission(
+    *,
+    language: str,
+    zone: Mapping[str, object],
+    factors: Mapping[str, float],
+    user_input: Mapping[str, object] | None,
+) -> _SeasonalReviewSubmission:
+    """Build the common seasonal preview and require explicit confirmation."""
+    preview = _seasonal_preview(
+        language=language,
+        control_type=str(zone[CONF_CONTROL_TYPE]),
+        base_target=positive_number(zone.get(CONF_BASE_TARGET)),
+        factors=factors,
+    )
+    confirmed = bool(user_input and user_input.get("confirm_seasonal_curve") is True)
+    return _SeasonalReviewSubmission(
+        preview=preview,
+        confirmed=confirmed,
+        errors=(
+            {"base": "seasonal_confirmation_required"}
+            if user_input is not None and not confirmed
+            else None
+        ),
+    )
+
+
+def _apply_seasonal_usage(
+    zone: dict[str, Any],
+    user_input: Mapping[str, object],
+    *,
+    reset_curve_when_disabled: bool,
+) -> bool:
+    """Apply the shared zone opt-in without discarding dormant curves on reconfigure."""
+    enabled = user_input.get(CONF_USE_SEASONAL_ADJUSTMENT) is True
+    zone[CONF_USE_SEASONAL_ADJUSTMENT] = enabled
+    if not enabled and reset_curve_when_disabled:
+        zone[CONF_SEASONAL_FACTORS] = canonical_seasonal_factors({})
+    return enabled
+
+
+def _seasonal_preview(
+    *, language: str, control_type: str, base_target: float | None, factors: Mapping[str, float]
+) -> str:
+    """Render explicit month-anchor targets for the confirmation step."""
+    labels = (
+        (
+            "Januar",
+            "Februar",
+            "März",
+            "April",
+            "Mai",
+            "Juni",
+            "Juli",
+            "August",
+            "September",
+            "Oktober",
+            "November",
+            "Dezember",
+        )
+        if language == "de"
+        else tuple(month.capitalize() for month in MONTHS)
+    )
+    lines: list[str] = []
+    for month, label in zip(MONTHS, labels, strict=True):
+        factor = factors[month]
+        if base_target is None:
+            target = "—"
+        elif control_type == CONTROL_TYPE_TIME:
+            total_seconds = base_target * factor
+            hours, remainder = divmod(total_seconds, 3_600)
+            minutes, seconds = divmod(remainder, 60)
+            target = f"{int(hours):02d}:{int(minutes):02d}:{seconds:05.2f}".rstrip("0").rstrip(".")
+            if seconds.is_integer():
+                target = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
+        else:
+            target = f"{base_target * factor:.2f} L"
+        lines.append(f"{label}: x{factor:.2f} → {target}")
+    return "\n".join(lines)
+
+
+def _seasonal_confirmation_schema() -> vol.Schema:
+    return vol.Schema({vol.Required("confirm_seasonal_curve", default=False): BooleanSelector()})
 
 
 def _reconfigure_plant_schema(default: bool, has_subareas: bool) -> vol.Schema:
@@ -599,6 +757,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         self._meter_type = METER_TYPE_NONE
         self._subareas: list[dict[str, object]] = []
         self._recommendation: ProfileRecommendation | None = None
+        self._seasonal_factors: dict[str, float] = {}
 
     @override
     @staticmethod
@@ -683,7 +842,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_PLANT_SITE_MODULE_ENABLED: bool(
                         user_input[CONF_PLANT_SITE_MODULE_ENABLED]
                     ),
-                    CONF_SEASONAL_MODULE_ENABLED: False,
+                    CONF_SEASONAL_MODULE_ENABLED: bool(user_input[CONF_SEASONAL_MODULE_ENABLED]),
                     CONF_WEATHER_MODULE_ENABLED: False,
                     CONF_SOAK_MODULE_ENABLED: False,
                 }
@@ -796,6 +955,10 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                         self.hass.config.language, self._recommendation
                     ),
                 )
+            if self._installation.get(CONF_SEASONAL_MODULE_ENABLED) is True:
+                return await self.async_step_first_zone_seasonal()
+            self._first_zone[CONF_USE_SEASONAL_ADJUSTMENT] = False
+            self._first_zone[CONF_SEASONAL_FACTORS] = canonical_seasonal_factors({})
             return await self.async_step_installation_schedule()
         return self.async_show_form(
             step_id="installation_baseline",
@@ -805,6 +968,63 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             last_step=False,
         )
+
+    async def async_step_first_zone_seasonal(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose whether the first zone uses seasonal adjustment."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="first_zone_seasonal",
+                data_schema=_seasonal_usage_schema(),
+                last_step=False,
+            )
+        enabled = _apply_seasonal_usage(
+            self._first_zone, user_input, reset_curve_when_disabled=True
+        )
+        if not enabled:
+            return await self.async_step_installation_schedule()
+        return await self.async_step_first_zone_seasonal_curve()
+
+    async def async_step_first_zone_seasonal_curve(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect a complete first-zone curve before previewing it."""
+        submission = _seasonal_curve_submission(user_input)
+        if submission.factors is None:
+            return self.async_show_form(
+                step_id="first_zone_seasonal_curve",
+                data_schema=(
+                    self.add_suggested_values_to_schema(submission.schema, user_input)
+                    if user_input is not None
+                    else submission.schema
+                ),
+                errors=submission.errors,
+                last_step=False,
+            )
+        self._seasonal_factors = submission.factors
+        return await self.async_step_first_zone_seasonal_review()
+
+    async def async_step_first_zone_seasonal_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Preview and explicitly confirm the first-zone seasonal curve."""
+        submission = _seasonal_review_submission(
+            language=self.hass.config.language,
+            zone=self._first_zone,
+            factors=self._seasonal_factors,
+            user_input=user_input,
+        )
+        if not submission.confirmed:
+            return self.async_show_form(
+                step_id="first_zone_seasonal_review",
+                data_schema=_seasonal_confirmation_schema(),
+                errors=submission.errors,
+                description_placeholders={"preview": submission.preview},
+                last_step=True,
+            )
+        self._first_zone[CONF_SEASONAL_FACTORS] = dict(self._seasonal_factors)
+        return await self.async_step_installation_schedule()
 
     async def async_step_installation_schedule(
         self, user_input: dict[str, Any] | None = None
@@ -871,6 +1091,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self._calibration_supervision_renewed = False
         self._subareas: list[dict[str, object]] = []
         self._recommendation: ProfileRecommendation | None = None
+        self._seasonal_factors: dict[str, float] = {}
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Start the minimal zone form directly."""
@@ -972,6 +1193,10 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                         self.hass.config.language, self._recommendation
                     ),
                 )
+            if self._get_entry().data.get(CONF_SEASONAL_MODULE_ENABLED) is True:
+                return await self.async_step_seasonal()
+            self._zone[CONF_USE_SEASONAL_ADJUSTMENT] = False
+            self._zone[CONF_SEASONAL_FACTORS] = canonical_seasonal_factors({})
             return await self.async_step_minimal_schedule()
         return self.async_show_form(
             step_id="baseline",
@@ -981,6 +1206,61 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             ),
             last_step=False,
         )
+
+    async def async_step_seasonal(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Choose whether a new zone uses seasonal adjustment."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="seasonal",
+                data_schema=_seasonal_usage_schema(),
+                last_step=False,
+            )
+        enabled = _apply_seasonal_usage(self._zone, user_input, reset_curve_when_disabled=True)
+        if not enabled:
+            return await self.async_step_minimal_schedule()
+        return await self.async_step_seasonal_curve()
+
+    async def async_step_seasonal_curve(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect a complete new-zone curve before previewing it."""
+        submission = _seasonal_curve_submission(user_input)
+        if submission.factors is None:
+            return self.async_show_form(
+                step_id="seasonal_curve",
+                data_schema=(
+                    self.add_suggested_values_to_schema(submission.schema, user_input)
+                    if user_input is not None
+                    else submission.schema
+                ),
+                errors=submission.errors,
+                last_step=False,
+            )
+        self._seasonal_factors = submission.factors
+        return await self.async_step_seasonal_review()
+
+    async def async_step_seasonal_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Preview and explicitly confirm a new-zone seasonal curve."""
+        submission = _seasonal_review_submission(
+            language=self.hass.config.language,
+            zone=self._zone,
+            factors=self._seasonal_factors,
+            user_input=user_input,
+        )
+        if not submission.confirmed:
+            return self.async_show_form(
+                step_id="seasonal_review",
+                data_schema=_seasonal_confirmation_schema(),
+                errors=submission.errors,
+                description_placeholders={"preview": submission.preview},
+                last_step=True,
+            )
+        self._zone[CONF_SEASONAL_FACTORS] = dict(self._seasonal_factors)
+        return await self.async_step_minimal_schedule()
 
     async def async_step_minimal_schedule(
         self, user_input: dict[str, Any] | None = None
@@ -1019,12 +1299,15 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         options = [
             "reconfigure_minimal",
             "reconfigure_plant",
+            "reconfigure_seasonal",
             "reconfigure_baseline",
             "reconfigure_schedule",
             "releases",
         ]
         if self._get_entry().data.get(CONF_PLANT_SITE_MODULE_ENABLED) is not True:
             options.remove("reconfigure_plant")
+        if self._get_entry().data.get(CONF_SEASONAL_MODULE_ENABLED) is not True:
+            options.remove("reconfigure_seasonal")
         if self._get_entry().data.get(CONF_METER_TYPE) != METER_TYPE_NONE:
             options.append("calibration")
         return self.async_show_menu(step_id="reconfigure", menu_options=options)
@@ -1337,6 +1620,70 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             **subentry.data,
             CONF_USE_PLANT_SITE_MODEL: True,
             CONF_SUBAREAS: list(self._subareas),
+        }
+        return self.async_update_and_abort(self._get_entry(), subentry, data=data)
+
+    async def async_step_reconfigure_seasonal(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Enable, disable, or continue to edit one zone's seasonal curve."""
+        subentry = self._get_reconfigure_subentry()
+        enabled = bool(subentry.data.get(CONF_USE_SEASONAL_ADJUSTMENT, False))
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_seasonal",
+                data_schema=_seasonal_usage_schema(enabled),
+                last_step=False,
+            )
+        self._zone = dict(subentry.data)
+        if not _apply_seasonal_usage(self._zone, user_input, reset_curve_when_disabled=False):
+            return self.async_update_and_abort(self._get_entry(), subentry, data=self._zone)
+        return await self.async_step_reconfigure_seasonal_curve()
+
+    async def async_step_reconfigure_seasonal_curve(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect but do not yet persist a complete seasonal curve."""
+        existing = self._zone.get(CONF_SEASONAL_FACTORS)
+        factors = existing if isinstance(existing, Mapping) else None
+        submission = _seasonal_curve_submission(user_input, existing=factors)
+        if submission.factors is None:
+            return self.async_show_form(
+                step_id="reconfigure_seasonal_curve",
+                data_schema=(
+                    self.add_suggested_values_to_schema(submission.schema, user_input)
+                    if user_input is not None
+                    else submission.schema
+                ),
+                errors=submission.errors,
+                last_step=False,
+            )
+        self._seasonal_factors = submission.factors
+        return await self.async_step_reconfigure_seasonal_review()
+
+    async def async_step_reconfigure_seasonal_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Preview month-anchor targets and persist only after confirmation."""
+        submission = _seasonal_review_submission(
+            language=self.hass.config.language,
+            zone=self._zone,
+            factors=self._seasonal_factors,
+            user_input=user_input,
+        )
+        if not submission.confirmed:
+            return self.async_show_form(
+                step_id="reconfigure_seasonal_review",
+                data_schema=_seasonal_confirmation_schema(),
+                errors=submission.errors,
+                description_placeholders={"preview": submission.preview},
+                last_step=True,
+            )
+        subentry = self._get_reconfigure_subentry()
+        data = {
+            **subentry.data,
+            CONF_USE_SEASONAL_ADJUSTMENT: True,
+            CONF_SEASONAL_FACTORS: dict(self._seasonal_factors),
         }
         return self.async_update_and_abort(self._get_entry(), subentry, data=data)
 
@@ -1774,7 +2121,10 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
                     {
                         CONF_PLANT_SITE_MODULE_ENABLED: bool(
                             self.config_entry.data.get(CONF_PLANT_SITE_MODULE_ENABLED, False)
-                        )
+                        ),
+                        CONF_SEASONAL_MODULE_ENABLED: bool(
+                            self.config_entry.data.get(CONF_SEASONAL_MODULE_ENABLED, False)
+                        ),
                     },
                 ),
                 last_step=True,
@@ -1782,8 +2132,8 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         data = {
             **self.config_entry.data,
             CONF_PLANT_SITE_MODULE_ENABLED: bool(user_input[CONF_PLANT_SITE_MODULE_ENABLED]),
+            CONF_SEASONAL_MODULE_ENABLED: bool(user_input[CONF_SEASONAL_MODULE_ENABLED]),
         }
-        data.setdefault(CONF_SEASONAL_MODULE_ENABLED, False)
         data.setdefault(CONF_WEATHER_MODULE_ENABLED, False)
         data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
         self.hass.config_entries.async_update_entry(self.config_entry, data=data)

@@ -107,6 +107,7 @@ async def test_fresh_store_uses_only_current_v2_schema(hass: HomeAssistant) -> N
         "automation_enabled",
         "zone_operation_enabled",
         "zone_automation_enabled",
+        "planning_rejections",
         "dispatcher_diagnostic",
         "dispatcher_diagnostic_history",
     }
@@ -232,6 +233,27 @@ async def test_store_minor_migration_adds_empty_dispatch_diagnostics(
     assert state.installation_total_liters == 19
     assert state.dispatcher_diagnostic is None
     assert state.dispatcher_diagnostic_history == ()
+
+
+async def test_store_minor_migration_adds_persistent_planning_rejections(
+    hass: HomeAssistant,
+) -> None:
+    """Upgrade rc19 storage with an empty current planning-rejection state."""
+    old_data = StoredInstallationState(installation_total_liters=23).as_dict()
+    old_data.pop("planning_rejections")
+    await Store[dict[str, object]](
+        hass,
+        2,
+        "irrigation_manager.pre-planning-rejections",
+        atomic_writes=True,
+        minor_version=1,
+    ).async_save(old_data)
+
+    state = await IrrigationStore(hass, "pre-planning-rejections").async_load()
+
+    assert state.installation_total_liters == 23
+    assert state.planning_rejections == ()
+    assert state.as_dict()["planning_rejections"] == []
 
 
 async def test_setup_publishes_v2_initial_snapshot_without_legacy_fields(

@@ -588,6 +588,8 @@ Ohne Wasserzähler kann eine Wassermenge nur dann in eine Laufzeit umgerechnet w
 
 Die saisonale Korrektur besitzt pro verwendender Zone zwölf Monatsfaktoren. Zwischen den Monatsstützpunkten wird anhand des lokalen Datums täglich linear interpoliert, damit Monatsgrenzen keine sprunghaften Zieländerungen verursachen.
 
+Jeder Monatsfaktor liegt zwischen `0,10` und `3,00` und wird mit höchstens zwei Nachkommastellen gespeichert. `1,00` ist neutral. Ein Faktor `0` ist nicht zulässig, weil ein fälliger Termin nicht stillschweigend vollständig unterdrückt werden darf; dafür werden die ausdrücklichen Betriebs- und Automatikfreigaben verwendet. Der Monatswert gilt jeweils am ersten lokalen Kalendertag des Monats. Für jeden weiteren Tag wird zwischen diesem Wert und dem Wert des folgenden Monats linear interpoliert; der Dezember interpoliert dabei auf den Januarwert derselben Kurve. Die Zielberechnung verwendet den ungerundeten interpolierten Faktor und rundet weder Zeit- noch Mengenziele künstlich.
+
 Das saisonale Basissoll wird bestimmt als:
 
 `Basissoll des fälligen Termins × interpolierter Monatsfaktor`
@@ -596,6 +598,7 @@ Dabei gelten folgende Regeln:
 
 - Ohne konfigurierten Wert gilt für jeden Monat `1,0`.
 - Das Pflanzenprofil kann eine Monatskurve vorschlagen, übernimmt sie aber niemals automatisch.
+- Der aktuelle qualitative Pflanzenkatalog enthält keine numerisch begründeten Monatskurven und erzeugt deshalb noch keinen Profilvorschlag. Die neutrale Standardkurve gilt nicht als Empfehlung. Ein späterer Katalogvorschlag benötigt zwölf ausdrücklich dokumentierte Faktoren, Quelle und Katalogversion; die Oberfläche darf ihn lediglich vorbefüllen und muss weiterhin Zielvorschau und ausdrückliche Bestätigung verlangen.
 - Eine vorgeschlagene oder geänderte Kurve wird mit einer Zielvorschau angezeigt und erst nach ausdrücklicher Bestätigung gespeichert.
 - Faktor, Ausgangssoll und saisonales Basissoll werden im Berechnungssnapshot jedes automatischen Bewässerungsauftrags festgehalten.
 - Ist das Modul anlagenweit deaktiviert oder für die Zone nicht verwendet, gilt Faktor `1,0`.
@@ -794,7 +797,7 @@ Vor der saisonalen Korrektur ist die Ablaufdiagnose von Planung und Dispatcher s
 
 Abnahmekriterien sind ein reproduzierter fälliger, aber blockierter Auftrag ohne Busy-Loop, korrekte Grundcodes für alle Freigabe- und Sperrpfade, gedrosselte Protokollierung, Begrenzung des Ringpuffers, Migration ohne Verhaltensänderung sowie der Erhalt des letzten Diagnosezustands über einen simulierten unsauberen Neustart.
 
-### Stufe 2: Saisonale Korrektur
+### Stufe 2: Saisonale Korrektur (umgesetzt ab rc20)
 
 - zwölf Monatsfaktoren und tägliche lineare Interpolation implementieren
 - manuelle Kurve unabhängig vom Pflanzenmodell erlauben

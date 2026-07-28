@@ -111,6 +111,51 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
     assert zone.data["weekly_schedule"][0]["target"] is None
 
 
+async def test_creation_collects_and_confirms_seasonal_curve_before_schedule(
+    hass: HomeAssistant,
+    mock_setup_entry: None,
+) -> None:
+    """Expose the completed module and persist its curve only after preview confirmation."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "create"}
+    )
+    for payload in (
+        {"name": "Garden"},
+        {},
+        {"meter_type": "none"},
+        {"plant_site_module_enabled": False, "seasonal_module_enabled": True},
+        {"name": "Lawn", "zone_valve": "switch.lawn", "control_type": "time"},
+        {"base_target": {"hours": 0, "minutes": 10, "seconds": 0}},
+    ):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
+    assert result["step_id"] == "first_zone_seasonal"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"use_seasonal_adjustment": True}
+    )
+    assert result["step_id"] == "first_zone_seasonal_curve"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"january": 1.5})
+    assert result["step_id"] == "first_zone_seasonal_review"
+    assert "00:15:00" in result["description_placeholders"]["preview"]
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"confirm_seasonal_curve": True}
+    )
+    assert result["step_id"] == "installation_schedule"
+
+    with patch("custom_components.irrigation_manager.config_flow.uuid4") as uuid4:
+        uuid4.side_effect = [
+            type("Id", (), {"hex": "irrigation-seasonal"})(),
+            type("Id", (), {"hex": "zone-seasonal"})(),
+        ]
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+
+    zone = next(iter(result["result"].subentries.values()))
+    assert result["data"]["seasonal_module_enabled"] is True
+    assert zone.data["use_seasonal_adjustment"] is True
+    assert zone.data["seasonal_factors"]["january"] == 1.5
+    assert zone.data["seasonal_factors"]["february"] == 1.0
+
+
 async def test_creation_validates_pulse_factor_and_complete_schedule_rows(
     hass: HomeAssistant,
 ) -> None:
@@ -296,6 +341,66 @@ async def test_disabling_plant_module_preserves_zone_profiles(hass: HomeAssistan
     ]
 
 
+async def test_disabling_seasonal_module_preserves_zone_curve(hass: HomeAssistant) -> None:
+    """Keep a confirmed curve dormant while the seasonal module is disabled."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            "plant_site_module_enabled": False,
+            "seasonal_module_enabled": True,
+        },
+    )
+    curve = {
+        month: 1.0
+        for month in (
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        )
+    }
+    curve["july"] = 1.4
+    zone = ConfigSubentry(
+        data={
+            "name": "Beds",
+            "zone_valve": "switch.beds",
+            "control_type": "time",
+            "use_seasonal_adjustment": True,
+            "seasonal_factors": curve,
+            "weekly_schedule": [],
+        },
+        subentry_id="zone-seasonal-dormant",
+        subentry_type="zone",
+        title="Beds",
+        unique_id="zone-seasonal-dormant",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "extensions"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"plant_site_module_enabled": False, "seasonal_module_enabled": False},
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["seasonal_module_enabled"] is False
+    assert entry.subentries[zone.subentry_id].data["use_seasonal_adjustment"] is True
+    assert entry.subentries[zone.subentry_id].data["seasonal_factors"] == curve
+
+
 async def test_zone_profile_disable_and_reenable_preserves_subareas(
     hass: HomeAssistant,
 ) -> None:
@@ -357,6 +462,81 @@ async def test_zone_profile_disable_and_reenable_preserves_subareas(
     assert result["type"] is FlowResultType.ABORT
     assert entry.subentries[zone.subentry_id].data["use_plant_site_model"] is True
     assert entry.subentries[zone.subentry_id].data["subareas"] == subareas
+
+
+async def test_zone_seasonal_curve_requires_preview_confirmation_before_save(
+    hass: HomeAssistant,
+) -> None:
+    """Configure a complete curve through native selectors and confirm its target preview."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "seasonal_module_enabled": True}
+    )
+    zone = ConfigSubentry(
+        data={
+            "name": "Beds",
+            "zone_valve": "switch.beds",
+            "control_type": "time",
+            "base_target": 600.0,
+            "use_seasonal_adjustment": False,
+            "seasonal_factors": {
+                month: 1.0
+                for month in (
+                    "january",
+                    "february",
+                    "march",
+                    "april",
+                    "may",
+                    "june",
+                    "july",
+                    "august",
+                    "september",
+                    "october",
+                    "november",
+                    "december",
+                )
+            },
+            "weekly_schedule": [],
+        },
+        subentry_id="zone-seasonal",
+        subentry_type="zone",
+        title="Beds",
+        unique_id="zone-seasonal",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    assert "reconfigure_seasonal" in result["menu_options"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_seasonal"}
+    )
+    assert result["step_id"] == "reconfigure_seasonal"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"use_seasonal_adjustment": True}
+    )
+    assert result["step_id"] == "reconfigure_seasonal_curve"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"january": 1.5}
+    )
+    assert result["step_id"] == "reconfigure_seasonal_review"
+    assert "00:15:00" in result["description_placeholders"]["preview"]
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"confirm_seasonal_curve": False}
+    )
+    assert result["errors"] == {"base": "seasonal_confirmation_required"}
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"confirm_seasonal_curve": True}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    stored = entry.subentries[zone.subentry_id].data
+    assert stored["use_seasonal_adjustment"] is True
+    assert stored["seasonal_factors"]["january"] == 1.5
+    assert stored["seasonal_factors"]["february"] == 1.0
 
 
 async def test_baseline_reconfiguration_rejects_existing_window_that_no_longer_fits(
@@ -426,6 +606,45 @@ async def test_manual_only_zone_can_be_created_without_baseline(
     zone = next(iter(entry.subentries.values()))
     assert "base_target" not in zone.data
     assert all(row["start"] is None for row in zone.data["weekly_schedule"])
+
+
+async def test_new_zone_can_opt_into_available_seasonal_module(
+    hass: HomeAssistant,
+) -> None:
+    """Apply the same confirmed seasonal flow to repeatable zone creation."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "seasonal_module_enabled": True}
+    )
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"), context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"name": "Beds", "zone_valve": "switch.beds", "control_type": "time"},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"base_target": {"hours": 0, "minutes": 5, "seconds": 0}}
+    )
+    assert result["step_id"] == "seasonal"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"use_seasonal_adjustment": True}
+    )
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {"july": 1.4})
+    assert result["step_id"] == "seasonal_review"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"confirm_seasonal_curve": True}
+    )
+    assert result["step_id"] == "minimal_schedule"
+
+    with patch("custom_components.irrigation_manager.config_flow.uuid4") as uuid4:
+        uuid4.return_value.hex = "zone-seasonal-new"
+        result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    zone = next(iter(entry.subentries.values()))
+    assert zone.data["use_seasonal_adjustment"] is True
+    assert zone.data["seasonal_factors"]["july"] == 1.4
 
 
 async def test_automatic_window_requires_baseline(hass: HomeAssistant) -> None:
