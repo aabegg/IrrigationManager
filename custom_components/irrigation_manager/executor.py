@@ -58,6 +58,7 @@ class ExecutionRequest:
     monitor_interval_seconds: float = 0.0
     on_zone_opening: Callable[[], Awaitable[None]] | None = None
     on_zone_opened: Callable[[], Awaitable[None]] | None = None
+    on_zone_closed: Callable[[], Awaitable[None]] | None = None
     on_progress: Callable[[float, str], Awaitable[None]] | None = None
     require_meter_progress: bool = False
     on_actuator_command: Callable[[str, bool], Awaitable[None]] | None = None
@@ -196,6 +197,8 @@ class IrrigationExecutor:
                     budget_seconds=CLEANUP_FEEDBACK_BUDGET_SECONDS,
                     on_command=request.on_actuator_command,
                     feedback_bypass_entities=request.feedback_bypass_entities,
+                    zone_valve=request.zone_valve,
+                    on_zone_closed=request.on_zone_closed,
                 )
                 for entity_id, cleanup_error in cleanup_errors.items():
                     violations.append(f"Could not close {entity_id}: {cleanup_error}")
@@ -417,6 +420,8 @@ class IrrigationExecutor:
         budget_seconds: float,
         on_command: Callable[[str, bool], Awaitable[None]] | None = None,
         feedback_bypass_entities: tuple[str, ...] = (),
+        zone_valve: str | None = None,
+        on_zone_closed: Callable[[], Awaitable[None]] | None = None,
     ) -> dict[str, BaseException]:
         """Command zone then main closure, each with a cleanup-only bound."""
         errors: dict[str, BaseException] = {}
@@ -429,6 +434,8 @@ class IrrigationExecutor:
                         entity_id,
                         verify=entity_id not in feedback_bypass_entities,
                     )
+                    if entity_id == zone_valve and on_zone_closed is not None:
+                        await on_zone_closed()
             except BaseException as err:  # noqa: BLE001
                 errors[entity_id] = err
         return errors

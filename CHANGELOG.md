@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.0-rc25 - 2026-07-28
+
+### Added
+
+- Add an opt-in measured-water balance using directly assigned reference
+  evapotranspiration and cumulative precipitation sources, with explicit per-zone
+  conversion settings for time- and volume-controlled irrigation.
+- Persist daily water-balance contributions, source progress, quality evidence, fallback
+  reasons, and immutable planning snapshots for diagnostics.
+
+### Changed
+
+- Resolve only the current local day's pending automatic target from the measured deficit;
+  future orders and incomplete or unreliable observations retain the seasonal baseline.
+- Support demand irrigation with an explicit threshold and minimum irrigation that never
+  reduces the confirmed seasonal baseline.
+
+### Fixed
+
+- Credit verified actual irrigation exactly once per execution and local day, including
+  proportional cross-midnight allocation from persisted valve-open and valve-close times.
+- Quarantine incomplete restart recovery or unreliable volume evidence instead of recording
+  an assumed zero delivery, and retain dated accounting markers for the complete 90-day
+  balance horizon.
+
 ## 0.1.0-rc24 - 2026-07-28
 
 ### Changed

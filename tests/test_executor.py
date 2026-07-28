@@ -106,6 +106,10 @@ class RealClock:
         return asyncio.get_running_loop().time()
 
 
+async def _append_checkpoint(checkpoints: list[str], value: str) -> None:
+    checkpoints.append(value)
+
+
 async def test_execute_timed_waters_one_zone_and_attributes_meter_delta() -> None:
     """Open main then zone, close safely, and assign measured consumption."""
     actuators = FakeActuators()
@@ -115,6 +119,7 @@ async def test_execute_timed_waters_one_zone_and_attributes_meter_delta() -> Non
         meter=FakeMeter([1_000.0, 1_025.0]),
         clock=clock,
     )
+    checkpoints: list[str] = []
 
     result = await executor.execute(
         ExecutionRequest(
@@ -123,6 +128,8 @@ async def test_execute_timed_waters_one_zone_and_attributes_meter_delta() -> Non
             main_valve="switch.main",
             duration_seconds=60,
             settle_seconds=5,
+            on_zone_opened=lambda: _append_checkpoint(checkpoints, "opened"),
+            on_zone_closed=lambda: _append_checkpoint(checkpoints, "closed"),
         )
     )
 
@@ -136,6 +143,7 @@ async def test_execute_timed_waters_one_zone_and_attributes_meter_delta() -> Non
     assert result.zone_id == "lawn"
     assert result.delivered_liters == 25.0
     assert actuators.open_valves == set()
+    assert checkpoints == ["opened", "closed"]
 
 
 async def test_volume_target_closes_when_cumulative_meter_reaches_target() -> None:

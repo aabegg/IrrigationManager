@@ -30,6 +30,7 @@ from custom_components.irrigation_manager.models import (
     ManualIrrigationRequest,
 )
 from custom_components.irrigation_manager.storage import IrrigationStore
+from custom_components.irrigation_manager.water_balance import update_water_balance
 
 
 async def _setup_v2_installation(
@@ -166,7 +167,7 @@ async def test_stage1_migration_preserves_targets_as_day_overrides(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 4
+    assert entry.minor_version == 5
     assert entry.data["plant_site_module_enabled"] is False
     migrated = entry.subentries[zone.subentry_id].data
     assert migrated["base_target"] == 300.0
@@ -211,7 +212,7 @@ async def test_stage2_migration_adds_dormant_neutral_seasonal_configuration(
     assert await async_migrate_entry(hass, entry)
 
     migrated = entry.subentries[zone.subentry_id].data
-    assert entry.minor_version == 4
+    assert entry.minor_version == 5
     assert migrated["use_seasonal_adjustment"] is False
     assert migrated["seasonal_factors"] == {
         month: 1.0
@@ -479,7 +480,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
     assert await async_migrate_entry(hass, entry)
 
     assert entry.version == 2
-    assert entry.minor_version == 4
+    assert entry.minor_version == 5
     assert entry.data == {
         "name": "Legacy garden",
         "main_valve": "switch.main",
@@ -516,6 +517,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
         "needs_reconfiguration": True,
         "use_plant_site_model": False,
         "use_seasonal_adjustment": False,
+        "use_weather_adjustment": False,
         "seasonal_factors": {
             month: 1.0
             for month in (
@@ -590,7 +592,7 @@ async def test_v2_minor_migration_removes_only_retired_entity_unique_ids(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 4
+    assert entry.minor_version == 5
     assert registry.async_get("sensor.renamed_zone_status") is not None
     assert all(registry.async_get(entity_id) is None for entity_id in retired)
 
@@ -701,6 +703,311 @@ async def test_invalid_seasonal_curve_fallback_is_snapshotted_and_logged_once(
     caplog.clear()
     await manager.async_plan_automatic(now=now)
     assert not any("invalid_seasonal_curve" in record.getMessage() for record in caplog.records)
+
+
+async def test_measured_water_balance_updates_only_todays_automatic_target(
+    hass: HomeAssistant,
+) -> None:
+    """Persist daily weather progress while future dates retain their seasonal target."""
+    entry, zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={
+            "weather_module_enabled": True,
+            "weather_sources": {
+                "reference_evapotranspiration": "sensor.reference_et",
+                "precipitation_total": "sensor.rain_total",
+            },
+        },
+        zone_overrides={
+            "use_weather_adjustment": True,
+            "watering_mode": "demand",
+            "crop_factor": 1.0,
+            "effective_rain_factor": 1.0,
+            "demand_threshold_mm": 1.0,
+            "maximum_deficit_mm": 100.0,
+            "effective_application_rate_mm_h": 12.0,
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._installation_data.update(
+        {
+            "weather_module_enabled": True,
+            "weather_sources": {
+                "reference_evapotranspiration": "sensor.reference_et",
+                "precipitation_total": "sensor.rain_total",
+            },
+        },
+    )
+    manager._zone_configs[0].data.update(
+        {
+            "use_weather_adjustment": True,
+            "watering_mode": "demand",
+            "crop_factor": 1.0,
+            "effective_rain_factor": 1.0,
+            "demand_threshold_mm": 1.0,
+            "maximum_deficit_mm": 100.0,
+            "effective_application_rate_mm_h": 12.0,
+        }
+    )
+
+    def observations(day: date, *, reference_et: float, rain_total: float) -> dict[str, object]:
+        observed_at = datetime.combine(day, time(12), tzinfo=UTC).isoformat()
+        return {
+            "reference_evapotranspiration": {
+                "source_entity_id": "sensor.reference_et",
+                "quality": "available",
+                "value": reference_et,
+                "observed_at": observed_at,
+            },
+            "precipitation_total": {
+                "source_entity_id": "sensor.rain_total",
+                "quality": "available",
+                "value": rain_total,
+                "observed_at": observed_at,
+            },
+        }
+
+    with patch(
+        "custom_components.irrigation_manager.manager.observe_weather_sources",
+        return_value=observations(date(2026, 7, 26), reference_et=4.0, rain_total=20.0),
+    ):
+        first = await manager.async_plan_automatic(now=datetime(2026, 7, 26, 8, tzinfo=UTC))
+
+    initialized = manager._stored_state.zone_water_balances[zone.unique_id]
+    assert initialized.ready_from_date == "2026-07-27"
+    first_request = manager._request(first["created_request_ids"][0])
+    assert first_request is not None
+    assert first_request.target_value == 600.0
+    assert first_request.resolved_inputs["water_balance"]["fallback_strategy"] == (
+        "future_date_without_forecast"
+    )
+
+    with patch(
+        "custom_components.irrigation_manager.manager.observe_weather_sources",
+        return_value=observations(date(2026, 7, 27), reference_et=3.0, rain_total=21.0),
+    ):
+        await manager.async_plan_automatic(now=datetime(2026, 7, 27, 8, tzinfo=UTC))
+
+    current = manager._request(f"automatic:{zone.unique_id}:2026-07-27")
+    future = manager._request(f"automatic:{zone.unique_id}:2026-08-03")
+    assert current is not None
+    assert future is not None
+    assert current.target_value == 2400.0
+    water_balance = current.resolved_inputs["water_balance"]
+    assert water_balance["quality"] == "valid"
+    assert water_balance["fallback_strategy"] == "none"
+    assert water_balance["opening_deficit_mm"] == 6.0
+    assert water_balance["closing_deficit_mm"] == 8.0
+    assert water_balance["reference_evapotranspiration_mm"] == 3.0
+    assert water_balance["measured_precipitation_mm"] == 1.0
+    assert water_balance["effective_target"] == 2400.0
+    assert water_balance["crop_factor"] == 1.0
+    assert water_balance["reference_et_source_entity_id"] == "sensor.reference_et"
+    assert water_balance["precipitation_source_entity_id"] == "sensor.rain_total"
+    assert future.target_value == 600.0
+    assert future.resolved_inputs["water_balance"]["fallback_strategy"] == (
+        "future_date_without_forecast"
+    )
+    for key in (
+        "reference_et_source_entity_id",
+        "reference_et_observed_at",
+        "precipitation_source_entity_id",
+        "precipitation_observed_at",
+        "opening_deficit_mm",
+        "closing_deficit_mm",
+        "reference_evapotranspiration_mm",
+        "plant_evapotranspiration_mm",
+        "measured_precipitation_mm",
+        "effective_precipitation_mm",
+        "effective_irrigation_mm",
+    ):
+        assert future.resolved_inputs["water_balance"][key] is None
+    future_revision = future.revision
+
+    with patch(
+        "custom_components.irrigation_manager.manager.observe_weather_sources",
+        return_value=observations(date(2026, 7, 27), reference_et=4.0, rain_total=22.0),
+    ):
+        await manager.async_plan_automatic(now=datetime(2026, 7, 27, 9, tzinfo=UTC))
+
+    stable_future = manager._request(f"automatic:{zone.unique_id}:2026-08-03")
+    assert stable_future is not None
+    assert stable_future.revision == future_revision
+    balance_diagnostics = manager.diagnostics_state_decisions()["water_balances"]
+    assert balance_diagnostics[zone.unique_id]["latest_day"]["closing_deficit_mm"] == 8.0
+    assert "source_entity_id" not in balance_diagnostics[zone.unique_id]["latest_day"]
+
+    manager._zone_configs[0].data["weekly_schedule"][1].update(
+        {"start": "04:00:00", "end": "05:00:00", "target": 600.0}
+    )
+    with patch(
+        "custom_components.irrigation_manager.manager.observe_weather_sources",
+        return_value=observations(date(2026, 7, 28), reference_et=0.0, rain_total=40.0),
+    ):
+        skipped = await manager.async_plan_automatic(now=datetime(2026, 7, 28, 8, tzinfo=UTC))
+
+    assert manager._request(f"automatic:{zone.unique_id}:2026-07-28") is None
+    assert skipped["not_plannable"] == [
+        {
+            "request_id": f"automatic:{zone.unique_id}:2026-07-28",
+            "zone_id": zone.unique_id,
+            "reason": "water_deficit_below_threshold",
+        }
+    ]
+
+
+async def test_water_balance_initialization_uses_todays_weekday_override(
+    hass: HomeAssistant,
+) -> None:
+    """Initialize from today's effective scheduled target, not the common baseline."""
+    entry, _zone = await _setup_v2_installation(
+        hass,
+        installation_overrides={
+            "weather_module_enabled": True,
+            "weather_sources": {
+                "reference_evapotranspiration": "sensor.reference_et",
+                "precipitation_total": "sensor.rain_total",
+            },
+        },
+        zone_overrides={
+            "base_target": 600.0,
+            "use_weather_adjustment": True,
+            "watering_mode": "demand",
+            "crop_factor": 1.0,
+            "effective_rain_factor": 1.0,
+            "demand_threshold_mm": 1.0,
+            "maximum_deficit_mm": 100.0,
+            "effective_application_rate_mm_h": 12.0,
+        },
+    )
+    manager = entry.runtime_data.manager
+    manager._installation_data.update(
+        {
+            "weather_module_enabled": True,
+            "weather_sources": {
+                "reference_evapotranspiration": "sensor.reference_et",
+                "precipitation_total": "sensor.rain_total",
+            },
+        }
+    )
+    manager._zone_configs[0].data.update(
+        {
+            "base_target": 600.0,
+            "use_weather_adjustment": True,
+            "watering_mode": "demand",
+            "crop_factor": 1.0,
+            "effective_rain_factor": 1.0,
+            "demand_threshold_mm": 1.0,
+            "maximum_deficit_mm": 100.0,
+            "effective_application_rate_mm_h": 12.0,
+        }
+    )
+    manager._zone_configs[0].data["weekly_schedule"][0]["target"] = 1800.0
+    observations = {
+        "reference_evapotranspiration": {
+            "source_entity_id": "sensor.reference_et",
+            "quality": "available",
+            "value": 4.0,
+            "observed_at": "2026-07-27T12:00:00+00:00",
+        },
+        "precipitation_total": {
+            "source_entity_id": "sensor.rain_total",
+            "quality": "available",
+            "value": 20.0,
+            "observed_at": "2026-07-27T12:00:00+00:00",
+        },
+    }
+
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("UTC")),
+        patch(
+            "custom_components.irrigation_manager.manager.observe_weather_sources",
+            return_value=observations,
+        ),
+        patch(
+            "custom_components.irrigation_manager.manager.update_water_balance",
+            wraps=update_water_balance,
+        ) as balance_update,
+    ):
+        await manager.async_plan_automatic(now=datetime(2026, 7, 27, 3, tzinfo=UTC))
+
+    balance_update.assert_called_once()
+    assert balance_update.call_args.kwargs["seasonal_base_target"] == 1800.0
+
+
+async def test_cross_midnight_execution_is_split_between_local_days(
+    hass: HomeAssistant,
+) -> None:
+    """Allocate runtime exactly and measured liters proportionally at local midnight."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    execution = IrrigationExecutionState(
+        execution_id="cross-midnight",
+        request_id="request-cross-midnight",
+        zone_id=zone.unique_id,
+        target_type="volume",
+        target_value=20.0,
+        remaining_value=0.0,
+        status="completed",
+        created_at="2026-07-28T23:40:00+02:00",
+        delivered_liters=20.0,
+        delivered_duration_seconds=1200.0,
+        watering_started_at="2026-07-28T23:50:00+02:00",
+        watering_ended_at="2026-07-29T00:10:00+02:00",
+        ended_at="2026-07-29T00:10:00+02:00",
+        measurement_quality="measured",
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        irrigation_executions=(execution,),
+    )
+
+    with patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("Europe/Zurich")):
+        contributions = manager._irrigation_contributions(
+            zone_id=zone.unique_id,
+            local_date=date(2026, 7, 29),
+        )
+
+    assert [(item.local_date, item.delivered_duration_seconds) for item in contributions] == [
+        (date(2026, 7, 28), 600.0),
+        (date(2026, 7, 29), 600.0),
+    ]
+    assert [item.delivered_liters for item in contributions] == [10.0, 10.0]
+    assert all(item.warnings == ("irrigation_split_across_midnight",) for item in contributions)
+
+
+async def test_execution_without_persisted_valve_times_is_marked_unreliable(
+    hass: HomeAssistant,
+) -> None:
+    """Startup recovery must not invent a calendar allocation from finalization time."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    execution = IrrigationExecutionState(
+        execution_id="recovered-without-times",
+        request_id="request-recovered-without-times",
+        zone_id=zone.unique_id,
+        target_type="duration",
+        target_value=600.0,
+        remaining_value=0.0,
+        status="interrupted",
+        created_at="2026-07-28T23:40:00+02:00",
+        delivered_duration_seconds=600.0,
+        ended_at="2026-07-29T00:10:00+02:00",
+        measurement_quality="unavailable",
+    )
+    manager._stored_state = replace(
+        manager._stored_state,
+        irrigation_executions=(execution,),
+    )
+
+    contributions = manager._irrigation_contributions(
+        zone_id=zone.unique_id,
+        local_date=date(2026, 7, 29),
+    )
+
+    assert len(contributions) == 1
+    assert contributions[0].allocation_quality == "unreliable"
+    assert contributions[0].warnings == ("irrigation_timing_unavailable",)
 
 
 async def test_seasonal_curve_change_atomically_replaces_only_pending_automatic_work(
@@ -850,6 +1157,9 @@ async def test_weather_source_only_change_does_not_reload_runtime(
         reload.assert_not_awaited()
         assert manager._stored_state.manual_requests == requests_before
         assert manager._config_reload_pending is False
+        assert manager._installation_data["weather_sources"] == {
+            "air_temperature": "sensor.outdoor_temperature"
+        }
 
         hass.config_entries.async_update_entry(
             entry,
@@ -1609,7 +1919,7 @@ async def test_no_meter_exposes_runtime_contract_without_water_entities(
     entry, zone = await _setup_v2_installation(hass)
     registry = er.async_get(hass)
 
-    assert entry.minor_version == 4
+    assert entry.minor_version == 5
     assert (
         registry.async_get_entity_id("sensor", DOMAIN, "installation-v2-runtime_water_total")
         is None
@@ -2373,7 +2683,7 @@ async def test_diagnostics_normalize_weather_sources_without_changing_planning(
     manager = entry.runtime_data.manager
     assert manager._installation_data["weather_module_enabled"] is False
     assert all(
-        "weather" not in request.resolved_inputs
+        "water_balance" not in request.resolved_inputs
         for request in manager._stored_state.manual_requests
         if request.source == "automatic"
     )
@@ -3041,6 +3351,8 @@ async def test_startup_recovery_accounts_persisted_meter_baseline_and_runtime(
         remaining_value=60,
         status="watering",
         created_at=request.created_at,
+        watering_started_at=(now - timedelta(seconds=20)).isoformat(),
+        watering_ended_at=(now - timedelta(seconds=10)).isoformat(),
     )
     manager._stored_state = replace(
         manager._stored_state,
@@ -3054,6 +3366,7 @@ async def test_startup_recovery_accounts_persisted_meter_baseline_and_runtime(
             prepared_at=request.created_at,
             watering_started_at=(now - timedelta(seconds=20)).isoformat(),
             requested_duration_seconds=60,
+            watering_ended_at=(now - timedelta(seconds=10)).isoformat(),
             request_id=request.request_id,
             execution_id=execution.execution_id,
         ),
@@ -3064,7 +3377,7 @@ async def test_startup_recovery_accounts_persisted_meter_baseline_and_runtime(
 
     recovered = manager._stored_state.irrigation_executions[-1]
     assert recovered.delivered_liters == 12
-    assert recovered.delivered_duration_seconds == pytest.approx(20, abs=1)
+    assert recovered.delivered_duration_seconds == pytest.approx(10, abs=1)
     assert recovered.measurement_quality == "measured"
     assert manager._stored_state.installation_total_liters == 12
     assert any(

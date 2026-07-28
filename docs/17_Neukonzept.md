@@ -697,6 +697,38 @@ Die Wasserbilanz speichert tägliche Beiträge, verwendete Quellen, Qualität un
 
 Gemessener Niederschlag und tatsächlich zugeordnete Bewässerung sind gegenüber Prognosen vorrangig. Eine Prognose verändert den abgeschlossenen historischen Wasserhaushalt nicht, sondern beeinflusst ausschliesslich noch nicht begonnene automatische Bewässerungsaufträge.
 
+Stufe 4 verwendet ausschliesslich eine ausdrücklich zugeordnete direkte Referenzverdunstung und die kumulierte gemessene Niederschlagsmenge. Eine eigene oder vereinfachte Referenzverdunstungsberechnung sowie Prognosen gehören noch nicht zu dieser Stufe. Damit eine Millimeterbilanz ohne Scheingenauigkeit in das vorhandene Zeit- oder Mengenziel umgerechnet werden kann, benötigt jede das Wettermodul verwendende Zone folgende ausdrücklich bestätigte Angaben:
+
+- Bewässerungsmodus `Bedarfsbewässerung` oder `Mindestbewässerung`
+- Pflanzenfaktor zwischen `0,10` und `2,00`; der neutrale Vorschlagswert `1,00` muss bestätigt werden und wird nicht aus dem qualitativen Pflanzenprofil abgeleitet
+- Anteil wirksamen Niederschlags zwischen `0,00` und `1,00`; der Vorschlagswert `1,00` muss bestätigt werden
+- Bedarfsschwelle zwischen `0,00` und `100,00 mm`, ab der eine Bedarfsbewässerung ausgeführt wird
+- maximales fortgeführtes Wasserdefizit zwischen `1,00` und `500,00 mm`; es muss grösser als die Bedarfsschwelle sein
+- bei Zeitsteuerung eine effektive Ausbringungsrate zwischen `0,10` und `500,00 mm/h`
+- bei Mengensteuerung eine bewässerte Fläche zwischen `0,10` und `1 000 000,00 m²` und eine Ausbringungseffizienz zwischen `0,10` und `1,00`
+
+Nur Pflanzenfaktor und Anteil wirksamen Niederschlags erhalten den ausdrücklich genannten neutralen Vorschlagswert `1,00`. Bewässerungsmodus, Bedarfsschwelle, maximales Defizit, Ausbringungsrate, Fläche und Effizienz haben keinen impliziten Vorschlagswert und müssen beim erstmaligen Aktivieren ausdrücklich eingegeben werden. Bereits gespeicherte gültige Werte werden beim Bearbeiten weiterhin angezeigt.
+
+Diese Angaben gehören zum Wetterverhalten der Zone und sind unabhängig davon bearbeitbar, ob das Pflanzen- und Standortmodell verwendet wird. Ohne vollständige und gültige Umrechnungsangaben bleibt die zonenspezifische Wetterverwendung deaktiviert. Ein vorhandener kalibrierter Durchfluss ersetzt weder die effektive Ausbringungsrate einer zeitgesteuerten Zone noch Fläche und Effizienz einer mengengesteuerten Zone, weil er allein keine wirksame Wasserhöhe beschreibt.
+
+Für einen lokalen Kalendertag gilt:
+
+- `Pflanzenverdunstung = Referenzverdunstung × Pflanzenfaktor`
+- `wirksamer Niederschlag = gemessener Niederschlag × Anteil wirksamen Niederschlags`
+- bei Zeitsteuerung `wirksame Bewässerung = tatsächliche Ventilöffnungszeit in Stunden × effektive Ausbringungsrate`
+- bei Mengensteuerung `wirksame Bewässerung = tatsächlich gelieferte Liter × Ausbringungseffizienz ÷ bewässerte Fläche in m²`
+- das resultierende Defizit wird auf den Bereich von `0` bis zum konfigurierten maximalen Defizit begrenzt
+
+Der Wert eines direkten Referenzverdunstungssensors ersetzt innerhalb desselben lokalen Kalendertags den zuvor gelesenen Tageswert und wird nicht bei jeder Aktualisierung erneut addiert. Eine kumulierte Niederschlagsquelle wird über einen persistenten Quellenfortschritt differenziert. Die erste Lesung setzt nur die Baseline. Ein regulärer Rücksetzer an einer lokalen Tagesgrenze verwendet den neuen Wert als Beitrag des neuen Tages. Ein Rückgang innerhalb desselben Tages, ein Quellenwechsel, ein nicht endlicher Wert oder eine Lücke von mindestens einem vollständigen lokalen Kalendertag machen die betroffene Fortschreibung nicht belastbar und erzwingen den sichtbaren Rückfall auf das saisonale Basissoll; negative Beiträge werden nie erzeugt.
+
+Beim erstmaligen Aktivieren oder nach einer nicht belastbaren Fortschreibung wird die Bilanz einen vollständigen lokalen Kalendertag lang beobachtend initialisiert. Während dieses Initialisierungstags bleibt das automatische Ziel verhaltensgleich beim saisonalen Basissoll. Als Startdefizit wird dessen anhand der bestätigten Zonendaten umgerechnete Wasserhöhe verwendet. Dadurch kann die Wetteraktivierung einen bestehenden Termin nicht unmittelbar reduzieren. Erst ab dem folgenden lokalen Kalendertag darf eine vollständig belastbare Bilanz das Ziel verändern. Ein Deaktivieren erhält die Bilanz, eine Wiederaktivierung nach mindestens einem nicht beobachteten vollständigen Tag initialisiert erneut verhaltensgleich.
+
+Eine Bedarfsbewässerung wird übersprungen, wenn das aktuelle Defizit die konfigurierte Bedarfsschwelle nicht erreicht. Andernfalls wird das Defizit vollständig in Zeit beziehungsweise Liter umgerechnet. Eine Mindestbewässerung verwendet das grössere Ziel aus umgerechnetem Defizit und saisonalem Basissoll. Das Ergebnis wird niemals stillschweigend auf ein Bewässerungsfenster gekürzt; passt es nicht vollständig, greift die vorhandene Nicht-einplanbar-Behandlung. Für zukünftige Kalendertage verwendet Stufe 4 mangels Prognose weiterhin das saisonale Basissoll. Eine stündliche Neuberechnung darf nur den noch nicht begonnenen Auftrag des aktuellen lokalen Tages ersetzen.
+
+Tatsächliche Bewässerung wird nach Abschluss oder kontrollierter Wiederherstellung eines Vorgangs genau einmal anhand seiner stabilen Ausführungs-ID gutgeschrieben. Die bestätigten Öffnungs- und Schliesszeitpunkte des Zonenventils werden unmittelbar im dauerhaften Ausführungsdatensatz gespeichert; ein erst nach Ventilschluss, Absetzzeit oder Zählerablesung gesetzter Abschlusszeitpunkt darf diese Grenzen nicht ersetzen. Fehlt bei einer Wiederherstellung einer dieser Zeitpunkte oder ist ihre Reihenfolge ungültig, wird die Kalenderzuordnung mit `irrigation_timing_unavailable` als unzuverlässig behandelt und sichtbar neu initialisiert. Die Verbuchungsmarke besteht intern aus Ausführungs-ID, lokalem Kalendertag und Ergebnis `credited` oder `unreliable`, damit ein über Mitternacht laufender Vorgang genau einmal je betroffenem Tagesanteil berücksichtigt werden kann und eine verworfene unbekannte Lieferung nicht später als Nullbeitrag wiederholt wird. Die tatsächliche Ventilöffnungszeit wird an jeder lokalen Tagesgrenze exakt aufgeteilt. Eine belastbar gemessene Gesamtmenge wird bei einem solchen Vorgang proportional zu diesen tatsächlichen Laufzeitanteilen verteilt und mit `irrigation_split_across_midnight` gekennzeichnet; ohne belastbare Mengenmessung wird bei einer mengengesteuerten Zone kein vermeintlicher Nullbeitrag gebucht, sondern sichtbar neu initialisiert und als `unreliable` protokolliert. Auch eine abgebrochene oder fehlgeschlagene Ausführung wird nur mit ihrer belastbar bekannten tatsächlichen Lieferung berücksichtigt. Manuelle Vorgänge verändern die Wasserbilanz ebenso wie automatische, ihre eigenen Ziele werden durch die Bilanz jedoch niemals nachträglich verändert.
+
+Persistiert werden pro Zone der aktuelle Quellenfortschritt, das fortgeführte Defizit, die bereits verbuchten datierten Ausführungsmarken und höchstens die letzten 90 abgeschlossenen oder laufenden Tagesbeiträge. Die Ausführungsmarken werden über denselben vollständigen 90-Tage-Horizont gehalten und nicht durch eine davon unabhängige Anzahlgrenze abgeschnitten. Die Migration ergänzt eine leere Bilanz, deaktiviert das Wettermodul der Anlage sowie die Wetterverwendung aller vorhandenen Zonen und verändert weder bestehende Aufträge noch laufende Vorgänge. Jede Zielauflösung hält Ausgangsdefizit, Tagesbeiträge, Ergebnis, Quellen und Zeitstempel, Umrechnungsangaben, Ziel, Qualität, Warnungen und Rückfallstrategie im unveränderlichen Auftragssnapshot fest.
+
 ### Bewässerungsmodi
 
 Die wetterabhängige Planung ergänzt die von der Steuerungsart unabhängige Auswahl:

@@ -29,6 +29,7 @@ from .const import (
     CONF_SUBAREAS,
     CONF_USE_PLANT_SITE_MODEL,
     CONF_USE_SEASONAL_ADJUSTMENT,
+    CONF_USE_WEATHER_ADJUSTMENT,
     CONF_WATER_METER,
     CONF_WEATHER_MODULE_ENABLED,
     CONF_WEATHER_SOURCES,
@@ -193,6 +194,7 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     manager = hass.data[DOMAIN].get(entry.entry_id)
     if isinstance(manager, IrrigationManager):
         if not manager.requires_config_reload(entry.data):
+            manager.refresh_weather_sources(entry.data)
             return
         await manager.async_request_config_reload()
         return
@@ -243,6 +245,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 CONF_NEEDS_RECONFIGURATION: True,
                 CONF_USE_PLANT_SITE_MODEL: False,
                 CONF_USE_SEASONAL_ADJUSTMENT: False,
+                CONF_USE_WEATHER_ADJUSTMENT: False,
                 CONF_SEASONAL_FACTORS: {month: 1.0 for month in MONTHS},
                 CONF_SUBAREAS: [],
             }
@@ -275,6 +278,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             zone_data.setdefault(CONF_SUBAREAS, [])
             zone_data.setdefault(CONF_USE_SEASONAL_ADJUSTMENT, False)
             zone_data.setdefault(CONF_SEASONAL_FACTORS, {month: 1.0 for month in MONTHS})
+            if original_minor < 5:
+                zone_data[CONF_USE_WEATHER_ADJUSTMENT] = False
             if CONF_BASE_TARGET not in zone_data:
                 schedule = zone_data.get(CONF_WEEKLY_SCHEDULE)
                 if isinstance(schedule, list):

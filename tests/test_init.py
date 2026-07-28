@@ -111,6 +111,7 @@ async def test_fresh_store_uses_only_current_v2_schema(hass: HomeAssistant) -> N
         "zone_operation_enabled",
         "zone_automation_enabled",
         "planning_rejections",
+        "zone_water_balances",
         "dispatcher_diagnostic",
         "dispatcher_diagnostic_history",
     }

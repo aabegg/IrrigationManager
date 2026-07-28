@@ -1,11 +1,16 @@
 """Version-2 runtime and durable models."""
 
+import logging
 import math
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import cast
+
+from .water_balance import ZoneWaterBalanceState
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _number(value: object, *, default: float | None = None) -> float:
@@ -147,6 +152,8 @@ class IrrigationExecutionState:
     delivery_runtime_limit_seconds: float | None = None
     delivered_liters: float = 0.0
     delivered_duration_seconds: float = 0.0
+    watering_started_at: str | None = None
+    watering_ended_at: str | None = None
     ended_at: str | None = None
     result: str | None = None
     measurement_quality: str = "unknown"
@@ -172,6 +179,8 @@ class IrrigationExecutionState:
             delivery_runtime_limit_seconds=_optional_number(data, "delivery_runtime_limit_seconds"),
             delivered_liters=_number(data.get("delivered_liters"), default=0.0),
             delivered_duration_seconds=_number(data.get("delivered_duration_seconds"), default=0.0),
+            watering_started_at=_optional_string(data, "watering_started_at"),
+            watering_ended_at=_optional_string(data, "watering_ended_at"),
             ended_at=_optional_string(data, "ended_at"),
             result=_optional_string(data, "result"),
             measurement_quality=_stored_string(data, "measurement_quality", "unknown"),
@@ -280,6 +289,7 @@ class ActiveExecutionState:
     prepared_at: str
     watering_started_at: str | None
     requested_duration_seconds: float
+    watering_ended_at: str | None = None
     requested_amount_liters: float | None = None
     hard_time_limit_seconds: float | None = None
     delivery_deadline_at: str | None = None
@@ -299,6 +309,7 @@ class ActiveExecutionState:
             prepared_at=_required_string(data, "prepared_at"),
             watering_started_at=_optional_string(data, "watering_started_at"),
             requested_duration_seconds=_number(data.get("requested_duration_seconds")),
+            watering_ended_at=_optional_string(data, "watering_ended_at"),
             requested_amount_liters=_optional_number(data, "requested_amount_liters"),
             hard_time_limit_seconds=_optional_number(data, "hard_time_limit_seconds"),
             delivery_deadline_at=_optional_string(data, "delivery_deadline_at"),
@@ -414,6 +425,8 @@ class PlanningRejectionReason(StrEnum):
     """Closed vocabulary for automatic orders rejected during planning."""
 
     SEASONAL_TARGET_DOES_NOT_FIT = "seasonal_target_does_not_fit"
+    WATER_DEFICIT_BELOW_THRESHOLD = "water_deficit_below_threshold"
+    WATER_BALANCE_TARGET_DOES_NOT_FIT = "water_balance_target_does_not_fit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,6 +584,7 @@ class StoredInstallationState:
     planning_rejections: tuple[PlanningRejection, ...] = ()
     dispatcher_diagnostic: DispatcherDiagnosticState | None = None
     dispatcher_diagnostic_history: tuple[DispatcherDiagnosticEntry, ...] = ()
+    zone_water_balances: dict[str, ZoneWaterBalanceState] = field(default_factory=dict)
 
     _float = staticmethod(_number)
 
@@ -634,6 +648,23 @@ class StoredInstallationState:
                     planning_rejections.append(PlanningRejection.from_dict(item))
                 except TypeError, ValueError:
                     continue
+        raw_zone_balances = data.get("zone_water_balances", {})
+        if not isinstance(raw_zone_balances, dict) or not all(
+            isinstance(zone_id, str) and isinstance(value, dict)
+            for zone_id, value in raw_zone_balances.items()
+        ):
+            raise ValueError("Stored zone water balances are malformed")
+        zone_water_balances: dict[str, ZoneWaterBalanceState] = {}
+        for zone_id, value in cast(dict[str, dict[str, object]], raw_zone_balances).items():
+            try:
+                zone_water_balances[zone_id] = ZoneWaterBalanceState.from_dict(value)
+            except TypeError, ValueError:
+                _LOGGER.warning(
+                    "Ignoring malformed persisted water balance for zone %s",
+                    zone_id,
+                    exc_info=True,
+                )
+                continue
         return cls(
             installation_total_liters=_number(data.get("installation_total_liters"), default=0.0),
             zone_totals_liters=cls._number_dict(data, "zone_totals_liters"),
@@ -693,6 +724,7 @@ class StoredInstallationState:
             planning_rejections=tuple(planning_rejections),
             dispatcher_diagnostic=dispatcher_diagnostic,
             dispatcher_diagnostic_history=tuple(dispatcher_history[-100:]),
+            zone_water_balances=zone_water_balances,
         )
 
     @staticmethod
@@ -784,4 +816,7 @@ class StoredInstallationState:
             "dispatcher_diagnostic_history": [
                 event.as_dict() for event in self.dispatcher_diagnostic_history[-100:]
             ],
+            "zone_water_balances": {
+                zone_id: balance.as_dict() for zone_id, balance in self.zone_water_balances.items()
+            },
         }

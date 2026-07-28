@@ -5,7 +5,7 @@ from typing import Final
 DOMAIN: Final = "irrigation_manager"
 INTEGRATION_NAME: Final = "Irrigation Manager"
 CONFIG_ENTRY_VERSION: Final = 2
-CONFIG_ENTRY_MINOR_VERSION: Final = 4
+CONFIG_ENTRY_MINOR_VERSION: Final = 5
 
 CONF_MAIN_VALVE: Final = "main_valve"
 CONF_WATER_METER: Final = "water_meter"
@@ -27,6 +27,15 @@ CONF_USE_SEASONAL_ADJUSTMENT: Final = "use_seasonal_adjustment"
 CONF_SEASONAL_FACTORS: Final = "seasonal_factors"
 CONF_WEATHER_MODULE_ENABLED: Final = "weather_module_enabled"
 CONF_WEATHER_SOURCES: Final = "weather_sources"
+CONF_USE_WEATHER_ADJUSTMENT: Final = "use_weather_adjustment"
+CONF_WATERING_MODE: Final = "watering_mode"
+CONF_CROP_FACTOR: Final = "crop_factor"
+CONF_EFFECTIVE_RAIN_FACTOR: Final = "effective_rain_factor"
+CONF_DEMAND_THRESHOLD_MM: Final = "demand_threshold_mm"
+CONF_MAXIMUM_DEFICIT_MM: Final = "maximum_deficit_mm"
+CONF_EFFECTIVE_APPLICATION_RATE_MM_H: Final = "effective_application_rate_mm_h"
+CONF_IRRIGATED_AREA_M2: Final = "irrigated_area_m2"
+CONF_IRRIGATION_EFFICIENCY: Final = "irrigation_efficiency"
 CONF_SOAK_MODULE_ENABLED: Final = "soak_module_enabled"
 CONF_USE_PLANT_SITE_MODEL: Final = "use_plant_site_model"
 CONF_SUBAREAS: Final = "subareas"
