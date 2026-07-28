@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-rc24 - 2026-07-28
+
+### Changed
+
+- Simplify the weather-source options form by removing its redundant technical status summary.
+- Clarify that suitable Home Assistant entities may originate from local sensors or external
+  weather services while keeping detailed source quality in integration diagnostics.
+
 ## 0.1.0-rc23 - 2026-07-28
 
 ### Added

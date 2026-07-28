@@ -657,7 +657,7 @@ Stufe 3 verwendet folgende kanonische Einheiten, Aktualitätsgrenzen und harten 
 | Solarstrahlung | `sensor` mit Device-Class `irradiance` | `W/m²` | 2 Stunden | `0..1600 W/m²` |
 | Wetterprognose | `weather`-Entity mit mindestens einer von HA ausgewiesenen Prognoseart | noch keine Wertnormalisierung in Stufe 3 | 6 Stunden | Entity verfügbar und mindestens `hourly`, `daily` oder `twice_daily` unterstützt |
 
-Für die Aktualität wird der HA-Zeitstempel `last_reported` verwendet, der auch eine unveränderte, aber erneut gemeldete Messung abbildet. Nur falls er nicht verfügbar ist, wird `last_updated` verwendet. Alle Vergleiche erfolgen zeitzonenbewusst. Der Zustand einer `weather`-Entity wird nicht in eine Niederschlagsmenge oder -rate umgedeutet. Prognosedaten werden erst in Stufe 5 über die standardisierte HA-Wetteraktion abgerufen; Stufe 3 prüft und zeigt lediglich Quelle, Verfügbarkeit und unterstützte Prognosearten.
+Für die Aktualität wird der HA-Zeitstempel `last_reported` verwendet, der auch eine unveränderte, aber erneut gemeldete Messung abbildet. Nur falls er nicht verfügbar ist, wird `last_updated` verwendet. Alle Vergleiche erfolgen zeitzonenbewusst. Der Zustand einer `weather`-Entity wird nicht in eine Niederschlagsmenge oder -rate umgedeutet. Prognosedaten werden erst in Stufe 5 über die standardisierte HA-Wetteraktion abgerufen; Stufe 3 prüft Quelle, Verfügbarkeit und unterstützte Prognosearten und weist sie in der Home-Assistant-Integrationsdiagnose aus.
 
 Jeder verwendete Wetterwert besitzt mindestens:
 
@@ -672,7 +672,7 @@ Die Quellenqualität unterscheidet `nicht konfiguriert`, `verfügbar`, `veraltet
 
 `Ersatzwert verwendet` ist keine Quellenqualität, sondern eine spätere Zielauflösungsentscheidung. Stufe 3 verwendet noch keinen Wetterwert für die Planung und kann diesen Zustand daher noch nicht erzeugen. Ab Stufe 4 wird bei nicht belastbarer Wetterberechnung sichtbar auf das saisonale Basissoll zurückgefallen.
 
-Die Quellenbeobachtungen werden bei Anzeige der Einstellungen und beim Erstellen der Home-Assistant-Integrationsdiagnose aus dem aktuellen HA-Zustand erzeugt. Stufe 3 persistiert weder rohe Wetterwerte noch einen eigenen Messverlauf. Der Diagnoseexport enthält pro Rolle Auswahl, normalisierten Wert, kanonische Einheit, verwendeten Zeitstempel, Alter, Qualitätsstatus und stabilen Grundcode; sensible Entity-Namen werden mit dem bestehenden HA-Diagnosemechanismus redigiert. Die Quellenzuordnung kann unabhängig vom späteren Wettermodul bearbeitet werden. Ihr Speichern löst keine Neuplanung aus und verändert keine offenen oder aktiven Bewässerungsvorgänge.
+Die Quellenbeobachtungen werden beim Erstellen der Home-Assistant-Integrationsdiagnose aus dem aktuellen HA-Zustand erzeugt. Stufe 3 persistiert weder rohe Wetterwerte noch einen eigenen Messverlauf. Der Diagnoseexport enthält pro Rolle Auswahl, normalisierten Wert, kanonische Einheit, verwendeten Zeitstempel, Alter, Qualitätsstatus und stabilen Grundcode; sensible Entity-Namen werden mit dem bestehenden HA-Diagnosemechanismus redigiert. Der Einstellungsdialog bleibt auf die Quellenzuordnung beschränkt und zeigt keinen zusätzlichen technischen Statusblock. Sein Hinweis erklärt, dass fachlich passende Entities sowohl von lokalen Sensoren als auch von externen, über Home Assistant eingebundenen Wetterdiensten stammen dürfen. Die Quellenzuordnung kann unabhängig vom späteren Wettermodul bearbeitet werden. Ihr Speichern löst keine Neuplanung aus und verändert keine offenen oder aktiven Bewässerungsvorgänge.
 
 Die Migration auf Stufe 3 ergänzt eine leere Quellenzuordnung und hält den anlagenweiten Wettermodulschalter ausdrücklich deaktiviert. Der reguläre Modulschalter und die zonenspezifische Wetterverwendung bleiben in Stufe 3 ausgeblendet. Damit ist die Quellenaufnahme und Diagnose vollständig prüfbar, ohne das bestehende Bewässerungsziel zu beeinflussen.
 
@@ -836,7 +836,7 @@ Abnahmekriterien sind ein reproduzierter fälliger, aber blockierter Auftrag ohn
 
 - Home-Assistant-Sensoren und `weather`-Entities nach Quellenrollen auswählen
 - Einheiten, Aktualität, Plausibilität und Qualitätsstatus normalisieren
-- Quellenzustand und verwendete Fallbacks in Einstellungen und Diagnose anzeigen
+- Quellenzustand in der Home-Assistant-Integrationsdiagnose anzeigen und den Einstellungsdialog auf die fachliche Quellenzuordnung beschränken
 - leere Quellenzuordnung verhaltensgleich migrieren und Teilkonfiguration ausdrücklich zulassen
 - keine Rohwert-Historie und keine automatische Quellenauswahl einführen
 - den anlagenweiten Laufzeit-Modulschalter und die zonenspezifische Wetterverwendung bis zur vollständigen Wasserbilanz der Stufe 4 noch nicht freigeben

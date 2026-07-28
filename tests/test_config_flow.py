@@ -968,10 +968,7 @@ async def test_weather_sources_are_configurable_without_enabling_weather_correct
     )
 
     assert result["step_id"] == "weather_sources"
-    source_status = result["description_placeholders"]["source_status"]
-    assert "Precipitation total: Not configured" in source_status
-    assert "Forecast: Not configured" in source_status
-    assert source_status.count("\n") == 8
+    assert result["description_placeholders"] is None
     assert {str(key) for key in result["data_schema"].schema} == {
         "precipitation_total",
         "precipitation_rate",
@@ -1005,8 +1002,7 @@ async def test_weather_sources_are_configurable_without_enabling_weather_correct
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"next_step_id": "weather_sources"}
     )
-    assert "Air temperature: Available" in result["description_placeholders"]["source_status"]
-    assert "Relative humidity: Unavailable" in result["description_placeholders"]["source_status"]
+    assert result["description_placeholders"] is None
 
 
 async def test_configuration_is_prominent_during_required_reconfiguration(

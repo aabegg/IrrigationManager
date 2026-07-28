@@ -161,50 +161,6 @@ _FORECAST_FEATURES: Final = (
     (WeatherEntityFeature.FORECAST_TWICE_DAILY, "twice_daily"),
 )
 
-_ROLE_NAMES: Final = {
-    "en": {
-        WeatherSourceRole.PRECIPITATION_TOTAL: "Precipitation total",
-        WeatherSourceRole.PRECIPITATION_RATE: "Precipitation rate",
-        WeatherSourceRole.REFERENCE_EVAPOTRANSPIRATION: "Reference evapotranspiration",
-        WeatherSourceRole.AIR_TEMPERATURE: "Air temperature",
-        WeatherSourceRole.RELATIVE_HUMIDITY: "Relative humidity",
-        WeatherSourceRole.DEW_POINT: "Dew point",
-        WeatherSourceRole.WIND_SPEED: "Wind speed",
-        WeatherSourceRole.SOLAR_IRRADIANCE: "Solar irradiance",
-        WeatherSourceRole.FORECAST: "Forecast",
-    },
-    "de": {
-        WeatherSourceRole.PRECIPITATION_TOTAL: "Niederschlagssumme",
-        WeatherSourceRole.PRECIPITATION_RATE: "Niederschlagsrate",
-        WeatherSourceRole.REFERENCE_EVAPOTRANSPIRATION: "Referenz-Evapotranspiration",
-        WeatherSourceRole.AIR_TEMPERATURE: "Lufttemperatur",
-        WeatherSourceRole.RELATIVE_HUMIDITY: "Relative Luftfeuchtigkeit",
-        WeatherSourceRole.DEW_POINT: "Taupunkt",
-        WeatherSourceRole.WIND_SPEED: "Windgeschwindigkeit",
-        WeatherSourceRole.SOLAR_IRRADIANCE: "Sonneneinstrahlung",
-        WeatherSourceRole.FORECAST: "Vorhersage",
-    },
-}
-
-_QUALITY_NAMES: Final = {
-    "en": {
-        WeatherSourceQuality.NOT_CONFIGURED: "Not configured",
-        WeatherSourceQuality.AVAILABLE: "Available",
-        WeatherSourceQuality.STALE: "Stale",
-        WeatherSourceQuality.UNAVAILABLE: "Unavailable",
-        WeatherSourceQuality.IMPLAUSIBLE: "Implausible",
-        WeatherSourceQuality.INCOMPLETE: "Incomplete",
-    },
-    "de": {
-        WeatherSourceQuality.NOT_CONFIGURED: "Nicht konfiguriert",
-        WeatherSourceQuality.AVAILABLE: "Verfügbar",
-        WeatherSourceQuality.STALE: "Veraltet",
-        WeatherSourceQuality.UNAVAILABLE: "Nicht verfügbar",
-        WeatherSourceQuality.IMPLAUSIBLE: "Unplausibel",
-        WeatherSourceQuality.INCOMPLETE: "Unvollständig",
-    },
-}
-
 
 def _observation(
     *,
@@ -511,22 +467,3 @@ def observe_weather_sources(
             reason="dew_point_above_temperature",
         )
     return {role: observation.as_dict() for role, observation in observations.items()}
-
-
-def weather_source_status_summary(
-    hass: HomeAssistant,
-    configured_sources: object,
-    *,
-    language: str,
-) -> str:
-    """Return a compact localized status for the weather-source options form."""
-    locale = "de" if language == "de" else "en"
-    sources: Mapping[object, object] = (
-        configured_sources if isinstance(configured_sources, Mapping) else {}
-    )
-    observations = observe_weather_sources(hass, sources)
-    return "\n".join(
-        f"{_ROLE_NAMES[locale][role]}: "
-        f"{_QUALITY_NAMES[locale][WeatherSourceQuality(str(observations[role.value]['quality']))]}"
-        for role in WEATHER_SOURCE_ROLES
-    )

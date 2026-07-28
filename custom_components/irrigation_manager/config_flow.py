@@ -96,7 +96,6 @@ from .seasonal import (
 from .weather_sources import (
     WEATHER_SOURCE_ROLES,
     WeatherSourceRole,
-    weather_source_status_summary,
 )
 from .zone_config import positive_number
 
@@ -2180,13 +2179,6 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             return self.async_show_form(
                 step_id="weather_sources",
                 data_schema=self.add_suggested_values_to_schema(schema, suggested),
-                description_placeholders={
-                    "source_status": weather_source_status_summary(
-                        self.hass,
-                        configured,
-                        language=self.hass.config.language,
-                    )
-                },
                 last_step=True,
             )
         sources = {
