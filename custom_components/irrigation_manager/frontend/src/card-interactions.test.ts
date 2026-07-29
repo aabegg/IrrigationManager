@@ -208,15 +208,26 @@ describe("dashboard card interactions", () => {
     const callService = vi.fn(async (_domain, service) => service === "list_card_orders" ? {
       context: { id: "context-1" },
       response: {
-        orders: [{
-          request_id: "request-1",
-          zone: "Rasen",
-          source: "automatic",
-          target_type: "duration",
-          target_value: 600,
-          expected_start: expectedStart,
-          status: "pending",
-        }],
+        orders: [
+          {
+            request_id: "request-1",
+            zone: "Rasen",
+            source: "automatic",
+            target_type: "duration",
+            target_value: 2700,
+            expected_start: expectedStart,
+            status: "pending",
+          },
+          {
+            request_id: "request-2",
+            zone: "Hecken",
+            source: "automatic",
+            target_type: "volume",
+            target_value: 2000,
+            expected_start: expectedStart,
+            status: "pending",
+          },
+        ],
       },
     } : undefined);
     const hass = home([
@@ -242,7 +253,9 @@ describe("dashboard card interactions", () => {
     const dialog = card.shadowRoot.querySelector<HTMLDialogElement>("dialog[open]");
     expect(dialog?.getAttribute("aria-labelledby")).toBe("orders-title");
     expect(dialog?.textContent).toContain("Rasen");
-    expect(dialog?.textContent).toContain("600 s");
+    expect(dialog?.textContent).toContain("00:45:00");
+    expect(dialog?.textContent).not.toContain("2700 s");
+    expect(dialog?.textContent).toContain("2000 L");
     expect(dialog?.textContent).not.toContain(expectedStart);
     expect(callService).toHaveBeenCalledWith(
       "irrigation_manager",

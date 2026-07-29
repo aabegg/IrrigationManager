@@ -4,6 +4,7 @@ import {
   DOMAIN,
   entity,
   errorMessage,
+  formatDuration,
   isAnchor,
   responseData,
   resolveOverviewConfig,
@@ -105,7 +106,9 @@ export class IrrigationManagerOverviewCard extends LitElement {
   }
 
   private target(order: Record<string, unknown>): string {
-    return `${String(order.target_value)} ${order.target_type === "volume" ? localize(this.hass, "liters") : localize(this.hass, "seconds")}`;
+    return order.target_type === "volume"
+      ? `${String(order.target_value)} ${localize(this.hass, "liters")}`
+      : formatDuration(Number(order.target_value));
   }
 
   private dateKey(value: string | Date): string {

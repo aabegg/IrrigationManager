@@ -1,15 +1,15 @@
-const I = globalThis, st = I.ShadowRoot && (I.ShadyCSS === void 0 || I.ShadyCSS.nativeShadow) && "adoptedStyleSheets" in Document.prototype && "replace" in CSSStyleSheet.prototype, rt = /* @__PURE__ */ Symbol(), lt = /* @__PURE__ */ new WeakMap();
+const I = globalThis, rt = I.ShadowRoot && (I.ShadyCSS === void 0 || I.ShadyCSS.nativeShadow) && "adoptedStyleSheets" in Document.prototype && "replace" in CSSStyleSheet.prototype, at = /* @__PURE__ */ Symbol(), ht = /* @__PURE__ */ new WeakMap();
 let xt = class {
   constructor(t, e, i) {
-    if (this._$cssResult$ = !0, i !== rt) throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");
+    if (this._$cssResult$ = !0, i !== at) throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");
     this.cssText = t, this.t = e;
   }
   get styleSheet() {
     let t = this.o;
     const e = this.t;
-    if (st && t === void 0) {
+    if (rt && t === void 0) {
       const i = e !== void 0 && e.length === 1;
-      i && (t = lt.get(e)), t === void 0 && ((this.o = t = new CSSStyleSheet()).replaceSync(this.cssText), i && lt.set(e, t));
+      i && (t = ht.get(e)), t === void 0 && ((this.o = t = new CSSStyleSheet()).replaceSync(this.cssText), i && ht.set(e, t));
     }
     return t;
   }
@@ -17,25 +17,25 @@ let xt = class {
     return this.cssText;
   }
 };
-const Tt = (s) => new xt(typeof s == "string" ? s : s + "", void 0, rt), wt = (s, ...t) => {
+const Tt = (s) => new xt(typeof s == "string" ? s : s + "", void 0, at), wt = (s, ...t) => {
   const e = s.length === 1 ? s[0] : t.reduce((i, r, a) => i + ((o) => {
     if (o._$cssResult$ === !0) return o.cssText;
     if (typeof o == "number") return o;
     throw Error("Value passed to 'css' function must be a 'css' function result: " + o + ". Use 'unsafeCSS' to pass non-literal values, but take care to ensure page security.");
   })(r) + s[a + 1], s[0]);
-  return new xt(e, s, rt);
+  return new xt(e, s, at);
 }, Pt = (s, t) => {
-  if (st) s.adoptedStyleSheets = t.map((e) => e instanceof CSSStyleSheet ? e : e.styleSheet);
+  if (rt) s.adoptedStyleSheets = t.map((e) => e instanceof CSSStyleSheet ? e : e.styleSheet);
   else for (const e of t) {
     const i = document.createElement("style"), r = I.litNonce;
     r !== void 0 && i.setAttribute("nonce", r), i.textContent = e.cssText, s.appendChild(i);
   }
-}, ht = st ? (s) => s : (s) => s instanceof CSSStyleSheet ? ((t) => {
+}, ct = rt ? (s) => s : (s) => s instanceof CSSStyleSheet ? ((t) => {
   let e = "";
   for (const i of t.cssRules) e += i.cssText;
   return Tt(e);
 })(s) : s;
-const { is: Ht, defineProperty: Rt, getOwnPropertyDescriptor: Ut, getOwnPropertyNames: It, getOwnPropertySymbols: Lt, getPrototypeOf: Bt } = Object, q = globalThis, ct = q.trustedTypes, Vt = ct ? ct.emptyScript : "", jt = q.reactiveElementPolyfillSupport, C = (s, t) => s, tt = { toAttribute(s, t) {
+const { is: Ht, defineProperty: Rt, getOwnPropertyDescriptor: Ut, getOwnPropertyNames: It, getOwnPropertySymbols: Lt, getPrototypeOf: Bt } = Object, q = globalThis, dt = q.trustedTypes, Vt = dt ? dt.emptyScript : "", jt = q.reactiveElementPolyfillSupport, C = (s, t) => s, tt = { toAttribute(s, t) {
   switch (t) {
     case Boolean:
       s = s ? Vt : null;
@@ -63,7 +63,7 @@ const { is: Ht, defineProperty: Rt, getOwnPropertyDescriptor: Ut, getOwnProperty
       }
   }
   return e;
-} }, At = (s, t) => !Ht(s, t), dt = { attribute: !0, type: String, converter: tt, reflect: !1, useDefault: !1, hasChanged: At };
+} }, At = (s, t) => !Ht(s, t), ut = { attribute: !0, type: String, converter: tt, reflect: !1, useDefault: !1, hasChanged: At };
 Symbol.metadata ??= /* @__PURE__ */ Symbol("metadata"), q.litPropertyMetadata ??= /* @__PURE__ */ new WeakMap();
 let A = class extends HTMLElement {
   static addInitializer(t) {
@@ -72,7 +72,7 @@ let A = class extends HTMLElement {
   static get observedAttributes() {
     return this.finalize(), this._$Eh && [...this._$Eh.keys()];
   }
-  static createProperty(t, e = dt) {
+  static createProperty(t, e = ut) {
     if (e.state && (e.attribute = !1), this._$Ei(), this.prototype.hasOwnProperty(t) && ((e = Object.create(e)).wrapped = !0), this.elementProperties.set(t, e), !e.noAccessor) {
       const i = /* @__PURE__ */ Symbol(), r = this.getPropertyDescriptor(t, i, e);
       r !== void 0 && Rt(this.prototype, t, r);
@@ -90,7 +90,7 @@ let A = class extends HTMLElement {
     }, configurable: !0, enumerable: !0 };
   }
   static getPropertyOptions(t) {
-    return this.elementProperties.get(t) ?? dt;
+    return this.elementProperties.get(t) ?? ut;
   }
   static _$Ei() {
     if (this.hasOwnProperty(C("elementProperties"))) return;
@@ -119,8 +119,8 @@ let A = class extends HTMLElement {
     const e = [];
     if (Array.isArray(t)) {
       const i = new Set(t.flat(1 / 0).reverse());
-      for (const r of i) e.unshift(ht(r));
-    } else t !== void 0 && e.push(ht(t));
+      for (const r of i) e.unshift(ct(r));
+    } else t !== void 0 && e.push(ct(t));
     return e;
   }
   static _$Eu(t, e) {
@@ -247,10 +247,10 @@ let A = class extends HTMLElement {
   }
 };
 A.elementStyles = [], A.shadowRootOptions = { mode: "open" }, A[C("elementProperties")] = /* @__PURE__ */ new Map(), A[C("finalized")] = /* @__PURE__ */ new Map(), jt?.({ ReactiveElement: A }), (q.reactiveElementVersions ??= []).push("2.1.2");
-const at = globalThis, ut = (s) => s, L = at.trustedTypes, pt = L ? L.createPolicy("lit-html", { createHTML: (s) => s }) : void 0, St = "$lit$", v = `lit$${Math.random().toFixed(9).slice(2)}$`, Et = "?" + v, Ft = `<${Et}>`, w = document, T = () => w.createComment(""), P = (s) => s === null || typeof s != "object" && typeof s != "function", nt = Array.isArray, Wt = (s) => nt(s) || typeof s?.[Symbol.iterator] == "function", J = `[\x20\t\n\f\r]`, D = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, _t = /-->/g, mt = />/g, $ = RegExp(`>|${J}(?:([^\\s"'>=/]+)(${J}*=${J}*(?:[^\x20\t\n\f\r"'\`<>=]|("|')|))|$)`, "g"), gt = /'/g, ft = /"/g, zt = /^(?:script|style|textarea|title)$/i, Zt = (s) => (t, ...e) => ({ _$litType$: s, strings: t, values: e }), h = Zt(1), z = /* @__PURE__ */ Symbol.for("lit-noChange"), c = /* @__PURE__ */ Symbol.for("lit-nothing"), yt = /* @__PURE__ */ new WeakMap(), b = w.createTreeWalker(w, 129);
+const nt = globalThis, pt = (s) => s, L = nt.trustedTypes, _t = L ? L.createPolicy("lit-html", { createHTML: (s) => s }) : void 0, St = "$lit$", v = `lit$${Math.random().toFixed(9).slice(2)}$`, Et = "?" + v, Ft = `<${Et}>`, w = document, T = () => w.createComment(""), P = (s) => s === null || typeof s != "object" && typeof s != "function", ot = Array.isArray, Wt = (s) => ot(s) || typeof s?.[Symbol.iterator] == "function", J = `[\x20\t\n\f\r]`, D = /<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g, mt = /-->/g, gt = />/g, $ = RegExp(`>|${J}(?:([^\\s"'>=/]+)(${J}*=${J}*(?:[^\x20\t\n\f\r"'\`<>=]|("|')|))|$)`, "g"), ft = /'/g, yt = /"/g, zt = /^(?:script|style|textarea|title)$/i, Zt = (s) => (t, ...e) => ({ _$litType$: s, strings: t, values: e }), h = Zt(1), z = /* @__PURE__ */ Symbol.for("lit-noChange"), c = /* @__PURE__ */ Symbol.for("lit-nothing"), vt = /* @__PURE__ */ new WeakMap(), b = w.createTreeWalker(w, 129);
 function kt(s, t) {
-  if (!nt(s) || !s.hasOwnProperty("raw")) throw Error("invalid template strings array");
-  return pt !== void 0 ? pt.createHTML(t) : t;
+  if (!ot(s) || !s.hasOwnProperty("raw")) throw Error("invalid template strings array");
+  return _t !== void 0 ? _t.createHTML(t) : t;
 }
 const qt = (s, t) => {
   const e = s.length - 1, i = [];
@@ -258,7 +258,7 @@ const qt = (s, t) => {
   for (let d = 0; d < e; d++) {
     const l = s[d];
     let u, m, _ = -1, f = 0;
-    for (; f < l.length && (o.lastIndex = f, m = o.exec(l), m !== null); ) f = o.lastIndex, o === D ? m[1] === "!--" ? o = _t : m[1] !== void 0 ? o = mt : m[2] !== void 0 ? (zt.test(m[2]) && (r = RegExp("</" + m[2], "g")), o = $) : m[3] !== void 0 && (o = $) : o === $ ? m[0] === ">" ? (o = r ?? D, _ = -1) : m[1] === void 0 ? _ = -2 : (_ = o.lastIndex - m[2].length, u = m[1], o = m[3] === void 0 ? $ : m[3] === '"' ? ft : gt) : o === ft || o === gt ? o = $ : o === _t || o === mt ? o = D : (o = $, r = void 0);
+    for (; f < l.length && (o.lastIndex = f, m = o.exec(l), m !== null); ) f = o.lastIndex, o === D ? m[1] === "!--" ? o = mt : m[1] !== void 0 ? o = gt : m[2] !== void 0 ? (zt.test(m[2]) && (r = RegExp("</" + m[2], "g")), o = $) : m[3] !== void 0 && (o = $) : o === $ ? m[0] === ">" ? (o = r ?? D, _ = -1) : m[1] === void 0 ? _ = -2 : (_ = o.lastIndex - m[2].length, u = m[1], o = m[3] === void 0 ? $ : m[3] === '"' ? yt : ft) : o === yt || o === ft ? o = $ : o === mt || o === gt ? o = D : (o = $, r = void 0);
     const y = o === $ && s[d + 1].startsWith("/>") ? " " : "";
     a += o === D ? l + Ft : _ >= 0 ? (i.push(u), l.slice(0, _) + St + l.slice(_) + v + y) : l + v + (_ === -2 ? d : y);
   }
@@ -374,11 +374,11 @@ class R {
     }
   }
   _$AC(t) {
-    let e = yt.get(t.strings);
-    return e === void 0 && yt.set(t.strings, e = new H(t)), e;
+    let e = vt.get(t.strings);
+    return e === void 0 && vt.set(t.strings, e = new H(t)), e;
   }
   k(t) {
-    nt(this._$AH) || (this._$AH = [], this._$AR());
+    ot(this._$AH) || (this._$AH = [], this._$AR());
     const e = this._$AH;
     let i, r = 0;
     for (const a of t) r === e.length ? e.push(i = new R(this.O(T()), this.O(T()), this, this.options)) : i = e[r], i._$AI(a), r++;
@@ -386,8 +386,8 @@ class R {
   }
   _$AR(t = this._$AA.nextSibling, e) {
     for (this._$AP?.(!1, !0, e); t !== this._$AB; ) {
-      const i = ut(t).nextSibling;
-      ut(t).remove(), t = i;
+      const i = pt(t).nextSibling;
+      pt(t).remove(), t = i;
     }
   }
   setConnected(t) {
@@ -459,8 +459,8 @@ class Yt {
     k(this, t);
   }
 }
-const Xt = at.litHtmlPolyfillSupport;
-Xt?.(H, R), (at.litHtmlVersions ??= []).push("3.3.3");
+const Xt = nt.litHtmlPolyfillSupport;
+Xt?.(H, R), (nt.litHtmlVersions ??= []).push("3.3.3");
 const te = (s, t, e) => {
   const i = e?.renderBefore ?? t;
   let r = i._$litPart$;
@@ -470,7 +470,7 @@ const te = (s, t, e) => {
   }
   return r._$AI(s), r;
 };
-const ot = globalThis;
+const lt = globalThis;
 class x extends A {
   constructor() {
     super(...arguments), this.renderOptions = { host: this }, this._$Do = void 0;
@@ -493,22 +493,22 @@ class x extends A {
     return z;
   }
 }
-x._$litElement$ = !0, x.finalized = !0, ot.litElementHydrateSupport?.({ LitElement: x });
-const ee = ot.litElementPolyfillSupport;
+x._$litElement$ = !0, x.finalized = !0, lt.litElementHydrateSupport?.({ LitElement: x });
+const ee = lt.litElementPolyfillSupport;
 ee?.({ LitElement: x });
-(ot.litElementVersions ??= []).push("4.2.2");
+(lt.litElementVersions ??= []).push("4.2.2");
 const S = "irrigation_manager", ie = /* @__PURE__ */ new Set(["unknown", "unavailable"]);
-function vt(s) {
+function $t(s) {
   const { hours: t, minutes: e, seconds: i } = s;
   if (![t, e, i].every(Number.isFinite) || t < 0 || e < 0 || e >= 60 || i < 0 || i >= 60) return;
   const r = t * 3600 + e * 60 + i;
   return Number.isFinite(r) && r > 0 ? r : void 0;
 }
-function $t(s) {
+function bt(s) {
   const t = Math.floor(s / 3600), e = Math.floor(s % 3600 / 60);
   return { hours: t, minutes: e, seconds: s - t * 3600 - e * 60 };
 }
-function bt(s) {
+function et(s) {
   const t = Math.floor(s / 3600), e = Math.floor(s % 3600 / 60), i = s - t * 3600 - e * 60, r = i.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""), a = Number.isInteger(i) ? String(i).padStart(2, "0") : `${i < 10 ? "0" : ""}${r}`;
   return `${String(t).padStart(2, "0")}:${String(e).padStart(2, "0")}:${a}`;
 }
@@ -621,7 +621,7 @@ function oe(s, t) {
     })
   );
 }
-const Mt = {
+const Nt = {
   en: {
     overview: "Irrigation overview",
     zone: "Irrigation zone",
@@ -795,20 +795,20 @@ const Mt = {
 };
 function n(s, t) {
   const e = s.language?.toLowerCase().startsWith("de") ? "de" : "en";
-  return Mt[e][t];
-}
-function M(s, t) {
-  return t in Mt.en ? n(s, t) : t.replaceAll("_", " ");
+  return Nt[e][t];
 }
 function N(s, t) {
+  return t in Nt.en ? n(s, t) : t.replaceAll("_", " ");
+}
+function M(s, t) {
   if (!t) return n(s, "missing");
   if (t.state === "unavailable") return n(s, "unavailable");
   if (t.state === "unknown" || t.state === "") return n(s, "unknown");
   if (s.formatEntityState) return s.formatEntityState(t);
   const e = t.attributes.unit_of_measurement;
-  return `${M(s, t.state)}${e ? ` ${e}` : ""}`;
+  return `${N(s, t.state)}${e ? ` ${e}` : ""}`;
 }
-const Nt = wt`
+const Mt = wt`
   :host { display: block; }
   ha-card { overflow: hidden; color: var(--primary-text-color); }
   .card { padding: 16px; display: grid; gap: 16px; }
@@ -972,7 +972,7 @@ const W = class W extends x {
     return 5;
   }
   metric(t, e) {
-    return h`<div class="metric"><span>${t}</span><strong>${N(this.hass, e)}</strong></div>`;
+    return h`<div class="metric"><span>${t}</span><strong>${M(this.hass, e)}</strong></div>`;
   }
   async call(t, e, i = {}) {
     if (e && !window.confirm(e)) return;
@@ -1012,7 +1012,7 @@ const W = class W extends x {
     }
   }
   target(t) {
-    return `${String(t.target_value)} ${t.target_type === "volume" ? n(this.hass, "liters") : n(this.hass, "seconds")}`;
+    return t.target_type === "volume" ? `${String(t.target_value)} ${n(this.hass, "liters")}` : et(Number(t.target_value));
   }
   dateKey(t) {
     const e = t instanceof Date ? t : new Date(t), i = new Intl.DateTimeFormat("en", {
@@ -1068,13 +1068,13 @@ const W = class W extends x {
               <ha-icon .icon=${Ct(r)}></ha-icon>
               <div>
                 <h2>${o}</h2>
-                <strong>${ne(e) ? M(this.hass, e.state) : N(this.hass, e)}</strong>
+                <strong>${ne(e) ? N(this.hass, e.state) : M(this.hass, e)}</strong>
               </div>
             </div>
           </header>
 
           <div class="metrics">
-            <button class="metric metric-button" data-testid="open-orders" ?disabled=${this._busy || !i} @click=${this.openOrders}><span>${n(this.hass, "pending")}</span><strong>${N(this.hass, g(this.hass, t.pending_entity))}</strong></button>
+            <button class="metric metric-button" data-testid="open-orders" ?disabled=${this._busy || !i} @click=${this.openOrders}><span>${n(this.hass, "pending")}</span><strong>${M(this.hass, g(this.hass, t.pending_entity))}</strong></button>
             ${this.metric(n(this.hass, "next_zone"), g(this.hass, t.next_entity))}
             ${this.metric(n(this.hass, "expected_start"), g(this.hass, t.next_start_entity))}
             ${this.metric(n(this.hass, a ? "water_today" : "runtime_today"), g(this.hass, a ? t.today_consumption_entity : t.runtime_today_entity))}
@@ -1105,7 +1105,7 @@ const W = class W extends x {
       this._ordersDate = l;
     }}>${n(this.hass, "next_orders_on")} ${this.formatDate(l)}</button>` : c}</div>` : h`
                 <div class="order-list">
-                  ${d.map((u) => h`<article><div><strong>${String(u.zone)}</strong><time datetime=${String(u.expected_start)}>${this.formatTime(u.expected_start)}</time></div><span>${M(this.hass, String(u.source))} · ${this.target(u)} · ${M(this.hass, String(u.status))}</span></article>`)}
+                  ${d.map((u) => h`<article><div><strong>${String(u.zone)}</strong><time datetime=${String(u.expected_start)}>${this.formatTime(u.expected_start)}</time></div><span>${N(this.hass, String(u.source))} · ${this.target(u)} · ${N(this.hass, String(u.status))}</span></article>`)}
                 </div>`}
             </dialog>` : c}
         </div>
@@ -1113,7 +1113,7 @@ const W = class W extends x {
     `;
   }
 };
-W.styles = Nt, W.properties = {
+W.styles = Mt, W.properties = {
   hass: { attribute: !1 },
   _config: { state: !0 },
   _busy: { state: !0 },
@@ -1122,14 +1122,14 @@ W.styles = Nt, W.properties = {
   _orders: { state: !0 },
   _ordersDate: { state: !0 }
 };
-let et = W;
+let it = W;
 const O = 20;
 function X(s, t) {
-  return t == null ? "–" : M(s, String(t));
+  return t == null ? "–" : N(s, String(t));
 }
 const Z = class Z extends x {
   constructor() {
-    super(...arguments), this._targetMode = "duration", this._targetValue = 600, this._durationValue = $t(600), this._hardLimit = $t(3600), this._busy = !1, this._manualOpen = !1, this._historyOpen = !1, this._conflictPolicy = "start_now", this._history = [], this._historyOffset = 0, this._historyTotal = 0, this._historySource = "", this._historyResult = "";
+    super(...arguments), this._targetMode = "duration", this._targetValue = 600, this._durationValue = bt(600), this._hardLimit = bt(3600), this._busy = !1, this._manualOpen = !1, this._historyOpen = !1, this._conflictPolicy = "start_now", this._history = [], this._historyOffset = 0, this._historyTotal = 0, this._historySource = "", this._historyResult = "";
   }
   static getConfigElement() {
     return document.createElement("irrigation-manager-zone-card-editor");
@@ -1147,7 +1147,7 @@ const Z = class Z extends x {
     return 6;
   }
   metric(t, e) {
-    return h`<div class="metric"><span>${t}</span><strong>${N(this.hass, e)}</strong></div>`;
+    return h`<div class="metric"><span>${t}</span><strong>${M(this.hass, e)}</strong></div>`;
   }
   context() {
     const t = Y(this.hass, this._config), e = g(this.hass, t.zone_entity), i = E(e, "config_entry_id"), r = E(e, "zone_subentry_id");
@@ -1171,7 +1171,7 @@ const Z = class Z extends x {
       this._error = n(this.hass, "configuration_error");
       return;
     }
-    const e = vt(this._durationValue), i = vt(this._hardLimit);
+    const e = $t(this._durationValue), i = $t(this._hardLimit);
     if (this._targetMode === "duration" && e === void 0) {
       this._error = n(this.hass, "invalid_duration");
       return;
@@ -1218,7 +1218,7 @@ const Z = class Z extends x {
       </label>
     `;
     return h`
-      <div class="duration-input" title=${`${n(this.hass, "maximum")}: ${bt(i)}`}>
+      <div class="duration-input" title=${`${n(this.hass, "maximum")}: ${et(i)}`}>
         ${a("hours", "h")}
         ${a("minutes", "min", 59)}
         ${a("seconds", "s", 59)}
@@ -1273,7 +1273,7 @@ const Z = class Z extends x {
   }
   formatHistoryDuration(t) {
     const e = this.parseNonNegativeNumber(t);
-    return e === void 0 ? "–" : bt(e);
+    return e === void 0 ? "–" : et(e);
   }
   formatLiters(t) {
     const e = this.parseNonNegativeNumber(t);
@@ -1313,7 +1313,7 @@ const Z = class Z extends x {
               <ha-icon .icon=${Ct(i?.state ?? "unknown")}></ha-icon>
               <div>
                 <h2>${o}</h2>
-                <strong>${N(this.hass, i)}</strong>
+                <strong>${M(this.hass, i)}</strong>
               </div>
             </div>
           </header>
@@ -1400,7 +1400,7 @@ const Z = class Z extends x {
     `;
   }
 };
-Z.styles = Nt, Z.properties = {
+Z.styles = Mt, Z.properties = {
   hass: { attribute: !1 },
   _config: { state: !0 },
   _targetMode: { state: !0 },
@@ -1418,10 +1418,10 @@ Z.styles = Nt, Z.properties = {
   _historySource: { state: !0 },
   _historyResult: { state: !0 }
 };
-let it = Z;
+let st = Z;
 const de = [
-  ["irrigation-manager-overview-card", et],
-  ["irrigation-manager-zone-card", it],
+  ["irrigation-manager-overview-card", it],
+  ["irrigation-manager-zone-card", st],
   ["irrigation-manager-overview-card-editor", he],
   ["irrigation-manager-zone-card-editor", ce]
 ];

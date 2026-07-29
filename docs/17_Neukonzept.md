@@ -388,6 +388,7 @@ Die Anlagen-Card zeigt:
 - einen deutlich sichtbaren roten Not-Aus-Button
 
 Ein Klick auf die Anzahl offener Bewässerungsaufträge öffnet einen Dialog oder eine eigene Ansicht. Die Liste zeigt für jeden Auftrag mindestens Zone, Quelle, Bewässerungsziel, erwarteten Start und aktuellen Status. Das Bewässerungsziel wird je nach Steuerungsart als Dauer oder Wassermenge dargestellt.
+Zeitbasierte Bewässerungsziele werden dabei aus den intern gespeicherten Sekunden als `HH:MM:SS` dargestellt; mengenbasierte Ziele behalten ihre Volumeneinheit.
 
 Der Dialog zeigt jeweils die Aufträge eines lokalen Kalendertags und öffnet mit dem aktuellen Tag. Das ausgewählte Datum wird lokalisiert dargestellt und kann mit Pfeilen tageweise vor- und zurückgeschaltet werden. Gibt es am ausgewählten Tag keine offenen Aufträge, weist ein Sprungziel auf den nächsten Tag mit offenen Aufträgen. Innerhalb eines Tages werden die Aufträge nach ihrem erwarteten Start in der berechneten Ausführungsreihenfolge angezeigt.
 

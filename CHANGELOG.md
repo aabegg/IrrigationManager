@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-rc29 - 2026-07-29
+
+### Changed
+
+- Display duration-based irrigation-order targets as `HH:MM:SS` instead of raw seconds
+  while preserving liter-based targets unchanged.
+
 ## 0.1.0-rc28 - 2026-07-29
 
 ### Fixed
