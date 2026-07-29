@@ -29,6 +29,7 @@ from custom_components.irrigation_manager.models import (
     ActiveExecutionState,
     IrrigationExecutionState,
     ManualIrrigationRequest,
+    StoredInstallationState,
 )
 from custom_components.irrigation_manager.storage import IrrigationStore
 from custom_components.irrigation_manager.water_balance import (
@@ -171,7 +172,7 @@ async def test_stage1_migration_preserves_targets_as_day_overrides(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 6
+    assert entry.minor_version == 7
     assert entry.data["plant_site_module_enabled"] is False
     migrated = entry.subentries[zone.subentry_id].data
     assert migrated["base_target"] == 300.0
@@ -216,7 +217,7 @@ async def test_stage2_migration_adds_dormant_neutral_seasonal_configuration(
     assert await async_migrate_entry(hass, entry)
 
     migrated = entry.subentries[zone.subentry_id].data
-    assert entry.minor_version == 6
+    assert entry.minor_version == 7
     assert migrated["use_seasonal_adjustment"] is False
     assert migrated["seasonal_factors"] == {
         month: 1.0
@@ -484,7 +485,7 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
     assert await async_migrate_entry(hass, entry)
 
     assert entry.version == 2
-    assert entry.minor_version == 6
+    assert entry.minor_version == 7
     assert entry.data == {
         "name": "Legacy garden",
         "main_valve": "switch.main",
@@ -522,6 +523,8 @@ async def test_v2_migration_disables_and_requires_reconfiguration(
         "use_plant_site_model": False,
         "use_seasonal_adjustment": False,
         "use_weather_adjustment": False,
+        "use_soil_moisture_feedback": False,
+        "soil_moisture_assignments": [],
         "seasonal_factors": {
             month: 1.0
             for month in (
@@ -596,7 +599,7 @@ async def test_v2_minor_migration_removes_only_retired_entity_unique_ids(
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 6
+    assert entry.minor_version == 7
     assert registry.async_get("sensor.renamed_zone_status") is not None
     assert all(registry.async_get(entity_id) is None for entity_id in retired)
 
@@ -1923,7 +1926,7 @@ async def test_no_meter_exposes_runtime_contract_without_water_entities(
     entry, zone = await _setup_v2_installation(hass)
     registry = er.async_get(hass)
 
-    assert entry.minor_version == 6
+    assert entry.minor_version == 7
     assert (
         registry.async_get_entity_id("sensor", DOMAIN, "installation-v2-runtime_water_total")
         is None
@@ -2828,6 +2831,52 @@ async def test_dispatcher_retries_unexpected_failure_with_backoff(
     diagnostics = manager.diagnostics_state_decisions()
     assert diagnostics["dispatcher"]["current_reason"] == "dispatcher_error"
     assert diagnostics["dispatcher"]["last_error"] == "RuntimeError"
+
+
+async def test_restart_discards_duplicate_pending_copy_of_terminal_automatic_request(
+    hass: HomeAssistant,
+) -> None:
+    """Never re-execute a deterministic automatic ID already recorded as terminal."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime.now(UTC)
+    pending = ManualIrrigationRequest(
+        request_id=f"automatic:{zone.unique_id}:{now.date().isoformat()}",
+        sequence=1,
+        zone_id=zone.unique_id,
+        zone_subentry_id=zone.subentry_id,
+        zone_name=zone.title,
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=60,
+        remaining_value=60,
+        created_at=(now - timedelta(minutes=1)).isoformat(),
+        requested_start_at=(now - timedelta(seconds=1)).isoformat(),
+        expires_at=(now + timedelta(minutes=10)).isoformat(),
+        automatic_window_end=(now + timedelta(minutes=10)).isoformat(),
+        operation_deadline_at=(now + timedelta(minutes=10)).isoformat(),
+        source="automatic",
+    )
+    terminal = replace(pending, status="completed", revision=2)
+    raw_state = manager._stored_state.as_dict()
+    raw_state["manual_requests"] = [terminal.as_dict(), pending.as_dict()]
+    manager._stored_state = StoredInstallationState.from_dict(raw_state)
+    manager._dispatcher_task = entry.async_create_background_task(
+        hass,
+        manager._async_dispatch_requests(),
+        "duplicate automatic request regression",
+    )
+    manager._queue_event.set()
+    await asyncio.sleep(0.05)
+
+    requests = manager.list_manual_requests()
+    assert len(requests) == 1
+    assert requests[0]["status"] == "completed"
+    assert manager.diagnostics_state_decisions()["dispatcher"]["current_reason"] != (
+        "dispatcher_error"
+    )
+    assert hass.states.get("switch.lawn").state == STATE_OFF
 
 
 async def test_dispatcher_cleanup_failure_is_logged_without_killing_task(

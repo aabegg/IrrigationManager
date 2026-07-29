@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.0-rc27 - 2026-07-29
+
+### Added
+
+- Add optional, per-zone soil-moisture feedback using explicitly assigned native Home
+  Assistant moisture sensors and confirmed dry/wet calibration points.
+- Support either one zone-wide source or area-weighted sources for every configured
+  subarea, with current quality and redacted evidence in integration diagnostics.
+
+### Changed
+
+- Require two stable observations before applying at most one bounded correction per
+  local day, while preserving the measured water balance whenever feedback is unavailable.
+- Keep soil-moisture feedback disabled through migration and for every new zone; disabling
+  it preserves assignments and calibration without affecting basic irrigation.
+
+### Fixed
+
+- Prevent terminal automatic irrigation IDs from being planned a second time, and
+  conservatively remove duplicate persisted request records during restart recovery so the
+  dispatcher cannot enter a repeated `request changed before execution` backoff loop.
+
 ## 0.1.0-rc25 - 2026-07-28
 
 ### Added

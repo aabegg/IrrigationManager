@@ -5,6 +5,10 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 
+from .soil_moisture import SoilMoistureObservation
+
+MAX_SOIL_MOISTURE_CORRECTION_MM = 5.0
+
 
 class WateringMode(StrEnum):
     """Decide whether a due date is optional or guarantees its seasonal baseline."""
@@ -132,6 +136,15 @@ class DailyWaterBalance:
     effective_precipitation_mm: float
     effective_irrigation_mm: float
     closing_deficit_mm: float
+    soil_moisture_quality: str = "disabled"
+    soil_moisture_reason: str | None = None
+    soil_moisture_source_entity_ids: tuple[str, ...] = ()
+    soil_moisture_observed_at: str | None = None
+    soil_moisture_normalized_fraction: float | None = None
+    soil_moisture_implied_deficit_mm: float | None = None
+    soil_moisture_deadband_mm: float | None = None
+    soil_moisture_correction_limit_mm: float | None = None
+    soil_moisture_correction_mm: float = 0.0
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> DailyWaterBalance:
@@ -160,6 +173,30 @@ class DailyWaterBalance:
             raise ValueError("Stored water-balance quality is malformed")
         if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
             raise ValueError("Stored water-balance warnings are malformed")
+        raw_source_ids = data.get("soil_moisture_source_entity_ids", [])
+        if not isinstance(raw_source_ids, list) or not all(
+            isinstance(item, str) for item in raw_source_ids
+        ):
+            raise ValueError("Stored soil-moisture sources are malformed")
+        soil_observed_at = data.get("soil_moisture_observed_at")
+        if soil_observed_at is not None:
+            if not isinstance(soil_observed_at, str):
+                raise ValueError("Stored soil-moisture observation time is malformed")
+            datetime.fromisoformat(soil_observed_at)
+        soil_quality = data.get("soil_moisture_quality", "disabled")
+        soil_reason = data.get("soil_moisture_reason")
+        if not isinstance(soil_quality, str) or (
+            soil_reason is not None and not isinstance(soil_reason, str)
+        ):
+            raise ValueError("Stored soil-moisture decision is malformed")
+        soil_correction_limit = _stored_optional_number(data, "soil_moisture_correction_limit_mm")
+        if soil_correction_limit is not None and not (
+            0.0 <= soil_correction_limit <= MAX_SOIL_MOISTURE_CORRECTION_MM
+        ):
+            raise ValueError("Stored soil-moisture correction limit is malformed")
+        soil_correction = _stored_signed_number(data, "soil_moisture_correction_mm", default=0.0)
+        if abs(soil_correction) > MAX_SOIL_MOISTURE_CORRECTION_MM:
+            raise ValueError("Stored soil-moisture correction is malformed")
         return cls(
             local_date=local_date,
             reference_et_source_entity_id=reference_source,
@@ -175,6 +212,19 @@ class DailyWaterBalance:
             effective_precipitation_mm=_stored_number(data, "effective_precipitation_mm"),
             effective_irrigation_mm=_stored_number(data, "effective_irrigation_mm"),
             closing_deficit_mm=_stored_number(data, "closing_deficit_mm"),
+            soil_moisture_quality=soil_quality,
+            soil_moisture_reason=soil_reason,
+            soil_moisture_source_entity_ids=tuple(raw_source_ids),
+            soil_moisture_observed_at=soil_observed_at,
+            soil_moisture_normalized_fraction=_stored_optional_number(
+                data, "soil_moisture_normalized_fraction"
+            ),
+            soil_moisture_implied_deficit_mm=_stored_optional_number(
+                data, "soil_moisture_implied_deficit_mm"
+            ),
+            soil_moisture_deadband_mm=_stored_optional_number(data, "soil_moisture_deadband_mm"),
+            soil_moisture_correction_limit_mm=soil_correction_limit,
+            soil_moisture_correction_mm=soil_correction,
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -194,6 +244,15 @@ class DailyWaterBalance:
             "effective_precipitation_mm": self.effective_precipitation_mm,
             "effective_irrigation_mm": self.effective_irrigation_mm,
             "closing_deficit_mm": self.closing_deficit_mm,
+            "soil_moisture_quality": self.soil_moisture_quality,
+            "soil_moisture_reason": self.soil_moisture_reason,
+            "soil_moisture_source_entity_ids": list(self.soil_moisture_source_entity_ids),
+            "soil_moisture_observed_at": self.soil_moisture_observed_at,
+            "soil_moisture_normalized_fraction": self.soil_moisture_normalized_fraction,
+            "soil_moisture_implied_deficit_mm": self.soil_moisture_implied_deficit_mm,
+            "soil_moisture_deadband_mm": self.soil_moisture_deadband_mm,
+            "soil_moisture_correction_limit_mm": self.soil_moisture_correction_limit_mm,
+            "soil_moisture_correction_mm": self.soil_moisture_correction_mm,
         }
 
 
@@ -207,6 +266,10 @@ class ZoneWaterBalanceState:
     rain_observed_at: str
     days: tuple[DailyWaterBalance, ...]
     processed_executions: tuple[ProcessedIrrigationContribution, ...] = ()
+    soil_moisture_calibration_signature: str | None = None
+    soil_moisture_anchor_fraction: float | None = None
+    soil_moisture_anchor_observed_at: str | None = None
+    soil_moisture_last_correction_date: str | None = None
 
     @property
     def processed_execution_ids(self) -> tuple[str, ...]:
@@ -244,6 +307,26 @@ class ZoneWaterBalanceState:
             raise ValueError("Stored water-balance days are malformed")
         if not isinstance(raw_ids, list) or not all(isinstance(item, dict) for item in raw_ids):
             raise ValueError("Stored processed execution IDs are malformed")
+        calibration_signature = data.get("soil_moisture_calibration_signature")
+        anchor_observed_at = data.get("soil_moisture_anchor_observed_at")
+        last_correction_date = data.get("soil_moisture_last_correction_date")
+        if calibration_signature is not None and not isinstance(calibration_signature, str):
+            raise ValueError("Stored soil-moisture calibration is malformed")
+        if anchor_observed_at is not None:
+            if not isinstance(anchor_observed_at, str):
+                raise ValueError("Stored soil-moisture anchor time is malformed")
+            datetime.fromisoformat(anchor_observed_at)
+        if last_correction_date is not None:
+            if not isinstance(last_correction_date, str):
+                raise ValueError("Stored soil-moisture correction date is malformed")
+            date.fromisoformat(last_correction_date)
+        anchor_fraction = _stored_optional_number(data, "soil_moisture_anchor_fraction")
+        if anchor_fraction is not None and not 0.0 <= anchor_fraction <= 1.0:
+            raise ValueError("Stored soil-moisture anchor is malformed")
+        if (anchor_fraction is None) != (anchor_observed_at is None) or (
+            anchor_fraction is not None and calibration_signature is None
+        ):
+            raise ValueError("Stored soil-moisture anchor is incomplete")
         return cls(
             ready_from_date=ready_from_date,
             rain_source_entity_id=rain_source,
@@ -253,6 +336,10 @@ class ZoneWaterBalanceState:
             processed_executions=tuple(
                 ProcessedIrrigationContribution.from_dict(item) for item in raw_ids
             ),
+            soil_moisture_calibration_signature=calibration_signature,
+            soil_moisture_anchor_fraction=anchor_fraction,
+            soil_moisture_anchor_observed_at=anchor_observed_at,
+            soil_moisture_last_correction_date=last_correction_date,
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -264,6 +351,10 @@ class ZoneWaterBalanceState:
             "rain_observed_at": self.rain_observed_at,
             "days": [day.as_dict() for day in self.days[-90:]],
             "processed_execution_ids": [item.as_dict() for item in self.processed_executions],
+            "soil_moisture_calibration_signature": self.soil_moisture_calibration_signature,
+            "soil_moisture_anchor_fraction": self.soil_moisture_anchor_fraction,
+            "soil_moisture_anchor_observed_at": self.soil_moisture_anchor_observed_at,
+            "soil_moisture_last_correction_date": self.soil_moisture_last_correction_date,
         }
 
 
@@ -281,12 +372,66 @@ class WaterBalanceTargetResult:
     deficit_target: float | None = None
 
 
+def clear_soil_moisture_feedback_progress(
+    state: ZoneWaterBalanceState,
+) -> ZoneWaterBalanceState:
+    """Remove feedback progress and its latest-day effect from the modeled balance."""
+    latest = state.days[-1]
+    modeled_closing_deficit = max(
+        0.0,
+        latest.closing_deficit_mm - latest.soil_moisture_correction_mm,
+    )
+    neutral_latest = replace(
+        latest,
+        warnings=tuple(
+            warning for warning in latest.warnings if not warning.startswith("soil_moisture_")
+        ),
+        closing_deficit_mm=modeled_closing_deficit,
+        soil_moisture_quality="disabled",
+        soil_moisture_reason=None,
+        soil_moisture_source_entity_ids=(),
+        soil_moisture_observed_at=None,
+        soil_moisture_normalized_fraction=None,
+        soil_moisture_implied_deficit_mm=None,
+        soil_moisture_deadband_mm=None,
+        soil_moisture_correction_limit_mm=None,
+        soil_moisture_correction_mm=0.0,
+    )
+    return replace(
+        state,
+        days=(*state.days[:-1], neutral_latest),
+        soil_moisture_calibration_signature=None,
+        soil_moisture_anchor_fraction=None,
+        soil_moisture_anchor_observed_at=None,
+        soil_moisture_last_correction_date=None,
+    )
+
+
 def _stored_number(data: dict[str, object], key: str) -> float:
     value = data.get(key)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"Stored {key} is not numeric")
     result = float(value)
     if not math.isfinite(result) or result < 0:
+        raise ValueError(f"Stored {key} is invalid")
+    return result
+
+
+def _stored_optional_number(data: dict[str, object], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    return _stored_number(data, key)
+
+
+def _stored_signed_number(
+    data: dict[str, object], key: str, *, default: float | None = None
+) -> float:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"Stored {key} is not numeric")
+    result = float(value)
+    if not math.isfinite(result):
         raise ValueError(f"Stored {key} is invalid")
     return result
 
@@ -437,6 +582,214 @@ def _recover_historical_irrigation(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _SoilMoistureTransition:
+    day: DailyWaterBalance
+    calibration_signature: str | None
+    anchor_fraction: float | None
+    anchor_observed_at: str | None
+    last_correction_date: str | None
+    warnings: tuple[str, ...]
+
+
+def _apply_soil_moisture_feedback(
+    *,
+    state: ZoneWaterBalanceState,
+    day: DailyWaterBalance,
+    settings: WeatherZoneSettings,
+    current_date: date,
+    enabled: bool,
+    observation: SoilMoistureObservation | None,
+) -> _SoilMoistureTransition:
+    """Apply at most one confirmed and bounded correction for one local day."""
+    if not enabled:
+        return _SoilMoistureTransition(day, None, None, None, None, ())
+
+    previous_day = state.days[-1]
+    corrected_today = (
+        state.soil_moisture_last_correction_date == current_date.isoformat()
+        and previous_day.local_date == current_date.isoformat()
+    )
+    deadband = max(1.0, settings.maximum_deficit_mm * 0.05)
+    correction_limit = min(MAX_SOIL_MOISTURE_CORRECTION_MM, settings.maximum_deficit_mm * 0.25)
+
+    def preserved_correction() -> float:
+        if not corrected_today:
+            return 0.0
+        return max(
+            -correction_limit,
+            min(correction_limit, previous_day.soil_moisture_correction_mm),
+        )
+
+    if observation is None or observation.quality != "available":
+        reason = (
+            "soil_moisture_observation_unavailable"
+            if observation is None
+            else observation.reason or f"soil_moisture_{observation.quality}"
+        )
+        preserved = preserved_correction()
+        return _SoilMoistureTransition(
+            replace(
+                day,
+                warnings=tuple(dict.fromkeys((*day.warnings, reason))),
+                closing_deficit_mm=min(
+                    settings.maximum_deficit_mm,
+                    max(0.0, day.closing_deficit_mm + preserved),
+                ),
+                soil_moisture_quality=(
+                    "unavailable" if observation is None else observation.quality
+                ),
+                soil_moisture_reason=reason,
+                soil_moisture_deadband_mm=deadband if corrected_today else None,
+                soil_moisture_correction_limit_mm=(correction_limit if corrected_today else None),
+                soil_moisture_correction_mm=preserved,
+            ),
+            None if observation is None else observation.calibration_signature,
+            None,
+            None,
+            state.soil_moisture_last_correction_date,
+            (reason,),
+        )
+
+    fraction = observation.normalized_water_fraction
+    observed_at = observation.observed_at
+    signature = observation.calibration_signature
+    if (
+        fraction is None
+        or observed_at is None
+        or signature is None
+        or not math.isfinite(fraction)
+        or not 0 <= fraction <= 1
+    ):
+        return _SoilMoistureTransition(
+            replace(
+                day,
+                soil_moisture_quality="incomplete",
+                soil_moisture_reason="soil_moisture_observation_incomplete",
+            ),
+            state.soil_moisture_calibration_signature,
+            state.soil_moisture_anchor_fraction,
+            state.soil_moisture_anchor_observed_at,
+            state.soil_moisture_last_correction_date,
+            ("soil_moisture_observation_incomplete",),
+        )
+
+    implied_deficit = (1.0 - fraction) * settings.maximum_deficit_mm
+
+    def evidence_day(*, quality: str, reason: str) -> DailyWaterBalance:
+        return replace(
+            day,
+            warnings=tuple(dict.fromkeys((*day.warnings, *observation.warnings, reason))),
+            soil_moisture_quality=quality,
+            soil_moisture_reason=reason,
+            soil_moisture_source_entity_ids=observation.source_entity_ids,
+            soil_moisture_observed_at=observed_at.isoformat(),
+            soil_moisture_normalized_fraction=fraction,
+            soil_moisture_implied_deficit_mm=implied_deficit,
+        )
+
+    def observe_only(
+        reason: str, *, preserve_applied_correction: bool = False
+    ) -> _SoilMoistureTransition:
+        warnings = tuple(dict.fromkeys((*observation.warnings, reason)))
+        preserved = preserved_correction() if preserve_applied_correction else 0.0
+        return _SoilMoistureTransition(
+            replace(
+                evidence_day(quality="observing", reason=reason),
+                closing_deficit_mm=min(
+                    settings.maximum_deficit_mm,
+                    max(0.0, day.closing_deficit_mm + preserved),
+                ),
+                soil_moisture_deadband_mm=deadband if corrected_today else None,
+                soil_moisture_correction_limit_mm=(correction_limit if corrected_today else None),
+                soil_moisture_correction_mm=preserved,
+            ),
+            signature,
+            fraction,
+            observed_at.isoformat(),
+            state.soil_moisture_last_correction_date,
+            warnings,
+        )
+
+    if state.soil_moisture_calibration_signature != signature:
+        return observe_only("soil_moisture_observing")
+    if (
+        state.soil_moisture_anchor_fraction is None
+        or state.soil_moisture_anchor_observed_at is None
+    ):
+        return observe_only("soil_moisture_observing", preserve_applied_correction=corrected_today)
+    if corrected_today:
+        preserved = preserved_correction()
+        reason = "soil_moisture_daily_limit_reached"
+        return _SoilMoistureTransition(
+            replace(
+                evidence_day(quality="available", reason=reason),
+                closing_deficit_mm=min(
+                    settings.maximum_deficit_mm,
+                    max(0.0, day.closing_deficit_mm + preserved),
+                ),
+                soil_moisture_deadband_mm=deadband,
+                soil_moisture_correction_limit_mm=correction_limit,
+                soil_moisture_correction_mm=preserved,
+            ),
+            signature,
+            state.soil_moisture_anchor_fraction,
+            state.soil_moisture_anchor_observed_at,
+            state.soil_moisture_last_correction_date,
+            tuple(dict.fromkeys((*observation.warnings, reason))),
+        )
+    try:
+        anchor_at = datetime.fromisoformat(state.soil_moisture_anchor_observed_at)
+    except ValueError:
+        return observe_only("soil_moisture_observing")
+    elapsed = (observed_at - anchor_at).total_seconds()
+    if elapsed < 1_800:
+        return _SoilMoistureTransition(
+            evidence_day(
+                quality="observing",
+                reason="soil_moisture_confirmation_pending",
+            ),
+            signature,
+            state.soil_moisture_anchor_fraction,
+            state.soil_moisture_anchor_observed_at,
+            state.soil_moisture_last_correction_date,
+            tuple(dict.fromkeys((*observation.warnings, "soil_moisture_confirmation_pending"))),
+        )
+    if elapsed > 21_600:
+        return observe_only("soil_moisture_observing")
+    if abs(fraction - state.soil_moisture_anchor_fraction) > 0.20:
+        return observe_only("soil_moisture_jump_detected")
+
+    difference = implied_deficit - day.closing_deficit_mm
+    correction = (
+        0.0
+        if abs(difference) <= deadband
+        else max(-correction_limit, min(correction_limit, difference))
+    )
+    corrected_deficit = min(
+        settings.maximum_deficit_mm,
+        max(0.0, day.closing_deficit_mm + correction),
+    )
+    reason = (
+        "soil_moisture_within_deadband" if correction == 0 else "soil_moisture_correction_applied"
+    )
+    warnings = tuple(dict.fromkeys((*observation.warnings,)))
+    return _SoilMoistureTransition(
+        replace(
+            evidence_day(quality="available", reason=reason),
+            closing_deficit_mm=corrected_deficit,
+            soil_moisture_deadband_mm=deadband,
+            soil_moisture_correction_limit_mm=correction_limit,
+            soil_moisture_correction_mm=correction,
+        ),
+        signature,
+        fraction,
+        observed_at.isoformat(),
+        current_date.isoformat() if correction != 0 else state.soil_moisture_last_correction_date,
+        warnings,
+    )
+
+
 def update_water_balance(
     *,
     state: ZoneWaterBalanceState | None,
@@ -447,6 +800,8 @@ def update_water_balance(
     reference_et: WeatherReading | None,
     precipitation_total: WeatherReading | None,
     irrigation_contributions: tuple[IrrigationContribution, ...] = (),
+    soil_moisture_feedback_enabled: bool = False,
+    soil_moisture_observation: SoilMoistureObservation | None = None,
 ) -> WaterBalanceTargetResult:
     """Advance one zone balance and resolve a due automatic target.
 
@@ -663,6 +1018,17 @@ def update_water_balance(
             day = replace(day, warnings=warnings)
         days = (*state.days, day)[-90:]
 
+    soil_transition = _apply_soil_moisture_feedback(
+        state=state,
+        day=day,
+        settings=settings,
+        current_date=current_date,
+        enabled=soil_moisture_feedback_enabled,
+        observation=soil_moisture_observation,
+    )
+    day = soil_transition.day
+    days = (*days[:-1], day)
+    warnings = tuple(dict.fromkeys((*warnings, *soil_transition.warnings)))
     updated = ZoneWaterBalanceState(
         ready_from_date=state.ready_from_date,
         rain_source_entity_id=state.rain_source_entity_id,
@@ -670,6 +1036,10 @@ def update_water_balance(
         rain_observed_at=precipitation_total.observed_at.isoformat(),
         days=days,
         processed_executions=processed_ids,
+        soil_moisture_calibration_signature=soil_transition.calibration_signature,
+        soil_moisture_anchor_fraction=soil_transition.anchor_fraction,
+        soil_moisture_anchor_observed_at=soil_transition.anchor_observed_at,
+        soil_moisture_last_correction_date=soil_transition.last_correction_date,
     )
     if target_date != current_date:
         return WaterBalanceTargetResult(

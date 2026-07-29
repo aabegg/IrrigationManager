@@ -791,9 +791,26 @@ Die Abnahme erfolgt an den öffentlichen Schnittstellen der Prognosenormalisieru
 
 ### Bodenfeuchterückmeldung
 
-Ein Bodenfeuchtesensor ist eine spätere optionale Eingabe des Wettermoduls pro Zone oder Teilfläche. Seine Verwendung besitzt eine eigene zonenspezifische Checkbox und kann unabhängig von anderen Wetterquellen beendet werden. Ein einzelner Sensorwert ersetzt die Wasserbilanz nicht ungeprüft, sondern dient nach festgelegter Kalibrierung und Plausibilisierung als Rückmeldung oder Korrektur.
+Ein Bodenfeuchtesensor ist eine optionale Eingabe des Wettermoduls pro Zone oder Teilfläche. Seine Verwendung besitzt die eigene zonenspezifische Checkbox `Bodenfeuchterückmeldung verwenden` und ist standardmässig deaktiviert. Sie kann nur aktiviert werden, wenn das Wettermodul der Anlage und die gemessene Wasserbilanz der Zone vollständig aktiviert und konfiguriert sind. Ein Deaktivieren erhält die Sensorzuordnung und Kalibrierung, beendet aber jede Wirkung auf die Wasserbilanz. Manuelle Bewässerungsaufträge und bereits begonnene Bewässerungsvorgänge werden niemals verändert.
 
-Die Sensortypen, Kalibrierung, räumliche Zuordnung, Schwellwerte und Ausfallstrategie werden vor dieser Implementierungsstufe in diesem Dokument festgelegt.
+Unterstützt werden ausschliesslich ausdrücklich ausgewählte `sensor`-Entities mit Device-Class `moisture`, State-Class `measurement` und Einheit `%`. Der Zustand muss endlich zwischen `0` und `100 %` liegen und darf höchstens zwei Stunden alt sein; wie bei anderen Quellen wird `last_reported` und ersatzweise `last_updated` verwendet. `unknown`, `unavailable`, eine fehlende Entity, ein abweichender Entity-Vertrag oder eine nicht unterstützte Einheit führen zu keiner Korrektur.
+
+Jede Sensorzuordnung enthält zwei ausdrücklich bestätigte Kalibrierpunkte:
+
+- `Trockenpunkt`: Sensorwert am für die Zone beziehungsweise Teilfläche festgelegten trockenen Referenzzustand, zulässig `0..95 %`
+- `Feuchtpunkt`: Sensorwert nach vollständiger Bewässerung und Abtropfen bis zum feuchten Referenzzustand, zulässig `5..100 %` und mindestens fünf Prozentpunkte über dem Trockenpunkt
+
+Zwischen beiden Punkten wird linear auf einen normierten verfügbaren Bodenwasservorrat von `0..100 %` abgebildet. Plausible Rohwerte ausserhalb der Kalibrierpunkte werden auf die jeweilige Grenze begrenzt und mit `soil_moisture_below_dry_calibration` beziehungsweise `soil_moisture_above_wet_calibration` gekennzeichnet; die Rohmessung selbst wird nicht verändert. Aus dem normierten Vorrat wird ein Sensor-Defizit zwischen `0` und dem konfigurierten maximalen Wasserdefizit der Zone abgeleitet.
+
+Eine Zone verwendet entweder genau eine zonenweite Zuordnung oder je eine Zuordnung für jede konfigurierte Teilfläche mit positiver Fläche. Beide Varianten dürfen nicht gemischt werden. Teilflächenwerte werden nach ihrer bestätigten Fläche gewichtet. Fehlt bei der Teilflächenvariante eine Zuordnung oder eine belastbare Beobachtung, wird keine Teilkorrektur aus den verbleibenden Sensoren berechnet.
+
+Eine neue Zuordnung, geänderte Kalibrierung, Reaktivierung oder erste belastbare Beobachtung initialisiert die Rückmeldung rein beobachtend. Eine Korrektur ist frühestens mit einer zweiten belastbaren Beobachtung zulässig, die mindestens 30 Minuten und höchstens sechs Stunden später liegt. Ändert sich der normierte Vorrat zwischen diesen Beobachtungen um mehr als 20 Prozentpunkte, wird die neuere Beobachtung mit `soil_moisture_jump_detected` zur neuen Referenz und noch nicht angewendet. Pro lokalem Kalendertag ist höchstens eine Korrektur zulässig.
+
+Die Bodenfeuchte korrigiert ausschliesslich das für den aktuellen lokalen Kalendertag fortgeschriebene Wasserdefizit. Abweichungen bis zur Totzone von `max(1,0 mm; 5 % des maximalen Defizits)` werden nur protokolliert. Eine einzelne Tageskorrektur ist auf `min(5,0 mm; 25 % des maximalen Defizits)` in beide Richtungen begrenzt. Das korrigierte Defizit bleibt im Bereich `0` bis zum konfigurierten maximalen Defizit. Erst danach wird die bestehende Bedarfs- oder Mindestbewässerungsregel angewendet; eine Mindestbewässerung bleibt mindestens beim saisonalen Basissoll. Zukünftige Kalendertage verwenden weiterhin das saisonale Basissoll, und Prognosen verändern die Bodenfeuchtekorrektur nicht rückwirkend.
+
+Bei fehlender, veralteter, unvollständiger oder unplausibler Bodenfeuchte wird die aus Verdunstung, gemessenem Regen und tatsächlicher Bewässerung fortgeschriebene Wasserbilanz unverändert verwendet. Der Sensor erzeugt weder eine Sicherheitssperre noch einen Rückfall auf ein früheres Ziel und kann den Betrieb nicht blockieren. Quellenqualität, Kalibriersignatur, normierter Vorrat, abgeleitetes Sensor-Defizit, Totzone, begrenzte Korrektur, Beobachtungszeitpunkte, Warnungen und der Grund einer Nichtanwendung werden im Wasserbilanzzustand, Auftragssnapshot und redigierten Diagnoseexport ausgewiesen.
+
+Die Migration ergänzt für jede Zone eine deaktivierte Rückmeldung und eine leere Zuordnung. Sie verändert weder Wettermodul, Wasserbilanz, offene Bewässerungsaufträge noch laufende Bewässerungsvorgänge. Persistierte Beobachtungs- und Korrekturfortschritte werden bei deaktivierter Rückmeldung verworfen, die Konfiguration bleibt erhalten; eine spätere Reaktivierung beginnt dadurch erneut beobachtend.
 
 ## Optionales Modul für Teilgaben und Sickerpausen
 
@@ -913,7 +930,7 @@ Abnahmekriterien sind ein reproduzierter fälliger, aber blockierter Auftrag ohn
 - wetterbedingt aufgeschobene Aufträge persistent und neustartsicher führen
 - das Freitag-Regen-Samstag-Nachholen-Szenario vollständig abdecken
 
-### Stufe 6: Bodenfeuchterückmeldung
+### Stufe 6: Bodenfeuchterückmeldung (umgesetzt ab rc27)
 
 - optionale Sensorzuordnung pro Zone oder Teilfläche einführen
 - Kalibrierung, Aktualität und Plausibilität festlegen

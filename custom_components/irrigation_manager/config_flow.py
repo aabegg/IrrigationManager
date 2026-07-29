@@ -31,6 +31,7 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     TextSelector,
@@ -67,10 +68,13 @@ from .const import (
     CONF_SEASONAL_FACTORS,
     CONF_SEASONAL_MODULE_ENABLED,
     CONF_SOAK_MODULE_ENABLED,
+    CONF_SOIL_MOISTURE_ACTIVATION_ID,
+    CONF_SOIL_MOISTURE_ASSIGNMENTS,
     CONF_SUBAREAS,
     CONF_USE_FORECAST_POSTPONEMENT,
     CONF_USE_PLANT_SITE_MODEL,
     CONF_USE_SEASONAL_ADJUSTMENT,
+    CONF_USE_SOIL_MOISTURE_FEEDBACK,
     CONF_USE_WEATHER_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
     CONF_WATERING_MODE,
@@ -115,6 +119,7 @@ from .seasonal import (
     MONTHS,
     canonical_seasonal_factors,
 )
+from .soil_moisture import observe_soil_moisture
 from .weather_sources import (
     WEATHER_SOURCE_ROLES,
     WeatherSourceRole,
@@ -329,6 +334,99 @@ def _weather_usage_schema(default: bool = False) -> vol.Schema:
     return vol.Schema(
         {vol.Required(CONF_USE_WEATHER_ADJUSTMENT, default=default): BooleanSelector()}
     )
+
+
+def _soil_moisture_usage_schema(default: bool = False) -> vol.Schema:
+    """Choose whether calibrated soil moisture may correct one zone balance."""
+    return vol.Schema(
+        {vol.Required(CONF_USE_SOIL_MOISTURE_FEEDBACK, default=default): BooleanSelector()}
+    )
+
+
+def _soil_moisture_assignment_schema(zone: Mapping[str, object], language: str) -> vol.Schema:
+    """Collect one explicit zone or subarea sensor calibration."""
+    scopes = [
+        SelectOptionDict(
+            value="zone",
+            label="Gesamte Zone" if language == "de" else "Whole zone",
+        )
+    ]
+    subareas = zone.get(CONF_SUBAREAS)
+    if isinstance(subareas, list):
+        scopes.extend(
+            SelectOptionDict(
+                value=scope_id,
+                label=(
+                    str(item.get("name"))
+                    if isinstance(item.get("name"), str) and item.get("name")
+                    else scope_id
+                ),
+            )
+            for item in subareas
+            if isinstance(item, Mapping)
+            and isinstance((scope_id := item.get("id")), str)
+            and scope_id
+        )
+
+    def percentage(minimum: float, maximum: float) -> NumberSelector:
+        return NumberSelector(
+            NumberSelectorConfig(
+                min=minimum,
+                max=maximum,
+                step=0.1,
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement="%",
+            )
+        )
+
+    return vol.Schema(
+        {
+            vol.Required("scope_id", default="zone"): SelectSelector(
+                SelectSelectorConfig(options=scopes)
+            ),
+            vol.Required("entity_id"): EntitySelector(EntitySelectorConfig(domain=Platform.SENSOR)),
+            vol.Required("dry_percent"): percentage(0, 95),
+            vol.Required("wet_percent"): percentage(5, 100),
+            vol.Required("add_another", default=False): BooleanSelector(),
+        }
+    )
+
+
+def _canonical_soil_moisture_assignment(
+    user_input: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate one calibration before evaluating the complete source set."""
+    scope_id = user_input.get("scope_id")
+    entity_id = user_input.get("entity_id")
+    dry = user_input.get("dry_percent")
+    wet = user_input.get("wet_percent")
+    if (
+        not isinstance(scope_id, str)
+        or not scope_id
+        or not isinstance(entity_id, str)
+        or not entity_id.startswith("sensor.")
+        or isinstance(dry, bool)
+        or not isinstance(dry, int | float)
+        or isinstance(wet, bool)
+        or not isinstance(wet, int | float)
+    ):
+        raise ValueError("Soil-moisture assignment is incomplete")
+    dry_value = float(dry)
+    wet_value = float(wet)
+    if (
+        not math.isfinite(dry_value)
+        or not math.isfinite(wet_value)
+        or not 0 <= dry_value <= 95
+        or not 5 <= wet_value <= 100
+        or wet_value - dry_value < 5
+    ):
+        raise ValueError("Soil-moisture calibration is invalid")
+    return {
+        "scope_id": scope_id,
+        "entity_id": entity_id,
+        "dry_percent": dry_value,
+        "wet_percent": wet_value,
+    }
 
 
 def _weather_details_schema(
@@ -1298,6 +1396,8 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_CONTROL_TYPE: control_type,
                 CONF_OPERATION_ENABLED: True,
                 CONF_AUTOMATION_ENABLED: True,
+                CONF_USE_SOIL_MOISTURE_FEEDBACK: False,
+                CONF_SOIL_MOISTURE_ASSIGNMENTS: [],
             }
             if max_runtime is not None:
                 self._first_zone[CONF_VOLUME_MAX_RUNTIME] = max_runtime
@@ -1440,6 +1540,8 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         if self._installation.get(CONF_WEATHER_MODULE_ENABLED) is True:
             return await self.async_step_first_zone_weather()
         self._first_zone[CONF_USE_WEATHER_ADJUSTMENT] = False
+        self._first_zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = False
+        self._first_zone.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
         return await self.async_step_installation_schedule()
 
     async def async_step_first_zone_weather(
@@ -1625,6 +1727,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self._subareas: list[dict[str, object]] = []
         self._recommendation: ProfileRecommendation | None = None
         self._seasonal_factors: dict[str, float] = {}
+        self._soil_moisture_assignments: list[dict[str, object]] = []
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Start the minimal zone form directly."""
@@ -1668,6 +1771,8 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 CONF_CONTROL_TYPE: control_type,
                 CONF_OPERATION_ENABLED: True,
                 CONF_AUTOMATION_ENABLED: True,
+                CONF_USE_SOIL_MOISTURE_FEEDBACK: False,
+                CONF_SOIL_MOISTURE_ASSIGNMENTS: [],
             }
             if max_runtime is not None:
                 self._zone[CONF_VOLUME_MAX_RUNTIME] = max_runtime
@@ -1800,6 +1905,8 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         if self._get_entry().data.get(CONF_WEATHER_MODULE_ENABLED) is True:
             return await self.async_step_weather()
         self._zone[CONF_USE_WEATHER_ADJUSTMENT] = False
+        self._zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = False
+        self._zone.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
         return await self.async_step_minimal_schedule()
 
     async def async_step_weather(
@@ -1960,6 +2067,11 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         if self._get_entry().data.get(CONF_WEATHER_MODULE_ENABLED) is True:
             options.insert(options.index("reconfigure_baseline"), "reconfigure_weather")
             subentry = self._get_reconfigure_subentry()
+            if subentry.data.get(CONF_USE_WEATHER_ADJUSTMENT) is True:
+                options.insert(
+                    options.index("reconfigure_baseline"),
+                    "reconfigure_soil_moisture",
+                )
             if (
                 subentry.data.get(CONF_USE_WEATHER_ADJUSTMENT) is True
                 and _assigned_forecast_source(self._get_entry().data) is not None
@@ -2023,6 +2135,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             self._zone.pop(CONF_VOLUME_MAX_RUNTIME, None)
         if previous_control_type != control_type:
             self._zone[CONF_USE_WEATHER_ADJUSTMENT] = False
+            self._zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = False
         if (
             previous_control_type == control_type
             and subentry.data.get(CONF_NEEDS_RECONFIGURATION) is not True
@@ -2250,8 +2363,117 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         self._zone = dict(subentry.data)
         self._zone[CONF_USE_WEATHER_ADJUSTMENT] = bool(user_input[CONF_USE_WEATHER_ADJUSTMENT])
         if not self._zone[CONF_USE_WEATHER_ADJUSTMENT]:
+            self._zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = False
+            self._zone.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
             return self.async_update_and_abort(self._get_entry(), subentry, data=self._zone)
         return await self.async_step_reconfigure_weather_details()
+
+    async def async_step_reconfigure_soil_moisture(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Enable or disable optional calibrated feedback without losing its config."""
+        subentry = self._get_reconfigure_subentry()
+        if (
+            self._get_entry().data.get(CONF_WEATHER_MODULE_ENABLED) is not True
+            or subentry.data.get(CONF_USE_WEATHER_ADJUSTMENT) is not True
+        ):
+            return self.async_abort(reason="reconfiguration_required")
+        enabled = bool(subentry.data.get(CONF_USE_SOIL_MOISTURE_FEEDBACK, False))
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_soil_moisture",
+                data_schema=_soil_moisture_usage_schema(enabled),
+                last_step=False,
+            )
+        self._zone = dict(subentry.data)
+        requested = user_input.get(CONF_USE_SOIL_MOISTURE_FEEDBACK) is True
+        if not requested:
+            self._zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = False
+            self._zone.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
+            return self.async_update_and_abort(self._get_entry(), subentry, data=self._zone)
+        existing = self._zone.get(CONF_SOIL_MOISTURE_ASSIGNMENTS)
+        if not enabled and isinstance(existing, list) and existing:
+            observation = observe_soil_moisture(
+                self.hass,
+                existing,
+                self._zone.get(CONF_SUBAREAS),
+            )
+            if observation.quality != "available":
+                return self.async_show_form(
+                    step_id="reconfigure_soil_moisture",
+                    data_schema=self.add_suggested_values_to_schema(
+                        _soil_moisture_usage_schema(enabled), user_input
+                    ),
+                    errors={"base": observation.reason or "soil_moisture_source_invalid"},
+                    last_step=False,
+                )
+            self._zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = True
+            self._zone[CONF_SOIL_MOISTURE_ACTIVATION_ID] = uuid4().hex
+            return self.async_update_and_abort(self._get_entry(), subentry, data=self._zone)
+        self._soil_moisture_assignments = []
+        return await self.async_step_reconfigure_soil_moisture_assignment()
+
+    async def async_step_reconfigure_soil_moisture_assignment(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect a complete zone or subarea sensor set atomically."""
+        schema = _soil_moisture_assignment_schema(self._zone, self.hass.config.language)
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_soil_moisture_assignment",
+                data_schema=schema,
+                last_step=False,
+            )
+        try:
+            assignment = _canonical_soil_moisture_assignment(user_input)
+        except ValueError:
+            return self.async_show_form(
+                step_id="reconfigure_soil_moisture_assignment",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "soil_moisture_calibration_invalid"},
+                last_step=False,
+            )
+        scope_id = str(assignment["scope_id"])
+        if any(item.get("scope_id") == scope_id for item in self._soil_moisture_assignments):
+            return self.async_show_form(
+                step_id="reconfigure_soil_moisture_assignment",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "soil_moisture_scope_duplicate"},
+                last_step=False,
+            )
+        candidate = [*self._soil_moisture_assignments, assignment]
+        if user_input.get("add_another") is True:
+            if scope_id == "zone":
+                return self.async_show_form(
+                    step_id="reconfigure_soil_moisture_assignment",
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                    errors={"base": "soil_moisture_zone_cannot_be_mixed"},
+                    last_step=False,
+                )
+            self._soil_moisture_assignments = candidate
+            return self.async_show_form(
+                step_id="reconfigure_soil_moisture_assignment",
+                data_schema=schema,
+                last_step=False,
+            )
+        observation = observe_soil_moisture(
+            self.hass,
+            candidate,
+            self._zone.get(CONF_SUBAREAS),
+        )
+        if observation.quality != "available":
+            return self.async_show_form(
+                step_id="reconfigure_soil_moisture_assignment",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": observation.reason or "soil_moisture_source_invalid"},
+                last_step=False,
+            )
+        self._zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = True
+        self._zone[CONF_SOIL_MOISTURE_ACTIVATION_ID] = uuid4().hex
+        self._zone[CONF_SOIL_MOISTURE_ASSIGNMENTS] = candidate
+        return self.async_update_and_abort(
+            self._get_entry(), self._get_reconfigure_subentry(), data=self._zone
+        )
 
     async def async_step_reconfigure_weather_details(
         self, user_input: dict[str, Any] | None = None
@@ -2964,6 +3186,18 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             CONF_WEATHER_MODULE_ENABLED: bool(user_input[CONF_WEATHER_MODULE_ENABLED]),
         }
         data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
+        if data[CONF_WEATHER_MODULE_ENABLED] is False:
+            for subentry in self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
+                zone_data = {
+                    **subentry.data,
+                    CONF_USE_SOIL_MOISTURE_FEEDBACK: False,
+                }
+                zone_data.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
+                self.hass.config_entries.async_update_subentry(
+                    self.config_entry,
+                    subentry,
+                    data=zone_data,
+                )
         self.hass.config_entries.async_update_entry(self.config_entry, data=data)
         return self.async_create_entry(data={})
 

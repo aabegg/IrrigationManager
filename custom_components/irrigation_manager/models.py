@@ -136,6 +136,29 @@ class ManualIrrigationRequest:
         return result
 
 
+def _deduplicate_requests(
+    requests: tuple[ManualIrrigationRequest, ...],
+) -> tuple[ManualIrrigationRequest, ...]:
+    """Keep one safety-conservative winner for every durable request ID."""
+
+    def rank(request: ManualIrrigationRequest) -> tuple[int, int]:
+        lifecycle_rank = (
+            3
+            if request.status == "executing"
+            else 2
+            if request.status in {"completed", "cancelled", "expired"}
+            else 1
+        )
+        return lifecycle_rank, request.revision
+
+    winners: dict[str, tuple[int, ManualIrrigationRequest]] = {}
+    for index, request in enumerate(requests):
+        existing = winners.get(request.request_id)
+        if existing is None or rank(request) > rank(existing[1]):
+            winners[request.request_id] = index, request
+    return tuple(request for _index, request in sorted(winners.values()))
+
+
 @dataclass(frozen=True, slots=True)
 class IrrigationExecutionState:
     """Durable lifecycle and measured result of one accepted order."""
@@ -665,6 +688,16 @@ class StoredInstallationState:
                     exc_info=True,
                 )
                 continue
+        requests = tuple(
+            ManualIrrigationRequest.from_dict(item)
+            for item in cast(list[dict[str, object]], raw_requests)
+        )
+        deduplicated_requests = _deduplicate_requests(requests)
+        if len(deduplicated_requests) != len(requests):
+            _LOGGER.warning(
+                "Discarded %d duplicate persisted irrigation request record(s)",
+                len(requests) - len(deduplicated_requests),
+            )
         return cls(
             installation_total_liters=_number(data.get("installation_total_liters"), default=0.0),
             zone_totals_liters=cls._number_dict(data, "zone_totals_liters"),
@@ -693,10 +726,7 @@ class StoredInstallationState:
             active_execution=(
                 ActiveExecutionState.from_dict(raw_active) if isinstance(raw_active, dict) else None
             ),
-            manual_requests=tuple(
-                ManualIrrigationRequest.from_dict(item)
-                for item in cast(list[dict[str, object]], raw_requests)
-            ),
+            manual_requests=deduplicated_requests,
             irrigation_executions=tuple(
                 IrrigationExecutionState.from_dict(item)
                 for item in cast(list[dict[str, object]], raw_executions)

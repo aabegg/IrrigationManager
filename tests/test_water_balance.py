@@ -764,7 +764,7 @@ async def test_stage4_storage_migration_adds_empty_zone_balances() -> None:
         None, 2, 2, old_state
     )
 
-    assert STORAGE_MINOR_VERSION == 3
+    assert STORAGE_MINOR_VERSION == 4
     assert migrated["installation_total_liters"] == 42.0
     assert migrated["zone_water_balances"] == {}
 

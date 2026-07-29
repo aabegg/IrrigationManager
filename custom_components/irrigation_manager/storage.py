@@ -17,7 +17,7 @@ from .models import (
 )
 
 STORAGE_VERSION = 2
-STORAGE_MINOR_VERSION = 3
+STORAGE_MINOR_VERSION = 4
 
 
 def _valid_records[T](value: object, loader: Callable[[dict[str, object]], T]) -> tuple[T, ...]:

@@ -46,8 +46,12 @@ from .const import (
     CONF_OPERATION_ENABLED,
     CONF_SEASONAL_FACTORS,
     CONF_SEASONAL_MODULE_ENABLED,
+    CONF_SOIL_MOISTURE_ACTIVATION_ID,
+    CONF_SOIL_MOISTURE_ASSIGNMENTS,
+    CONF_SUBAREAS,
     CONF_USE_FORECAST_POSTPONEMENT,
     CONF_USE_SEASONAL_ADJUSTMENT,
+    CONF_USE_SOIL_MOISTURE_FEEDBACK,
     CONF_USE_WEATHER_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
     CONF_WATERING_MODE,
@@ -99,6 +103,7 @@ from .scheduler import (
     resolve_local_wall_time,
     select_manual_request,
 )
+from .soil_moisture import observe_soil_moisture
 from .storage import IrrigationStore
 from .target_resolution import TargetResolutionOutcome, resolve_automatic_target
 from .water_balance import (
@@ -107,6 +112,7 @@ from .water_balance import (
     WateringMode,
     WeatherReading,
     WeatherZoneSettings,
+    clear_soil_moisture_feedback_progress,
     update_water_balance,
 )
 from .weather_sources import WeatherSourceRole, observe_weather_sources
@@ -762,6 +768,28 @@ class IrrigationManager:
             "measured_precipitation_mm": (None if day is None else day.measured_precipitation_mm),
             "effective_precipitation_mm": (None if day is None else day.effective_precipitation_mm),
             "effective_irrigation_mm": (None if day is None else day.effective_irrigation_mm),
+            "soil_moisture_quality": None if day is None else day.soil_moisture_quality,
+            "soil_moisture_reason": None if day is None else day.soil_moisture_reason,
+            "soil_moisture_source_entity_ids": (
+                [] if day is None else list(day.soil_moisture_source_entity_ids)
+            ),
+            "soil_moisture_observed_at": (None if day is None else day.soil_moisture_observed_at),
+            "soil_moisture_normalized_fraction": (
+                None if day is None else day.soil_moisture_normalized_fraction
+            ),
+            "soil_moisture_implied_deficit_mm": (
+                None if day is None else day.soil_moisture_implied_deficit_mm
+            ),
+            "soil_moisture_deadband_mm": (None if day is None else day.soil_moisture_deadband_mm),
+            "soil_moisture_correction_limit_mm": (
+                None if day is None else day.soil_moisture_correction_limit_mm
+            ),
+            "soil_moisture_correction_mm": (
+                None if day is None else day.soil_moisture_correction_mm
+            ),
+            "soil_moisture_calibration_signature": (
+                None if result.state is None else result.state.soil_moisture_calibration_signature
+            ),
             "deficit_target": result.deficit_target if current else None,
             "effective_target": effective_target,
         }
@@ -901,6 +929,11 @@ class IrrigationManager:
             for request in self._stored_state.manual_requests
             if request.source == "automatic" and request.status == "pending"
         }
+        terminal_automatic_ids = {
+            request.request_id
+            for request in self._stored_state.manual_requests
+            if request.source == "automatic" and request.status in _FINAL_REQUEST_STATUSES
+        }
         releases_allow = (
             self._operation_enabled
             and self._automation_enabled
@@ -917,6 +950,15 @@ class IrrigationManager:
         weather_observations: Mapping[str, object] = {}
         forecast_results: dict[str, ForecastFetchResult] = {}
         weather_module_enabled = self._installation_data.get(CONF_WEATHER_MODULE_ENABLED) is True
+        for zone in self._zone_configs:
+            stored_balance = zone_balances.get(zone.zone_id)
+            soil_feedback_effective = (
+                weather_module_enabled
+                and zone.data.get(CONF_USE_WEATHER_ADJUSTMENT) is True
+                and zone.data.get(CONF_USE_SOIL_MOISTURE_FEEDBACK) is True
+            )
+            if stored_balance is not None and not soil_feedback_effective:
+                zone_balances[zone.zone_id] = clear_soil_moisture_feedback_progress(stored_balance)
         if weather_module_enabled:
             observations = observe_weather_sources(
                 self._hass,
@@ -935,6 +977,18 @@ class IrrigationManager:
                     continue
                 try:
                     settings = self._weather_settings(zone.data)
+                    soil_feedback_enabled = zone.data.get(CONF_USE_SOIL_MOISTURE_FEEDBACK) is True
+                    soil_observation = (
+                        observe_soil_moisture(
+                            self._hass,
+                            zone.data.get(CONF_SOIL_MOISTURE_ASSIGNMENTS),
+                            zone.data.get(CONF_SUBAREAS),
+                            activation_id=zone.data.get(CONF_SOIL_MOISTURE_ACTIVATION_ID),
+                            now=planning_now,
+                        )
+                        if soil_feedback_enabled
+                        else None
+                    )
                     baseline = positive_number(zone.data.get(CONF_BASE_TARGET))
                     if baseline is None:
                         raise ValueError("Weather adjustment requires a common baseline")
@@ -977,6 +1031,8 @@ class IrrigationManager:
                         irrigation_contributions=self._irrigation_contributions(
                             zone_id=zone.zone_id, local_date=local_now.date()
                         ),
+                        soil_moisture_feedback_enabled=soil_feedback_enabled,
+                        soil_moisture_observation=soil_observation,
                     )
                 except (TypeError, ValueError) as err:
                     weather_plans[zone.zone_id] = _ZoneWeatherPlan(
@@ -1028,6 +1084,8 @@ class IrrigationManager:
                     if not isinstance(row, Mapping):
                         raise HomeAssistantError(f"Invalid weekly schedule for zone {zone.title}")
                     request_id = f"automatic:{zone.zone_id}:{day.isoformat()}"
+                    if request_id in terminal_automatic_ids:
+                        continue
                     existing_request = pending_automatic.get(request_id)
                     previous_evidence: Mapping[str, object] | None = None
                     if existing_request is not None:
@@ -3914,6 +3972,14 @@ class IrrigationManager:
                     "retained_days": len(balance.days),
                     "processed_execution_count": len(balance.processed_execution_ids),
                     "unreliable_execution_count": len(balance.unreliable_execution_ids),
+                    "soil_moisture_calibration_signature": (
+                        balance.soil_moisture_calibration_signature
+                    ),
+                    "soil_moisture_anchor_fraction": balance.soil_moisture_anchor_fraction,
+                    "soil_moisture_anchor_observed_at": (balance.soil_moisture_anchor_observed_at),
+                    "soil_moisture_last_correction_date": (
+                        balance.soil_moisture_last_correction_date
+                    ),
                     "latest_day": {
                         "local_date": balance.days[-1].local_date,
                         "quality": balance.days[-1].quality,
@@ -3925,6 +3991,25 @@ class IrrigationManager:
                         "measured_precipitation_mm": (balance.days[-1].measured_precipitation_mm),
                         "effective_irrigation_mm": (balance.days[-1].effective_irrigation_mm),
                         "closing_deficit_mm": balance.days[-1].closing_deficit_mm,
+                        "soil_moisture_quality": balance.days[-1].soil_moisture_quality,
+                        "soil_moisture_reason": balance.days[-1].soil_moisture_reason,
+                        "soil_moisture_source_entity_ids": list(
+                            balance.days[-1].soil_moisture_source_entity_ids
+                        ),
+                        "soil_moisture_observed_at": (balance.days[-1].soil_moisture_observed_at),
+                        "soil_moisture_normalized_fraction": (
+                            balance.days[-1].soil_moisture_normalized_fraction
+                        ),
+                        "soil_moisture_implied_deficit_mm": (
+                            balance.days[-1].soil_moisture_implied_deficit_mm
+                        ),
+                        "soil_moisture_deadband_mm": (balance.days[-1].soil_moisture_deadband_mm),
+                        "soil_moisture_correction_limit_mm": (
+                            balance.days[-1].soil_moisture_correction_limit_mm
+                        ),
+                        "soil_moisture_correction_mm": (
+                            balance.days[-1].soil_moisture_correction_mm
+                        ),
                     },
                 }
                 for zone_id, balance in self._stored_state.zone_water_balances.items()
