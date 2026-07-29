@@ -129,6 +129,11 @@ reset_safety_lock:
 plan_automatic:
   fields:
     config_entry_id: *installation
+    replace_legacy_cancelled:
+      required: false
+      default: false
+      selector:
+        boolean:
 
 correct_physical_meter:
   fields:

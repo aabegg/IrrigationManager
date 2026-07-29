@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-rc28 - 2026-07-29
+
+### Fixed
+
+- Recreate future automatic irrigation orders after an automation release is disabled,
+  Home Assistant restarts, and the release is enabled again.
+- Keep completed, expired, failed, interrupted, and explicitly withdrawn automatic orders
+  terminal while replacing release-cancelled records without creating duplicate IDs.
+- Treat unclassified pre-rc28 cancellations as terminal by default, add an explicit administrative
+  repair option for those records, and prevent a concurrent cancellation from losing to planning.
+
 ## 0.1.0-rc27 - 2026-07-29
 
 ### Added

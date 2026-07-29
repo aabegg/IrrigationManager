@@ -136,20 +136,85 @@ class ManualIrrigationRequest:
         return result
 
 
+AUTOMATIC_CANCELLATION_REASON_KEY = "automatic_cancellation_reason"
+
+
+class AutomaticCancellationReason(StrEnum):
+    """Persisted reason why an automatic irrigation order was cancelled."""
+
+    AUTOMATION_RELEASE_REVOKED = "automation_release_revoked"
+    CONFIGURATION_CHANGED = "configuration_changed"
+    EXECUTION_FAILED = "execution_failed"
+    PLANNING_REPLACED = "planning_replaced"
+    RESTART_INTERRUPTED = "restart_interrupted"
+    USER_REQUESTED = "user_requested"
+
+
+REPLANNABLE_AUTOMATIC_CANCELLATION_REASONS = frozenset(
+    {
+        AutomaticCancellationReason.AUTOMATION_RELEASE_REVOKED,
+        AutomaticCancellationReason.CONFIGURATION_CHANGED,
+        AutomaticCancellationReason.PLANNING_REPLACED,
+    }
+)
+
+
+def automatic_request_has_unclassified_legacy_cancellation(
+    request: ManualIrrigationRequest,
+) -> bool:
+    """Return whether a legacy automatic cancellation has no trusted reason."""
+    if request.source != "automatic" or request.status != "cancelled":
+        return False
+    raw_reason = request.resolved_inputs.get(AUTOMATIC_CANCELLATION_REASON_KEY)
+    if not isinstance(raw_reason, str):
+        return True
+    try:
+        AutomaticCancellationReason(raw_reason)
+    except ValueError:
+        return True
+    return False
+
+
+def automatic_request_is_terminal_tombstone(
+    request: ManualIrrigationRequest,
+) -> bool:
+    """Return whether automatic planning must never recreate this request ID."""
+    if request.source != "automatic":
+        return False
+    if request.status in {"completed", "expired"}:
+        return True
+    if request.status != "cancelled":
+        return False
+    raw_reason = request.resolved_inputs.get(AUTOMATIC_CANCELLATION_REASON_KEY)
+    if not isinstance(raw_reason, str):
+        return True
+    try:
+        reason = AutomaticCancellationReason(raw_reason)
+    except ValueError:
+        return True
+    return reason not in REPLANNABLE_AUTOMATIC_CANCELLATION_REASONS
+
+
 def _deduplicate_requests(
     requests: tuple[ManualIrrigationRequest, ...],
 ) -> tuple[ManualIrrigationRequest, ...]:
     """Keep one safety-conservative winner for every durable request ID."""
 
-    def rank(request: ManualIrrigationRequest) -> tuple[int, int]:
+    def rank(request: ManualIrrigationRequest) -> tuple[int, int, int]:
+        terminal_tombstone = request.status in {"completed", "expired"} or (
+            request.status == "cancelled"
+            and (request.source != "automatic" or automatic_request_is_terminal_tombstone(request))
+        )
         lifecycle_rank = (
             3
             if request.status == "executing"
             else 2
-            if request.status in {"completed", "cancelled", "expired"}
+            if terminal_tombstone
             else 1
+            if request.status == "pending"
+            else 0
         )
-        return lifecycle_rank, request.revision
+        return lifecycle_rank, request.sequence, request.revision
 
     winners: dict[str, tuple[int, ManualIrrigationRequest]] = {}
     for index, request in enumerate(requests):

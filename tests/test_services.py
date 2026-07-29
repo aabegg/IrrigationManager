@@ -64,6 +64,39 @@ def test_service_duration_fields_use_structured_selectors() -> None:
     }
 
 
+async def test_plan_automatic_requires_explicit_legacy_repair_opt_in(
+    hass: HomeAssistant,
+) -> None:
+    """Keep the pre-rc28 cancellation repair disabled unless an admin requests it."""
+    manager = SimpleNamespace(async_plan_automatic=AsyncMock(return_value={"created": 1}))
+    hass.data[DOMAIN] = {"installation": manager}
+
+    with patch("custom_components.irrigation_manager.services.IrrigationManager", type(manager)):
+        await async_register_services(hass)
+        await hass.services.async_call(
+            DOMAIN,
+            "plan_automatic",
+            {"config_entry_id": "installation"},
+            blocking=True,
+            return_response=True,
+        )
+        manager.async_plan_automatic.assert_awaited_once_with(replace_legacy_cancelled=False)
+
+        manager.async_plan_automatic.reset_mock()
+        await hass.services.async_call(
+            DOMAIN,
+            "plan_automatic",
+            {
+                "config_entry_id": "installation",
+                "replace_legacy_cancelled": True,
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+    manager.async_plan_automatic.assert_awaited_once_with(replace_legacy_cancelled=True)
+
+
 async def test_emergency_stop_requires_admin_or_control_of_all_actuators(
     hass: HomeAssistant,
 ) -> None:

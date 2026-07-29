@@ -24,9 +24,15 @@ from custom_components.irrigation_manager.diagnostics import (
 )
 from custom_components.irrigation_manager.executor import ExecutionResult
 from custom_components.irrigation_manager.forecast import ForecastFetchResult, ForecastPeriod
-from custom_components.irrigation_manager.manager import IrrigationManager, _bounded_retry_delay
+from custom_components.irrigation_manager.manager import (
+    IrrigationManager,
+    _bounded_retry_delay,
+    _with_automatic_cancellation_reason,
+)
 from custom_components.irrigation_manager.models import (
+    AUTOMATIC_CANCELLATION_REASON_KEY,
     ActiveExecutionState,
+    AutomaticCancellationReason,
     IrrigationExecutionState,
     ManualIrrigationRequest,
     StoredInstallationState,
@@ -2877,6 +2883,234 @@ async def test_restart_discards_duplicate_pending_copy_of_terminal_automatic_req
         "dispatcher_error"
     )
     assert hass.states.get("switch.lawn").state == STATE_OFF
+
+
+async def test_restart_replans_future_orders_cancelled_by_automation_release(
+    hass: HomeAssistant,
+) -> None:
+    """Recreate scheduled work after automation is disabled, restarted, and enabled."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    request_id = f"automatic:{zone.unique_id}:2026-07-27"
+    manager._stored_state = replace(
+        manager._stored_state,
+        automation_enabled=True,
+        manual_requests=(),
+    )
+
+    with (
+        patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("UTC")),
+        patch.object(dt_util, "now", return_value=now),
+    ):
+        initial = await manager.async_plan_automatic(now=now)
+        assert request_id in initial["created_request_ids"]
+
+        await manager.async_set_installation_automation(
+            enabled=False,
+            stop_active=False,
+        )
+        cancelled = manager._request(request_id)
+        assert cancelled is not None
+        assert cancelled.status == "cancelled"
+
+        manager._stored_state = StoredInstallationState.from_dict(manager._stored_state.as_dict())
+        enabled = await manager.async_set_installation_automation(
+            enabled=True,
+            stop_active=False,
+        )
+
+    assert enabled["replan"] is not None
+    assert request_id in enabled["replan"]["created_request_ids"]
+    replanned = manager._request(request_id)
+    assert replanned is not None
+    assert replanned.status == "pending"
+    assert (
+        sum(request.request_id == request_id for request in manager._stored_state.manual_requests)
+        == 1
+    )
+
+
+async def test_explicitly_cancelled_automatic_order_is_not_replanned(
+    hass: HomeAssistant,
+) -> None:
+    """Respect a user's withdrawal of one scheduled automatic order."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    request_id = f"automatic:{zone.unique_id}:2026-07-27"
+    manager._stored_state = replace(
+        manager._stored_state,
+        automation_enabled=True,
+        manual_requests=(),
+    )
+
+    with patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("UTC")):
+        initial = await manager.async_plan_automatic(now=now)
+        assert request_id in initial["created_request_ids"]
+
+        await manager.async_cancel_request(request_id)
+        replanned = await manager.async_plan_automatic(now=now)
+
+    assert request_id not in replanned["created_request_ids"]
+    cancelled = manager._request(request_id)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert (
+        sum(request.request_id == request_id for request in manager._stored_state.manual_requests)
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "reason"),
+    [
+        ("expired", None),
+        ("cancelled", AutomaticCancellationReason.EXECUTION_FAILED),
+        ("cancelled", AutomaticCancellationReason.RESTART_INTERRUPTED),
+    ],
+    ids=("expired", "execution-failed", "restart-interrupted"),
+)
+async def test_terminal_automatic_order_survives_restart_without_replanning(
+    hass: HomeAssistant,
+    terminal_status: str,
+    reason: AutomaticCancellationReason | None,
+) -> None:
+    """Keep every non-user terminal outcome final across persistence and planning."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    request_id = f"automatic:{zone.unique_id}:2026-07-27"
+    manager._stored_state = replace(
+        manager._stored_state,
+        automation_enabled=True,
+        manual_requests=(),
+    )
+
+    with patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("UTC")):
+        await manager.async_plan_automatic(now=now)
+        pending = manager._request(request_id)
+        assert pending is not None
+        terminal = replace(
+            pending,
+            status=terminal_status,
+            revision=pending.revision + 1,
+        )
+        if reason is not None:
+            terminal = _with_automatic_cancellation_reason(terminal, reason)
+        manager._stored_state = replace(
+            manager._stored_state,
+            manual_requests=(terminal,),
+        )
+        manager._stored_state = StoredInstallationState.from_dict(manager._stored_state.as_dict())
+
+        replanned = await manager.async_plan_automatic(now=now)
+
+    assert request_id not in replanned["created_request_ids"]
+    persisted = manager._request(request_id)
+    assert persisted is not None
+    assert persisted.status == terminal_status
+    assert (
+        sum(request.request_id == request_id for request in manager._stored_state.manual_requests)
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "legacy_reason",
+    [None, "misspelled_future_reason"],
+    ids=["missing", "unknown"],
+)
+async def test_unclassified_legacy_cancellation_is_not_replanned_implicitly(
+    hass: HomeAssistant, legacy_reason: str | None
+) -> None:
+    """Fail closed when pre-rc28 storage cannot prove why an order was cancelled."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    request_id = f"automatic:{zone.unique_id}:2026-07-27"
+    manager._stored_state = replace(
+        manager._stored_state,
+        automation_enabled=True,
+        manual_requests=(),
+    )
+
+    with patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("UTC")):
+        await manager.async_plan_automatic(now=now)
+        pending = manager._request(request_id)
+        assert pending is not None
+        legacy_cancelled = replace(
+            pending,
+            status="cancelled",
+            resolved_inputs={
+                **pending.resolved_inputs,
+                **(
+                    {AUTOMATIC_CANCELLATION_REASON_KEY: legacy_reason}
+                    if legacy_reason is not None
+                    else {}
+                ),
+            },
+            revision=pending.revision + 1,
+        )
+        manager._stored_state = replace(
+            manager._stored_state,
+            manual_requests=(legacy_cancelled,),
+        )
+
+        replanned = await manager.async_plan_automatic(now=now)
+
+    assert request_id not in replanned["created_request_ids"]
+    assert manager._request(request_id) == legacy_cancelled
+
+    with patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("UTC")):
+        repaired = await manager.async_plan_automatic(
+            now=now,
+            replace_legacy_cancelled=True,
+        )
+
+    assert request_id in repaired["created_request_ids"]
+    assert manager._request(request_id).status == "pending"
+
+
+async def test_cancellation_winning_commit_race_is_not_replayed(
+    hass: HomeAssistant,
+) -> None:
+    """Recheck terminal ownership when cancellation commits during planning."""
+    entry, zone = await _setup_v2_installation(hass)
+    manager = entry.runtime_data.manager
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    request_id = f"automatic:{zone.unique_id}:2026-07-27"
+    manager._stored_state = replace(
+        manager._stored_state,
+        automation_enabled=True,
+        manual_requests=(),
+    )
+
+    with patch.object(dt_util, "DEFAULT_TIME_ZONE", ZoneInfo("UTC")):
+        await manager.async_plan_automatic(now=now)
+        await manager._command_lock.acquire()
+        plan_task = hass.async_create_task(
+            manager._async_plan_automatic_locked(dry_run=False, now=now)
+        )
+        await asyncio.sleep(0)
+        pending = manager._request(request_id)
+        assert pending is not None
+        cancelled = _with_automatic_cancellation_reason(
+            replace(pending, status="cancelled", revision=pending.revision + 1),
+            AutomaticCancellationReason.USER_REQUESTED,
+        )
+        manager._stored_state = replace(
+            manager._stored_state,
+            manual_requests=manager._with_request(cancelled),
+        )
+        manager._command_lock.release()
+        await plan_task
+
+    matching = [
+        request for request in manager.list_manual_requests() if request["request_id"] == request_id
+    ]
+    assert len(matching) == 1
+    assert matching[0]["status"] == "cancelled"
 
 
 async def test_dispatcher_cleanup_failure_is_logged_without_killing_task(

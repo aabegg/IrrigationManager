@@ -31,6 +31,7 @@ ATTR_OFFSET = "offset"
 ATTR_LIMIT = "limit"
 ATTR_SOURCE = "source"
 ATTR_RESULT = "result"
+ATTR_REPLACE_LEGACY_CANCELLED = "replace_legacy_cancelled"
 
 SERVICE_START_MANUAL = "start_manual"
 SERVICE_CREATE_MANUAL = "create_manual"
@@ -92,6 +93,12 @@ START_MANUAL_FROM_CARD_SCHEMA = vol.All(
     _validate_manual_target,
 )
 INSTALLATION_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
+PLAN_AUTOMATIC_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_REPLACE_LEGACY_CANCELLED, default=False): cv.boolean,
+    }
+)
 REQUEST_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
@@ -286,7 +293,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def plan_automatic(call: ServiceCall) -> dict[str, Any]:
         await require_admin(call)
-        return await manager_for(call).async_plan_automatic()
+        return await manager_for(call).async_plan_automatic(
+            replace_legacy_cancelled=cast(bool, call.data[ATTR_REPLACE_LEGACY_CANCELLED])
+        )
 
     async def correct_physical_meter(call: ServiceCall) -> dict[str, Any]:
         await require_admin(call)
@@ -360,7 +369,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_PLAN_AUTOMATIC,
         plan_automatic,
-        schema=INSTALLATION_SCHEMA,
+        schema=PLAN_AUTOMATIC_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(

@@ -83,7 +83,9 @@ from .forecast import (
 )
 from .meter import CumulativeMeter
 from .models import (
+    AUTOMATIC_CANCELLATION_REASON_KEY,
     ActiveExecutionState,
+    AutomaticCancellationReason,
     CalibrationProposal,
     DispatcherDiagnosticEntry,
     DispatcherDiagnosticState,
@@ -96,6 +98,8 @@ from .models import (
     PlanningRejectionReason,
     StoredInstallationState,
     WaterConsumptionRecord,
+    automatic_request_has_unclassified_legacy_cancellation,
+    automatic_request_is_terminal_tombstone,
 )
 from .scheduler import (
     planned_volume_duration_seconds,
@@ -144,6 +148,29 @@ def _bounded_retry_delay(consecutive_failures: int) -> float:
     """Return exponential seconds without constructing an unbounded integer."""
     delays = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0)
     return delays[min(max(consecutive_failures - 1, 0), len(delays) - 1)]
+
+
+def _with_automatic_cancellation_reason(
+    request: ManualIrrigationRequest,
+    reason: AutomaticCancellationReason,
+) -> ManualIrrigationRequest:
+    """Mark an automatic cancellation that a later replan must respect."""
+    if request.source != "automatic":
+        return request
+    resolved_inputs = dict(request.resolved_inputs)
+    resolved_inputs[AUTOMATIC_CANCELLATION_REASON_KEY] = reason.value
+    return replace(request, resolved_inputs=resolved_inputs)
+
+
+def _automatic_request_blocks_replanning(
+    request: ManualIrrigationRequest,
+    *,
+    replace_legacy_cancelled: bool,
+) -> bool:
+    """Apply the normal or explicitly requested legacy-repair planning policy."""
+    return automatic_request_is_terminal_tombstone(request) and not (
+        replace_legacy_cancelled and automatic_request_has_unclassified_legacy_cancellation(request)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,7 +443,10 @@ class IrrigationManager:
                 and request.main_valve == self._main_valve
             )
             if request.status == "pending" and not valid:
-                request = replace(request, status="cancelled", revision=request.revision + 1)
+                request = _with_automatic_cancellation_reason(
+                    replace(request, status="cancelled", revision=request.revision + 1),
+                    AutomaticCancellationReason.CONFIGURATION_CHANGED,
+                )
                 changed = True
                 cancelled_requests.append(request)
             requests.append(request)
@@ -552,14 +582,22 @@ class IrrigationManager:
             self._complete_idle_event.clear()
 
     async def async_plan_automatic(
-        self, *, dry_run: bool = False, now: datetime | None = None
+        self,
+        *,
+        dry_run: bool = False,
+        now: datetime | None = None,
+        replace_legacy_cancelled: bool = False,
     ) -> dict[str, object]:
         """Atomically replace pending automatic requests for a two-week horizon."""
         async with self._planning_lock:
             async with self._command_lock:
                 self._automatic_planning_in_progress = True
             try:
-                return await self._async_plan_automatic_locked(dry_run=dry_run, now=now)
+                return await self._async_plan_automatic_locked(
+                    dry_run=dry_run,
+                    now=now,
+                    replace_legacy_cancelled=replace_legacy_cancelled,
+                )
             finally:
                 async with self._command_lock:
                     self._automatic_planning_in_progress = False
@@ -909,7 +947,11 @@ class IrrigationManager:
         return result
 
     async def _async_plan_automatic_locked(
-        self, *, dry_run: bool, now: datetime | None
+        self,
+        *,
+        dry_run: bool,
+        now: datetime | None,
+        replace_legacy_cancelled: bool = False,
     ) -> dict[str, object]:
         """Plan while excluding concurrent replans from the dispatch commit."""
         planning_now = (now or dt_util.now()).astimezone(UTC)
@@ -932,7 +974,10 @@ class IrrigationManager:
         terminal_automatic_ids = {
             request.request_id
             for request in self._stored_state.manual_requests
-            if request.source == "automatic" and request.status in _FINAL_REQUEST_STATUSES
+            if _automatic_request_blocks_replanning(
+                request,
+                replace_legacy_cancelled=replace_legacy_cancelled,
+            )
         }
         releases_allow = (
             self._operation_enabled
@@ -1666,6 +1711,29 @@ class IrrigationManager:
         candidates = self._automatic_candidates_that_fit(candidates, planning_now)
 
         async with self._command_lock:
+            terminal_ids_at_commit = {
+                request.request_id
+                for request in self._stored_state.manual_requests
+                if _automatic_request_blocks_replanning(
+                    request,
+                    replace_legacy_cancelled=replace_legacy_cancelled,
+                )
+            }
+            candidates = [
+                request
+                for request in candidates
+                if request.request_id not in terminal_ids_at_commit
+            ]
+            completed_without_execution = {
+                request_id: request
+                for request_id, request in completed_without_execution.items()
+                if request_id not in terminal_ids_at_commit
+            }
+            expired_make_up_requests = {
+                request_id: request
+                for request_id, request in expired_make_up_requests.items()
+                if request_id not in terminal_ids_at_commit
+            }
             observability_changed = False
             if not dry_run:
                 observability_changed = self._update_planning_observability(
@@ -1708,6 +1776,13 @@ class IrrigationManager:
                     )
                     replaced_ids.append(candidate.request_id)
             candidate_ids = {request.request_id for request in candidates}
+            repaired_legacy_cancelled_ids = sorted(
+                request.request_id
+                for request in self._stored_state.manual_requests
+                if replace_legacy_cancelled
+                and request.request_id in candidate_ids
+                and automatic_request_has_unclassified_legacy_cancellation(request)
+            )
             completed_ids = set(completed_without_execution)
             expired_ids = set(expired_make_up_requests)
             removed = sorted(pending.keys() - candidate_ids - completed_ids - expired_ids)
@@ -1715,6 +1790,14 @@ class IrrigationManager:
                 request
                 for request in self._stored_state.manual_requests
                 if not (request.source == "automatic" and request.status == "pending")
+                and not (
+                    request.source == "automatic"
+                    and request.request_id in candidate_ids
+                    and not _automatic_request_blocks_replanning(
+                        request,
+                        replace_legacy_cancelled=replace_legacy_cancelled,
+                    )
+                )
             )
             created.sort()
             replaced_ids.sort()
@@ -1741,10 +1824,13 @@ class IrrigationManager:
                 self._stored_state = next_state
                 await self._async_record_terminal_requests(
                     (
-                        replace(
-                            pending[request_id],
-                            status="cancelled",
-                            revision=pending[request_id].revision + 1,
+                        _with_automatic_cancellation_reason(
+                            replace(
+                                pending[request_id],
+                                status="cancelled",
+                                revision=pending[request_id].revision + 1,
+                            ),
+                            AutomaticCancellationReason.PLANNING_REPLACED,
                         )
                         for request_id in removed
                     ),
@@ -1772,6 +1858,9 @@ class IrrigationManager:
                 "removed_request_ids": removed,
                 "completed_without_execution_request_ids": sorted(completed_ids),
                 "expired_make_up_request_ids": sorted(expired_ids),
+                "replaced_legacy_cancelled_request_ids": (
+                    [] if dry_run else repaired_legacy_cancelled_ids
+                ),
                 "not_plannable": [rejection.as_dict() for rejection in not_plannable],
             }
 
@@ -2299,6 +2388,14 @@ class IrrigationManager:
             status=request_status,
             revision=request.revision + 1,
         )
+        if cancelled:
+            request = _with_automatic_cancellation_reason(
+                request, AutomaticCancellationReason.USER_REQUESTED
+            )
+        elif failed:
+            request = _with_automatic_cancellation_reason(
+                request, AutomaticCancellationReason.EXECUTION_FAILED
+            )
         execution = replace(
             execution,
             remaining_value=remaining,
@@ -2382,7 +2479,10 @@ class IrrigationManager:
         if request is None or request.status in _FINAL_REQUEST_STATUSES:
             return
         now = datetime.now(UTC).isoformat()
-        failed = replace(request, status="cancelled", revision=request.revision + 1)
+        failed = _with_automatic_cancellation_reason(
+            replace(request, status="cancelled", revision=request.revision + 1),
+            AutomaticCancellationReason.EXECUTION_FAILED,
+        )
         execution = self._execution(request.execution_id)
         executions = (
             self._with_execution(
@@ -2453,11 +2553,14 @@ class IrrigationManager:
             else delivered_duration
         )
         requests = tuple(
-            replace(
-                item,
-                status="cancelled",
-                remaining_value=max(0.0, item.remaining_value - delivered_target),
-                revision=item.revision + 1,
+            _with_automatic_cancellation_reason(
+                replace(
+                    item,
+                    status="cancelled",
+                    remaining_value=max(0.0, item.remaining_value - delivered_target),
+                    revision=item.revision + 1,
+                ),
+                AutomaticCancellationReason.RESTART_INTERRUPTED,
             )
             if item.request_id == active.request_id and item.status not in _FINAL_REQUEST_STATUSES
             else item
@@ -2612,7 +2715,10 @@ class IrrigationManager:
                 if not enabled and request.source == "automatic" and request.status == "pending"
             }
             requests = tuple(
-                replace(request, status="cancelled", revision=request.revision + 1)
+                _with_automatic_cancellation_reason(
+                    replace(request, status="cancelled", revision=request.revision + 1),
+                    AutomaticCancellationReason.AUTOMATION_RELEASE_REVOKED,
+                )
                 if not enabled and request.source == "automatic" and request.status == "pending"
                 else request
                 for request in self._stored_state.manual_requests
@@ -2690,7 +2796,10 @@ class IrrigationManager:
                 and request.status == "pending"
             }
             requests = tuple(
-                replace(request, status="cancelled", revision=request.revision + 1)
+                _with_automatic_cancellation_reason(
+                    replace(request, status="cancelled", revision=request.revision + 1),
+                    AutomaticCancellationReason.AUTOMATION_RELEASE_REVOKED,
+                )
                 if not enabled
                 and request.zone_id == zone.zone_id
                 and request.source == "automatic"
@@ -2812,10 +2921,13 @@ class IrrigationManager:
                     terminal = self._terminal_events.setdefault(request_id, asyncio.Event())
                     task.cancel()
             else:
-                cancelled = replace(
-                    request,
-                    status="cancelled",
-                    revision=request.revision + 1,
+                cancelled = _with_automatic_cancellation_reason(
+                    replace(
+                        request,
+                        status="cancelled",
+                        revision=request.revision + 1,
+                    ),
+                    AutomaticCancellationReason.USER_REQUESTED,
                 )
                 self._stored_state = replace(
                     self._stored_state, manual_requests=self._with_request(cancelled)

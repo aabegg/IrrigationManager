@@ -333,6 +333,19 @@ Nach erfolgreicher Ausführung zeigt die Einstellungsoberfläche eine kurze Zusa
 
 Die Bewässerungsplanung wird unabhängig von dieser manuellen Aktion automatisch aktuell gehalten. Eine Neuberechnung erfolgt mindestens nach relevanten Konfigurationsänderungen, nach dem Aktivieren einer Automatikfreigabe, nach einem Neustart und nach dem Abschluss eines Bewässerungsvorgangs.
 
+Eine Neuberechnung darf einen noch nicht begonnenen automatischen Bewässerungsauftrag
+ersetzen, der ausschliesslich durch den vorherigen Entzug einer Automatikfreigabe, eine relevante
+Konfigurationsänderung oder eine frühere Neuplanung storniert wurde. Eine ausdrückliche Rücknahme
+durch den Benutzer sowie ein bereits abgeschlossener, abgelaufener, fehlgeschlagener oder nach
+einem unterbrochenen Start beendeter Auftrag derselben deterministischen Termin-ID bleiben
+endgültig und dürfen nicht erneut ausgeführt werden. Pro Termin-ID bleibt nach Persistenz und
+Neustart genau ein wirksamer Auftragsdatensatz erhalten.
+
+Bei vor dieser Unterscheidung gespeicherten Stornierungen ohne verlässlichen Grund gilt
+standardmässig die sichere Annahme, dass sie endgültig sind. Nur eine ausdrücklich bestätigte
+administrative Reparatur darf solche mehrdeutigen Altdaten einmalig durch die neu berechneten
+Aufträge ersetzen; reguläre automatische Neuplanungen führen diese Migration nicht implizit aus.
+
 ## Zonenzustand und Aktionen
 
 Der Zustand einer Bewässerungszone besteht aus zwei voneinander unabhängigen Dimensionen:
