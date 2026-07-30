@@ -100,7 +100,7 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["result"].version == 2
-    assert result["result"].minor_version == IrrigationManagerConfigFlow.MINOR_VERSION == 7
+    assert result["result"].minor_version == IrrigationManagerConfigFlow.MINOR_VERSION == 9
     assert result["data"] == {
         "name": "Garden",
         "operation_enabled": True,
@@ -118,6 +118,63 @@ async def test_creation_wizard_creates_first_zone_and_seven_day_schedule(
     assert len(zone.data["weekly_schedule"]) == 7
     assert zone.data["base_target"] == 600
     assert zone.data["weekly_schedule"][0]["target"] is None
+    assert zone.data["use_soak_module"] is False
+
+
+async def test_creation_collects_partial_irrigation_only_after_both_opt_ins(
+    hass: HomeAssistant,
+    mock_setup_entry: None,
+) -> None:
+    """Keep the optional module out of the zone flow until installation availability."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "create"}
+    )
+    for payload in (
+        {"name": "Garden"},
+        {},
+        {"meter_type": "none"},
+        {
+            "plant_site_module_enabled": False,
+            "seasonal_module_enabled": False,
+            "weather_module_enabled": False,
+            "soak_module_enabled": True,
+        },
+        {"name": "Lawn", "zone_valve": "switch.lawn", "control_type": "time"},
+        {"base_target": {"hours": 0, "minutes": 20, "seconds": 0}},
+    ):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
+
+    assert result["step_id"] == "first_zone_modules"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"use_soak_module": True}
+    )
+    assert result["step_id"] == "first_zone_soak_details"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "maximum_portion_target": {"hours": 0, "minutes": 5, "seconds": 0},
+            "minimum_soak_seconds": {"hours": 0, "minutes": 10, "seconds": 0},
+            "maximum_portions": 4,
+            "maximum_lifetime_seconds": {"hours": 2, "minutes": 0, "seconds": 0},
+        },
+    )
+    assert result["step_id"] == "installation_schedule"
+    with patch("custom_components.irrigation_manager.config_flow.uuid4") as uuid4:
+        uuid4.side_effect = [
+            type("Id", (), {"hex": "partial-installation"})(),
+            type("Id", (), {"hex": "partial-zone"})(),
+        ]
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"monday": {"start": "05:00:00", "end": "07:00:00"}}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["soak_module_enabled"] is True
+    zone = next(iter(result["result"].subentries.values()))
+    assert zone.data["use_soak_module"] is True
+    assert zone.data["maximum_portion_target"] == 300.0
+    assert zone.data["minimum_soak_seconds"] == 600.0
 
 
 async def test_creation_wizard_collects_sources_and_first_zone_water_balance(
@@ -154,7 +211,7 @@ async def test_creation_wizard_collects_sources_and_first_zone_water_balance(
         ),
         (
             {"base_target": {"hours": 0, "minutes": 10, "seconds": 0}},
-            "first_zone_weather",
+            "first_zone_modules",
         ),
         ({"use_weather_adjustment": True}, "first_zone_weather_details"),
         (
@@ -189,7 +246,7 @@ async def test_creation_wizard_can_opt_into_forecast_postponement(
     hass: HomeAssistant,
     mock_setup_entry: None,
 ) -> None:
-    """Collect forecast settings only after the regular target and schedule exist."""
+    """Collect selected weather details before the final weekly schedule."""
     hass.states.async_set(
         "weather.home",
         "sunny",
@@ -220,7 +277,6 @@ async def test_creation_wizard_can_opt_into_forecast_postponement(
             "maximum_deficit_mm": 50.0,
             "effective_application_rate_mm_h": 10.0,
         },
-        {"friday": {"start": "05:00:00", "end": "08:00:00"}},
     ):
         result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
 
@@ -242,6 +298,10 @@ async def test_creation_wizard_can_opt_into_forecast_postponement(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {"saturday": {"start": "06:00:00", "end": "08:00:00"}},
+    )
+    assert result["step_id"] == "installation_schedule"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"friday": {"start": "05:00:00", "end": "08:00:00"}}
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -308,7 +368,7 @@ async def test_home_assistant_migrates_rc19_entry_without_changing_behavior(
 
     assert await entry.async_migrate(hass)
 
-    assert entry.minor_version == 7
+    assert entry.minor_version == 9
     assert entry.data["operation_enabled"] is True
     assert entry.data["automation_enabled"] is True
     migrated = entry.subentries[zone.subentry_id].data
@@ -388,7 +448,7 @@ async def test_stage3_migration_adds_only_dormant_weather_source_configuration(
 
     assert await entry.async_migrate(hass)
 
-    assert entry.minor_version == 7
+    assert entry.minor_version == 9
     assert entry.data["weather_sources"] == {}
     assert entry.data.get("weather_module_enabled", False) is False
     assert entry.data["operation_enabled"] is True
@@ -451,7 +511,7 @@ async def test_stage4_migration_keeps_weather_balance_dormant_and_behavior_uncha
 
     assert await entry.async_migrate(hass)
 
-    assert entry.minor_version == 7
+    assert entry.minor_version == 9
     assert entry.data.get("weather_module_enabled", False) is False
     assert entry.data["weather_sources"] == {"precipitation_total": "sensor.rain_total"}
     migrated_zone = entry.subentries[zone.subentry_id].data
@@ -514,7 +574,7 @@ async def test_stage5_migration_preserves_stage4_and_disables_only_forecasts(
 
     assert await entry.async_migrate(hass)
 
-    assert entry.minor_version == 7
+    assert entry.minor_version == 9
     assert entry.data["weather_module_enabled"] is True
     migrated_zone = entry.subentries[zone.subentry_id]
     assert migrated_zone.data["use_weather_adjustment"] is True
@@ -569,12 +629,110 @@ async def test_stage6_migration_adds_only_dormant_soil_moisture_feedback(
 
     assert await entry.async_migrate(hass)
 
-    assert entry.minor_version == 7
+    assert entry.minor_version == 9
     migrated = entry.subentries[zone.subentry_id].data
     assert migrated["use_weather_adjustment"] is True
     assert migrated["use_forecast_postponement"] is True
     assert migrated["use_soil_moisture_feedback"] is False
     assert migrated["soil_moisture_assignments"] == []
+
+
+async def test_stage7_migration_keeps_partial_irrigation_dormant_and_preserves_details(
+    hass: HomeAssistant,
+) -> None:
+    """Upgrade existing entries with both opt-ins off without deleting dormant limits."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Stage 7 migration",
+        version=2,
+        minor_version=7,
+        data={
+            "name": "Garden",
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": True,
+        },
+    )
+    entry.add_to_hass(hass)
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "operation_enabled": True,
+            "automation_enabled": True,
+            "weekly_schedule": [],
+            "maximum_portion_target": 300.0,
+            "minimum_soak_seconds": 600.0,
+            "maximum_portions": 4,
+            "maximum_lifetime_seconds": 7_200.0,
+        },
+        subentry_id="stage7-zone",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="stage7-zone",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    assert await entry.async_migrate(hass)
+
+    assert entry.minor_version == 9
+    assert entry.data["soak_module_enabled"] is False
+    migrated = entry.subentries[zone.subentry_id].data
+    assert migrated["use_soak_module"] is False
+    assert migrated["maximum_portion_target"] == 300.0
+    assert migrated["minimum_soak_seconds"] == 600.0
+    assert migrated["maximum_portions"] == 4
+    assert migrated["maximum_lifetime_seconds"] == 7_200.0
+
+
+async def test_release_migration_requires_fresh_partial_irrigation_opt_ins(
+    hass: HomeAssistant,
+) -> None:
+    """Installing the released runtime must never activate a previously staged zone."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Release migration",
+        version=2,
+        minor_version=8,
+        data={
+            "name": "Garden",
+            "meter_type": "none",
+            "operation_enabled": True,
+            "automation_enabled": True,
+            "soak_module_enabled": True,
+        },
+    )
+    entry.add_to_hass(hass)
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "weekly_schedule": [],
+            "use_soak_module": True,
+            "maximum_portion_target": 300.0,
+            "minimum_soak_seconds": 600.0,
+            "maximum_portions": 4,
+            "maximum_lifetime_seconds": 7_200.0,
+        },
+        subentry_id="release-zone",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="release-zone",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    assert await entry.async_migrate(hass)
+
+    assert entry.minor_version == 9
+    assert entry.data["soak_module_enabled"] is False
+    migrated = entry.subentries[zone.subentry_id].data
+    assert migrated["use_soak_module"] is False
+    assert migrated["maximum_portion_target"] == 300.0
+    assert migrated["minimum_soak_seconds"] == 600.0
+    assert migrated["maximum_portions"] == 4
+    assert migrated["maximum_lifetime_seconds"] == 7_200.0
 
 
 async def test_creation_collects_and_confirms_seasonal_curve_before_schedule(
@@ -595,7 +753,7 @@ async def test_creation_collects_and_confirms_seasonal_curve_before_schedule(
         {"base_target": {"hours": 0, "minutes": 10, "seconds": 0}},
     ):
         result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
-    assert result["step_id"] == "first_zone_seasonal"
+    assert result["step_id"] == "first_zone_modules"
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"use_seasonal_adjustment": True}
     )
@@ -904,6 +1062,7 @@ async def test_completed_weather_module_can_be_enabled_without_changing_zone_dat
         "plant_site_module_enabled",
         "seasonal_module_enabled",
         "weather_module_enabled",
+        "soak_module_enabled",
     }
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -918,6 +1077,219 @@ async def test_completed_weather_module_can_be_enabled_without_changing_zone_dat
     assert entry.data["weather_module_enabled"] is True
     assert entry.subentries[zone.subentry_id].data["use_weather_adjustment"] is True
     assert entry.subentries[zone.subentry_id].data["watering_mode"] == "demand"
+
+
+async def test_partial_irrigation_availability_is_optional_and_preserves_zone_details(
+    hass: HomeAssistant,
+) -> None:
+    """Installation availability changes without activating or erasing any zone policy."""
+    entry = await _create_v2_entry(hass)
+    zone = ConfigSubentry(
+        data={
+            "name": "Beds",
+            "zone_valve": "switch.beds",
+            "control_type": "time",
+            "weekly_schedule": [],
+            "use_soak_module": False,
+            "maximum_portion_target": 300.0,
+            "minimum_soak_seconds": 600.0,
+            "maximum_portions": 4,
+            "maximum_lifetime_seconds": 7_200.0,
+        },
+        subentry_id="partial-zone",
+        subentry_type="zone",
+        title="Beds",
+        unique_id="partial-zone",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "extensions"}
+    )
+    assert {str(key) for key in result["data_schema"].schema} == {
+        "plant_site_module_enabled",
+        "seasonal_module_enabled",
+        "weather_module_enabled",
+        "soak_module_enabled",
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "plant_site_module_enabled": False,
+            "seasonal_module_enabled": False,
+            "weather_module_enabled": False,
+            "soak_module_enabled": True,
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["soak_module_enabled"] is True
+    assert entry.subentries[zone.subentry_id].data["use_soak_module"] is False
+    assert entry.subentries[zone.subentry_id].data["maximum_portion_target"] == 300.0
+
+
+async def test_unreleased_partial_irrigation_gate_hides_ui_without_erasing_configuration(
+    hass: HomeAssistant,
+) -> None:
+    """A release rollback hides opt-ins but preserves dormant installation data."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        data={**entry.data, "soak_module_enabled": True},
+    )
+
+    with patch(
+        "custom_components.irrigation_manager.config_flow.integration_const."
+        "PARTIAL_IRRIGATION_RELEASED",
+        False,
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"next_step_id": "extensions"}
+        )
+        assert {str(key) for key in result["data_schema"].schema} == {
+            "plant_site_module_enabled",
+            "seasonal_module_enabled",
+            "weather_module_enabled",
+        }
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                "plant_site_module_enabled": False,
+                "seasonal_module_enabled": False,
+                "weather_module_enabled": False,
+            },
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data["soak_module_enabled"] is True
+
+
+async def test_time_zone_can_explicitly_configure_optional_partial_irrigation(
+    hass: HomeAssistant,
+) -> None:
+    """Collect the four validated limits only after explicit zone opt-in."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "soak_module_enabled": True})
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "time",
+            "weekly_schedule": [],
+            "use_soak_module": False,
+        },
+        subentry_id="partial-time-zone",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="partial-time-zone",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    assert "reconfigure_soak" in result["menu_options"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_soak"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"use_soak_module": True}
+    )
+
+    assert result["step_id"] == "reconfigure_soak_details"
+    assert {str(key) for key in result["data_schema"].schema} == {
+        "maximum_portion_target",
+        "minimum_soak_seconds",
+        "maximum_portions",
+        "maximum_lifetime_seconds",
+    }
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            "maximum_portion_target": {"hours": 0, "minutes": 5, "seconds": 0},
+            "minimum_soak_seconds": {"hours": 0, "minutes": 10, "seconds": 0},
+            "maximum_portions": 4,
+            "maximum_lifetime_seconds": {"hours": 2, "minutes": 0, "seconds": 0},
+        },
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    configured = entry.subentries[zone.subentry_id].data
+    assert configured["use_soak_module"] is True
+    assert configured["maximum_portion_target"] == 300.0
+    assert configured["minimum_soak_seconds"] == 600.0
+    assert configured["maximum_portions"] == 4
+    assert configured["maximum_lifetime_seconds"] == 7_200.0
+
+
+async def test_partial_irrigation_rejects_incomplete_limits_and_disable_preserves_them(
+    hass: HomeAssistant,
+) -> None:
+    """Treat all four limits atomically and retain them while zone use is disabled."""
+    entry = await _create_v2_entry(hass)
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "soak_module_enabled": True})
+    zone = ConfigSubentry(
+        data={
+            "name": "Lawn",
+            "zone_valve": "switch.lawn",
+            "control_type": "volume",
+            "weekly_schedule": [],
+            "use_soak_module": True,
+            "maximum_portion_target": 10.0,
+            "minimum_soak_seconds": 600.0,
+            "maximum_portions": 4,
+            "maximum_lifetime_seconds": 7_200.0,
+        },
+        subentry_id="partial-volume-zone",
+        subentry_type="zone",
+        title="Lawn",
+        unique_id="partial-volume-zone",
+    )
+    hass.config_entries.async_add_subentry(entry, zone)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_soak"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"use_soak_module": True}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            "maximum_portion_target": 10.0,
+            "minimum_soak_seconds": {"hours": 0, "minutes": 10, "seconds": 0},
+            "maximum_portions": 2.5,
+            "maximum_lifetime_seconds": {"hours": 2, "minutes": 0, "seconds": 0},
+        },
+    )
+    assert result["step_id"] == "reconfigure_soak_details"
+    assert result["errors"] == {"base": "soak_settings_invalid"}
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "zone"),
+        context={"source": "reconfigure", "subentry_id": zone.subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_soak"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"use_soak_module": False}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    configured = entry.subentries[zone.subentry_id].data
+    assert configured["use_soak_module"] is False
+    assert configured["maximum_portion_target"] == 10.0
+    assert configured["minimum_soak_seconds"] == 600.0
+    assert configured["maximum_portions"] == 4
+    assert configured["maximum_lifetime_seconds"] == 7_200.0
 
 
 async def test_time_zone_weather_settings_require_explicit_physical_conversion(
@@ -1695,7 +2067,7 @@ async def test_new_zone_can_opt_into_available_seasonal_module(
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], {"base_target": {"hours": 0, "minutes": 5, "seconds": 0}}
     )
-    assert result["step_id"] == "seasonal"
+    assert result["step_id"] == "modules"
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], {"use_seasonal_adjustment": True}
     )

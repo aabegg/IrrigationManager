@@ -15,6 +15,8 @@ export const cardStyles = css`
   .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
   .metric { padding: 10px 12px; border: 1px solid var(--divider-color); border-radius: var(--ha-card-border-radius, 12px); min-width: 0; text-align: left; }
   .metric span { display: block; color: var(--secondary-text-color); font-size: 0.78rem; margin-bottom: 3px; }
+  .process-details { display: grid; gap: 3px; padding: 10px 12px; border-left: 4px solid var(--primary-color); background: var(--secondary-background-color); border-radius: 4px; }
+  .process-details span { color: var(--secondary-text-color); font-size: 0.82rem; }
   .warning { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-left: 4px solid var(--warning-color, var(--primary-color)); background: var(--secondary-background-color); border-radius: 4px; }
   .warning.danger { border-left-color: var(--error-color); }
   progress { width: 100%; height: 8px; accent-color: var(--primary-color); }
@@ -46,6 +48,10 @@ export const cardStyles = css`
   .history-list article { display: grid; gap: 3px; padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
   .history-list article span, .history-list article time { color: var(--secondary-text-color); font-size: 0.82rem; }
   .history-period { display: flex; flex-wrap: wrap; gap: 4px; }
+  .portion-details { margin-top: 6px; }
+  .portion-details summary { cursor: pointer; color: var(--primary-text-color); font-size: 0.85rem; }
+  .portion-list { display: grid; gap: 8px; margin: 8px 0 2px 12px; padding-left: 10px; border-left: 2px solid var(--divider-color); }
+  .portion-list > div { display: grid; gap: 2px; }
   .pagination { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-top: 12px; }
   .pagination-summary { display: grid; gap: 2px; text-align: center; color: var(--secondary-text-color); font-size: 0.78rem; }
   .pagination-summary strong { color: var(--primary-text-color); font-size: 0.88rem; font-weight: 500; }

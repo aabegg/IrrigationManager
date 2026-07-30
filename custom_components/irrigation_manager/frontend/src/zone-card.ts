@@ -284,6 +284,15 @@ export class IrrigationManagerZoneCard extends LitElement {
       : this.formatHistoryDuration(item.target_value);
   }
 
+  private historyPortions(item: Record<string, unknown>): Array<Record<string, unknown>> {
+    return Array.isArray(item.portions)
+      ? item.portions.filter(
+        (portion): portion is Record<string, unknown> =>
+          typeof portion === "object" && portion !== null,
+      )
+      : [];
+  }
+
   render(): TemplateResult | typeof nothing {
     if (!this.hass || !this._config) return nothing;
     if (!this._config.entity) {
@@ -308,6 +317,13 @@ export class IrrigationManagerZoneCard extends LitElement {
     );
     const maxDuration = numberAttribute(zone, "max_manual_duration_seconds") ?? 604800;
     const maxVolumeRuntime = numberAttribute(zone, "max_manual_volume_runtime_seconds") ?? 604800;
+    const partialProcessId = stringAttribute(zone, "irrigation_process_id");
+    const partialTargetType = stringAttribute(zone, "target_type") ?? "duration";
+    const remainingTarget = numberAttribute(zone, "remaining_target");
+    const currentPortion = numberAttribute(zone, "current_portion");
+    const maximumPortions = numberAttribute(zone, "maximum_portions");
+    const nextPortionAt = stringAttribute(zone, "next_portion_at");
+    const latestSafeStart = stringAttribute(zone, "latest_safe_start");
     const historyFrom = this._historyTotal === 0 ? 0 : this._historyOffset + 1;
     const historyTo = Math.min(this._historyOffset + this._history.length, this._historyTotal);
     const historyPage = Math.floor(this._historyOffset / HISTORY_PAGE_SIZE) + 1;
@@ -332,6 +348,23 @@ export class IrrigationManagerZoneCard extends LitElement {
             ${this.metric(localize(this.hass, zone?.attributes.volume_control_available === true ? "water_month" : "runtime_month"), entity(this.hass, zone?.attributes.volume_control_available === true ? config.water_month_entity : config.runtime_month_entity))}
             ${this.metric(localize(this.hass, "next"), entity(this.hass, config.next_irrigation_entity))}
           </div>
+
+          ${partialProcessId ? html`
+            <section class="process-details" data-testid="partial-process" aria-label=${localize(this.hass, "partial_irrigation")}>
+              <strong>
+                ${localize(this.hass, "portion")} ${currentPortion ?? "–"}
+                ${localize(this.hass, "of")} ${maximumPortions ?? "–"}
+              </strong>
+              <span>
+                ${localize(this.hass, "remaining_target")}:
+                ${partialTargetType === "volume"
+                  ? this.formatLiters(remainingTarget)
+                  : this.formatHistoryDuration(remainingTarget)}
+              </span>
+              <span>${localize(this.hass, "next_portion")}: ${this.formatHistoryDate(nextPortionAt)}</span>
+              <span>${localize(this.hass, "latest_safe_start")}: ${this.formatHistoryDate(latestSafeStart)}</span>
+            </section>
+          ` : nothing}
 
           ${this._error ? html`<div class="error" role="alert">${this._error}</div>` : nothing}
           <div class="actions">
@@ -372,6 +405,33 @@ export class IrrigationManagerZoneCard extends LitElement {
                         ${item.actual_water == null ? nothing : html` · ${localize(this.hass, "water_amount")}: ${this.formatLiters(item.actual_water)}`}
                         · ${translatedHistory(this.hass, item.completion_reason)}
                       </span>
+                      ${this.historyPortions(item).length > 0 ? html`
+                        <details class="portion-details">
+                          <summary>
+                            ${this.historyPortions(item).length} ${localize(this.hass, "portions")}
+                          </summary>
+                          <div class="portion-list">
+                            ${this.historyPortions(item).map((portion) => html`
+                              <div>
+                                <strong>
+                                  ${localize(this.hass, "portion")} ${String(portion.sequence ?? "–")}:
+                                  ${this.historyTarget(portion)}
+                                </strong>
+                                <span class="history-period">
+                                  <time datetime=${String(portion.started_at ?? "")}>${this.formatHistoryDate(portion.started_at)}</time>
+                                  <span aria-hidden="true">–</span>
+                                  <time datetime=${String(portion.ended_at ?? "")}>${this.formatHistoryDate(portion.ended_at)}</time>
+                                </span>
+                                <span>
+                                  ${localize(this.hass, "runtime")}: ${this.formatHistoryDuration(portion.actual_duration)}
+                                  ${portion.actual_water == null ? nothing : html` · ${localize(this.hass, "water_amount")}: ${this.formatLiters(portion.actual_water)}`}
+                                  · ${translatedHistory(this.hass, portion.result)}
+                                </span>
+                              </div>
+                            `)}
+                          </div>
+                        </details>
+                      ` : nothing}
                     </article>
                   `)}
                 </div>

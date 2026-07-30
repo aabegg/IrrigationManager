@@ -20,9 +20,10 @@ from custom_components.irrigation_manager.models import (
     IrrigationExecutionState,
     ManualIrrigationRequest,
     StoredInstallationState,
+    WaterConsumptionRecord,
 )
 from custom_components.irrigation_manager.services import START_MANUAL_SCHEMA
-from custom_components.irrigation_manager.storage import IrrigationStore
+from custom_components.irrigation_manager.storage import STORAGE_MINOR_VERSION, IrrigationStore
 
 
 @pytest.mark.parametrize(
@@ -96,6 +97,7 @@ async def test_fresh_store_uses_only_current_v2_schema(hass: HomeAssistant) -> N
         "active_execution",
         "manual_requests",
         "irrigation_executions",
+        "irrigation_portions",
         "next_request_sequence",
         "meter_accumulated_liters",
         "meter_last_raw_liters",
@@ -343,6 +345,77 @@ async def test_store_minor_migration_adds_persistent_planning_rejections(
 
     assert state == rc19_state
     assert state.as_dict()["planning_rejections"] == []
+
+
+async def test_store_minor_migration_adds_inactive_partial_irrigation_records(
+    hass: HomeAssistant,
+) -> None:
+    """Upgrade the last legacy schema without changing its operational records."""
+    request = ManualIrrigationRequest(
+        request_id="legacy-request",
+        sequence=1,
+        zone_id="lawn",
+        zone_subentry_id="zone-lawn",
+        zone_name="Rasen",
+        zone_valve="switch.lawn",
+        main_valve=None,
+        target_type="duration",
+        target_value=60.0,
+        remaining_value=0.0,
+        created_at="2026-07-28T06:00:00+00:00",
+        expires_at="2026-07-28T07:00:00+00:00",
+        status="completed",
+        execution_id="legacy-execution",
+    )
+    execution = IrrigationExecutionState(
+        execution_id="legacy-execution",
+        request_id=request.request_id,
+        zone_id=request.zone_id,
+        target_type="duration",
+        target_value=60.0,
+        remaining_value=0.0,
+        status="completed",
+        created_at="2026-07-28T06:00:00+00:00",
+        delivered_liters=3.5,
+        delivered_duration_seconds=60.0,
+        ended_at="2026-07-28T06:01:00+00:00",
+        result="target_reached",
+        measurement_quality="measured",
+        measurement_origin="meter",
+    )
+    consumption = WaterConsumptionRecord(
+        recorded_at="2026-07-28T06:01:00+00:00",
+        amount_liters=3.5,
+        zone_id=request.zone_id,
+        source="manual",
+        quality="measured",
+        request_id=request.request_id,
+        execution_id=execution.execution_id,
+    )
+    legacy = StoredInstallationState(
+        installation_total_liters=31.5,
+        operation_enabled=False,
+        automation_enabled=True,
+        manual_requests=(request,),
+        irrigation_executions=(execution,),
+        water_consumption_history=(consumption,),
+    )
+    old_data = legacy.as_dict()
+    old_data.pop("irrigation_portions")
+    await Store[dict[str, object]](
+        hass,
+        2,
+        "irrigation_manager.pre-portions",
+        atomic_writes=True,
+        minor_version=4,
+    ).async_save(old_data)
+
+    state = await IrrigationStore(hass, "pre-portions").async_load()
+
+    assert STORAGE_MINOR_VERSION == 5
+    assert state == legacy
+    assert state.irrigation_portions == ()
+    assert state.as_dict()["irrigation_portions"] == []
 
 
 async def test_setup_publishes_v2_initial_snapshot_without_legacy_fields(

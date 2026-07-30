@@ -1,0 +1,5 @@
+# Teilgaben als persistenten Bewässerungsvorgang führen
+
+Dieses ADR dokumentiert die bereits in `docs/17_Neukonzept.md` verbindlich getroffene Entscheidung. Es ist keine unabhängige fachliche Quelle; bei Widersprüchen gilt das Neukonzept.
+
+Teilgaben werden als untergeordnete, einzeln disponierbare Abschnitte eines einzigen persistenten Bewässerungsvorgangs modelliert. Der bestehende Ventil-Executor führt weiterhin genau eine hydraulische Teilgabe aus und wartet niemals auf eine Sickerpause; während der Pause ist sein Hardware-Checkpoint freigegeben. Ein reines Prozessmodul entscheidet über Restziel, nächste Teilgabe, Pause, Abschluss und fail-closed Abbruch, während der Dispatcher nur Arbeit auswählt, die offene Vorgänge nicht über ihre späteste sichere Fortsetzung hinaus verzögert. Eine allgemeine Strategie- oder Plugin-Schnittstelle wird zunächst nicht eingeführt. Für Aufträge und Vorgänge ohne aktiven Teilgabensnapshot bleibt der bestehende Einmalausführungspfad unverändert, auch wenn dadurch vorübergehend zwei äussere Orchestrierungspfade bestehen; gemeinsame Persistenz-, Abrechnungs-, Diagnose- und Sicherheitsprimitiven verhindern deren fachliche Drift.

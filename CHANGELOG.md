@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.0-rc30 - 2026-07-30
+
+### Added
+
+- Add optional per-installation and per-zone partial irrigation with bounded portions,
+  hardware-free soak pauses, immutable order limits, and conservative feasibility checks.
+- Persist the shared irrigation process, subordinate portion evidence, safe continuation times,
+  cumulative delivery, recovery diagnostics, and read-only status/history details.
+- Allow other zones to use a soak gap only when their complete conservative occupancy cannot
+  delay any paused process beyond its latest safe continuation.
+
+### Changed
+
+- Release the partial-irrigation UI and new-order path while keeping both opt-ins disabled for
+  migrated and newly created configurations.
+- Require a fresh installation and zone opt-in after the minor-9 migration while preserving all
+  configured partial-irrigation limits.
+- Separate release acceptance from durable execution so a rollback blocks new partial snapshots
+  without stranding, rewriting, or erasing already accepted work.
+- Collect optional zone modules and their selected details before the final weekly schedule.
+
+### Fixed
+
+- Reject infeasible partial targets before manual persistence or automatic planning, including
+  portion-count, lifetime, hydraulic-overhead, soak-pause, and execution-window violations.
+- Recover prepared, watering, closed, and soaking boundaries fail-closed and account each known
+  duration or water delivery at most once.
+
 ## 0.1.0-rc29 - 2026-07-29
 
 ### Changed

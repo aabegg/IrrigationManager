@@ -65,6 +65,66 @@ def _object_dict(data: dict[str, object], key: str) -> dict[str, object]:
     return deepcopy(value)
 
 
+def _stored_int(
+    data: dict[str, object],
+    key: str,
+    *,
+    default: int,
+    minimum: int,
+) -> int:
+    """Read one bounded persisted integer without truncation or booleans."""
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"Stored {key} is malformed")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class PortionPolicySnapshot:
+    """Immutable durable safety limits selected when an order is accepted."""
+
+    target_type: str
+    maximum_portion_target: float
+    minimum_soak_seconds: float
+    maximum_portions: int
+    maximum_lifetime_seconds: float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> PortionPolicySnapshot:
+        """Deserialize one optional partial-irrigation policy snapshot."""
+        target_type = _required_string(data, "target_type")
+        if target_type not in {"duration", "volume"}:
+            raise ValueError("Stored portion target type is malformed")
+        maximum_portion_target = _number(data.get("maximum_portion_target"))
+        minimum_soak_seconds = _number(data.get("minimum_soak_seconds"))
+        maximum_lifetime_seconds = _number(data.get("maximum_lifetime_seconds"))
+        if (
+            min(
+                maximum_portion_target,
+                minimum_soak_seconds,
+                maximum_lifetime_seconds,
+            )
+            <= 0
+        ):
+            raise ValueError("Stored portion policy limits must be positive")
+        return cls(
+            target_type=target_type,
+            maximum_portion_target=maximum_portion_target,
+            minimum_soak_seconds=minimum_soak_seconds,
+            maximum_portions=_stored_int(
+                data,
+                "maximum_portions",
+                default=0,
+                minimum=1,
+            ),
+            maximum_lifetime_seconds=maximum_lifetime_seconds,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize the immutable policy as JSON-compatible data."""
+        return {item.name: getattr(self, item.name) for item in fields(self)}
+
+
 @dataclass(frozen=True, slots=True)
 class ManualIrrigationRequest:
     """Durable irrigation order with an immutable zone snapshot."""
@@ -89,6 +149,7 @@ class ManualIrrigationRequest:
     hard_time_limit_seconds: float | None = None
     delivery_runtime_limit_seconds: float | None = None
     operation_deadline_at: str | None = None
+    portion_policy: PortionPolicySnapshot | None = None
     resolved_inputs: dict[str, object] = field(default_factory=dict)
     revision: int = 1
 
@@ -104,6 +165,9 @@ class ManualIrrigationRequest:
             raise ValueError("Stored irrigation order status is malformed")
         if source not in {"manual", "automatic", "calibration"}:
             raise ValueError("Stored irrigation order source is malformed")
+        raw_portion_policy = data.get("portion_policy")
+        if raw_portion_policy is not None and not isinstance(raw_portion_policy, dict):
+            raise ValueError("Stored portion policy is malformed")
         return cls(
             request_id=_required_string(data, "request_id"),
             sequence=int(_number(data.get("sequence"))),
@@ -125,6 +189,11 @@ class ManualIrrigationRequest:
             hard_time_limit_seconds=_optional_number(data, "hard_time_limit_seconds"),
             delivery_runtime_limit_seconds=_optional_number(data, "delivery_runtime_limit_seconds"),
             operation_deadline_at=_optional_string(data, "operation_deadline_at"),
+            portion_policy=(
+                PortionPolicySnapshot.from_dict(raw_portion_policy)
+                if isinstance(raw_portion_policy, dict)
+                else None
+            ),
             resolved_inputs=_object_dict(data, "resolved_inputs"),
             revision=int(_number(data.get("revision"), default=1)),
         )
@@ -132,6 +201,9 @@ class ManualIrrigationRequest:
     def as_dict(self) -> dict[str, object]:
         """Serialize one irrigation order."""
         result = {item.name: getattr(self, item.name) for item in fields(self)}
+        result["portion_policy"] = (
+            self.portion_policy.as_dict() if self.portion_policy is not None else None
+        )
         result["resolved_inputs"] = deepcopy(self.resolved_inputs)
         return result
 
@@ -148,13 +220,29 @@ class AutomaticCancellationReason(StrEnum):
     PLANNING_REPLACED = "planning_replaced"
     RESTART_INTERRUPTED = "restart_interrupted"
     USER_REQUESTED = "user_requested"
+    OPERATION_RELEASE_REVOKED = "operation_release_revoked"
+    ZONE_OPERATION_RELEASE_REVOKED = "zone_operation_release_revoked"
+    EMERGENCY_STOP = "emergency_stop"
+
+
+class IrrigationCancellationReason(StrEnum):
+    """Closed reasons by which one whole irrigation process can be stopped."""
+
+    USER_REQUESTED = "user_requested"
+    OPERATION_DISABLED = "operation_disabled"
+    AUTOMATION_DISABLED = "automation_disabled"
+    ZONE_DISABLED = "zone_disabled"
+    ZONE_AUTOMATION_DISABLED = "zone_automation_disabled"
+    EMERGENCY_STOP = "emergency_stop"
 
 
 REPLANNABLE_AUTOMATIC_CANCELLATION_REASONS = frozenset(
     {
         AutomaticCancellationReason.AUTOMATION_RELEASE_REVOKED,
         AutomaticCancellationReason.CONFIGURATION_CHANGED,
+        AutomaticCancellationReason.OPERATION_RELEASE_REVOKED,
         AutomaticCancellationReason.PLANNING_REPLACED,
+        AutomaticCancellationReason.ZONE_OPERATION_RELEASE_REVOKED,
     }
 )
 
@@ -247,6 +335,15 @@ class IrrigationExecutionState:
     measurement_quality: str = "unknown"
     measurement_origin: str = "unknown"
     warnings: tuple[str, ...] = ()
+    portion_policy: PortionPolicySnapshot | None = None
+    process_started_at: str | None = None
+    process_deadline_at: str | None = None
+    hydraulic_overhead_seconds_per_portion: float = 0.0
+    next_portion_at: str | None = None
+    next_portion_sequence: int = 1
+    completed_portion_count: int = 0
+    cancellation_requested: bool = False
+    cancellation_reason: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> IrrigationExecutionState:
@@ -254,6 +351,12 @@ class IrrigationExecutionState:
         target_type = _required_string(data, "target_type")
         if target_type not in {"duration", "volume"}:
             raise ValueError("Stored irrigation execution target is malformed")
+        raw_portion_policy = data.get("portion_policy")
+        if raw_portion_policy is not None and not isinstance(raw_portion_policy, dict):
+            raise ValueError("Stored execution portion policy is malformed")
+        cancellation_requested = data.get("cancellation_requested", False)
+        if not isinstance(cancellation_requested, bool):
+            raise ValueError("Stored execution cancellation flag is malformed")
         return cls(
             execution_id=_required_string(data, "execution_id"),
             request_id=_required_string(data, "request_id"),
@@ -274,10 +377,103 @@ class IrrigationExecutionState:
             measurement_quality=_stored_string(data, "measurement_quality", "unknown"),
             measurement_origin=_stored_string(data, "measurement_origin", "unknown"),
             warnings=_string_tuple(data, "warnings"),
+            portion_policy=(
+                PortionPolicySnapshot.from_dict(raw_portion_policy)
+                if isinstance(raw_portion_policy, dict)
+                else None
+            ),
+            process_started_at=_optional_string(data, "process_started_at"),
+            process_deadline_at=_optional_string(data, "process_deadline_at"),
+            hydraulic_overhead_seconds_per_portion=_number(
+                data.get("hydraulic_overhead_seconds_per_portion"),
+                default=0.0,
+            ),
+            next_portion_at=_optional_string(data, "next_portion_at"),
+            next_portion_sequence=_stored_int(
+                data,
+                "next_portion_sequence",
+                default=1,
+                minimum=1,
+            ),
+            completed_portion_count=_stored_int(
+                data,
+                "completed_portion_count",
+                default=0,
+                minimum=0,
+            ),
+            cancellation_requested=cancellation_requested,
+            cancellation_reason=_optional_string(data, "cancellation_reason"),
         )
 
     def as_dict(self) -> dict[str, object]:
         """Serialize one irrigation execution."""
+        result = {item.name: getattr(self, item.name) for item in fields(self)}
+        result["warnings"] = list(self.warnings)
+        result["portion_policy"] = (
+            self.portion_policy.as_dict() if self.portion_policy is not None else None
+        )
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class IrrigationPortionState:
+    """Durable evidence for one subordinate partial delivery."""
+
+    portion_id: str
+    execution_id: str
+    sequence: int
+    target_type: str
+    target_value: float
+    status: str
+    prepared_at: str
+    opening_attempted_at: str | None = None
+    watering_started_at: str | None = None
+    watering_ended_at: str | None = None
+    delivered_liters: float = 0.0
+    delivered_duration_seconds: float = 0.0
+    result: str | None = None
+    measurement_quality: str = "unknown"
+    measurement_origin: str = "unknown"
+    warnings: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> IrrigationPortionState:
+        """Deserialize one strict durable portion record."""
+        target_type = _required_string(data, "target_type")
+        status = _required_string(data, "status")
+        if target_type not in {"duration", "volume"}:
+            raise ValueError("Stored irrigation portion target is malformed")
+        if status not in {"prepared", "watering", "settled", "interrupted"}:
+            raise ValueError("Stored irrigation portion status is malformed")
+        target_value = _number(data.get("target_value"))
+        delivered_liters = _number(data.get("delivered_liters"), default=0.0)
+        delivered_duration = _number(
+            data.get("delivered_duration_seconds"),
+            default=0.0,
+        )
+        if target_value <= 0 or delivered_liters < 0 or delivered_duration < 0:
+            raise ValueError("Stored irrigation portion values are malformed")
+        return cls(
+            portion_id=_required_string(data, "portion_id"),
+            execution_id=_required_string(data, "execution_id"),
+            sequence=_stored_int(data, "sequence", default=0, minimum=1),
+            target_type=target_type,
+            target_value=target_value,
+            status=status,
+            prepared_at=_required_string(data, "prepared_at"),
+            opening_attempted_at=_optional_string(data, "opening_attempted_at"),
+            watering_started_at=_optional_string(data, "watering_started_at"),
+            watering_ended_at=_optional_string(data, "watering_ended_at"),
+            delivered_liters=delivered_liters,
+            delivered_duration_seconds=delivered_duration,
+            result=_optional_string(data, "result"),
+            measurement_quality=_stored_string(data, "measurement_quality", "unknown"),
+            measurement_origin=_stored_string(data, "measurement_origin", "unknown"),
+            warnings=_string_tuple(data, "warnings"),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize one durable portion record."""
         result = {item.name: getattr(self, item.name) for item in fields(self)}
         result["warnings"] = list(self.warnings)
         return result
@@ -294,6 +490,7 @@ class WaterConsumptionRecord:
     quality: str
     request_id: str | None = None
     execution_id: str | None = None
+    portion_id: str | None = None
     warnings: tuple[str, ...] = ()
 
     @classmethod
@@ -307,6 +504,7 @@ class WaterConsumptionRecord:
             quality=_required_string(data, "quality"),
             request_id=_optional_string(data, "request_id"),
             execution_id=_optional_string(data, "execution_id"),
+            portion_id=_optional_string(data, "portion_id"),
             warnings=_string_tuple(data, "warnings"),
         )
 
@@ -320,8 +518,29 @@ class WaterConsumptionRecord:
             "quality": self.quality,
             "request_id": self.request_id,
             "execution_id": self.execution_id,
+            "portion_id": self.portion_id,
             "warnings": list(self.warnings),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PartialProcessSnapshot:
+    """Read-only projection of one active or hardware-free partial process."""
+
+    request_id: str
+    execution_id: str
+    zone_id: str
+    target_type: str
+    status: str
+    remaining_value: float
+    next_portion_at: str | None
+    current_portion: int
+    maximum_portions: int
+    latest_safe_start: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the diagnostics and entity-attribute representation."""
+        return {item.name: getattr(self, item.name) for item in fields(self)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +570,13 @@ class InstallationSnapshot:
     pending_request_count: int = 0
     active_request_id: str | None = None
     active_execution_id: str | None = None
+    partial_zone_id: str | None = None
+    partial_remaining_value: float | None = None
+    partial_next_portion_at: str | None = None
+    partial_current_portion: int | None = None
+    partial_maximum_portions: int | None = None
+    partial_latest_safe_start: str | None = None
+    partial_processes: tuple[PartialProcessSnapshot, ...] = ()
     automation_enabled: bool = True
     operation_enabled: bool = True
     zone_operation_enabled: dict[str, bool] = field(default_factory=dict)
@@ -385,10 +611,19 @@ class ActiveExecutionState:
     zone_opening_at: str | None = None
     request_id: str | None = None
     execution_id: str | None = None
+    portion_id: str | None = None
+    portion_sequence: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> ActiveExecutionState:
         """Deserialize one v2 active execution checkpoint."""
+        portion_sequence = data.get("portion_sequence")
+        if portion_sequence is not None and (
+            isinstance(portion_sequence, bool)
+            or not isinstance(portion_sequence, int)
+            or portion_sequence <= 0
+        ):
+            raise ValueError("Stored active portion sequence is malformed")
         return cls(
             zone_id=_required_string(data, "zone_id"),
             zone_valve=_required_string(data, "zone_valve"),
@@ -405,6 +640,8 @@ class ActiveExecutionState:
             zone_opening_at=_optional_string(data, "zone_opening_at"),
             request_id=_optional_string(data, "request_id"),
             execution_id=_optional_string(data, "execution_id"),
+            portion_id=_optional_string(data, "portion_id"),
+            portion_sequence=portion_sequence,
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -507,6 +744,13 @@ class DispatchReason(StrEnum):
     UNCLEAN_RESTART = "unclean_restart"
     DISPATCHER_ERROR = "dispatcher_error"
     AUTOMATIC_PLANNING_ERROR = "automatic_planning_error"
+    SOAK_PAUSE = "soak_pause"
+    PORTION_READY = "portion_ready"
+    PORTION_LIMIT_REACHED = "portion_limit_reached"
+    PROCESS_LIFETIME_EXCEEDED = "process_lifetime_exceeded"
+    PROCESS_DEADLINE_EXCEEDED = "process_deadline_exceeded"
+    PORTION_STATE_INCONSISTENT = "portion_state_inconsistent"
+    PORTION_RECOVERY_UNSAFE = "portion_recovery_unsafe"
 
 
 class PlanningRejectionReason(StrEnum):
@@ -515,6 +759,8 @@ class PlanningRejectionReason(StrEnum):
     SEASONAL_TARGET_DOES_NOT_FIT = "seasonal_target_does_not_fit"
     WATER_DEFICIT_BELOW_THRESHOLD = "water_deficit_below_threshold"
     WATER_BALANCE_TARGET_DOES_NOT_FIT = "water_balance_target_does_not_fit"
+    PARTIAL_IRRIGATION_PORTION_LIMIT_EXCEEDED = "partial_irrigation_portion_limit_exceeded"
+    PARTIAL_IRRIGATION_WINDOW_DOES_NOT_FIT = "partial_irrigation_window_does_not_fit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -655,6 +901,7 @@ class StoredInstallationState:
     active_execution: ActiveExecutionState | None = None
     manual_requests: tuple[ManualIrrigationRequest, ...] = ()
     irrigation_executions: tuple[IrrigationExecutionState, ...] = ()
+    irrigation_portions: tuple[IrrigationPortionState, ...] = ()
     next_request_sequence: int = 1
     meter_accumulated_liters: float | None = None
     meter_last_raw_liters: float | None = None
@@ -683,11 +930,18 @@ class StoredInstallationState:
             return cls()
         raw_requests = data.get("manual_requests", [])
         raw_executions = data.get("irrigation_executions", [])
+        raw_portions = data.get("irrigation_portions", [])
         raw_history = data.get("water_consumption_history", [])
         raw_corrections = data.get("meter_correction_history", [])
         if not all(
             isinstance(value, list) and all(isinstance(item, dict) for item in value)
-            for value in (raw_requests, raw_executions, raw_history, raw_corrections)
+            for value in (
+                raw_requests,
+                raw_executions,
+                raw_portions,
+                raw_history,
+                raw_corrections,
+            )
         ):
             raise ValueError("Stored irrigation records are malformed")
         raw_active = data.get("active_execution")
@@ -796,6 +1050,10 @@ class StoredInstallationState:
                 IrrigationExecutionState.from_dict(item)
                 for item in cast(list[dict[str, object]], raw_executions)
             ),
+            irrigation_portions=tuple(
+                IrrigationPortionState.from_dict(item)
+                for item in cast(list[dict[str, object]], raw_portions)
+            ),
             next_request_sequence=next_sequence,
             meter_accumulated_liters=_optional_number(data, "meter_accumulated_liters"),
             meter_last_raw_liters=_optional_number(data, "meter_last_raw_liters"),
@@ -884,6 +1142,7 @@ class StoredInstallationState:
             "irrigation_executions": [
                 execution.as_dict() for execution in self.irrigation_executions
             ],
+            "irrigation_portions": [portion.as_dict() for portion in self.irrigation_portions],
             "next_request_sequence": self.next_request_sequence,
             "meter_accumulated_liters": self.meter_accumulated_liters,
             "meter_last_raw_liters": self.meter_last_raw_liters,

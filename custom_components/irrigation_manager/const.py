@@ -5,7 +5,8 @@ from typing import Final
 DOMAIN: Final = "irrigation_manager"
 INTEGRATION_NAME: Final = "Irrigation Manager"
 CONFIG_ENTRY_VERSION: Final = 2
-CONFIG_ENTRY_MINOR_VERSION: Final = 7
+CONFIG_ENTRY_MINOR_VERSION: Final = 9
+PARTIAL_IRRIGATION_RELEASED: Final = True
 
 CONF_MAIN_VALVE: Final = "main_valve"
 CONF_WATER_METER: Final = "water_meter"
@@ -46,6 +47,11 @@ CONF_EFFECTIVE_APPLICATION_RATE_MM_H: Final = "effective_application_rate_mm_h"
 CONF_IRRIGATED_AREA_M2: Final = "irrigated_area_m2"
 CONF_IRRIGATION_EFFICIENCY: Final = "irrigation_efficiency"
 CONF_SOAK_MODULE_ENABLED: Final = "soak_module_enabled"
+CONF_USE_SOAK_MODULE: Final = "use_soak_module"
+CONF_MAXIMUM_PORTION_TARGET: Final = "maximum_portion_target"
+CONF_MINIMUM_SOAK_SECONDS: Final = "minimum_soak_seconds"
+CONF_MAXIMUM_PORTIONS: Final = "maximum_portions"
+CONF_MAXIMUM_LIFETIME_SECONDS: Final = "maximum_lifetime_seconds"
 CONF_USE_PLANT_SITE_MODEL: Final = "use_plant_site_model"
 CONF_SUBAREAS: Final = "subareas"
 CONF_VOLUME_MAX_RUNTIME: Final = "volume_max_runtime"

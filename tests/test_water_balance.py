@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from custom_components.irrigation_manager.models import StoredInstallationState
-from custom_components.irrigation_manager.storage import STORAGE_MINOR_VERSION, _StateStore
+from custom_components.irrigation_manager.storage import _StateStore
 from custom_components.irrigation_manager.water_balance import (
     IrrigationContribution,
     WateringMode,
@@ -764,7 +764,6 @@ async def test_stage4_storage_migration_adds_empty_zone_balances() -> None:
         None, 2, 2, old_state
     )
 
-    assert STORAGE_MINOR_VERSION == 4
     assert migrated["installation_total_liters"] == 42.0
     assert migrated["zone_water_balances"] == {}
 

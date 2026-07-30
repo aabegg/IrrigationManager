@@ -432,6 +432,7 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
         self._attr_options = [
             "idle",
             "watering",
+            "soaking",
             "error",
             "safety_lock",
             "emergency_stop",
@@ -457,18 +458,34 @@ class InstallationStatusSensor(CoordinatorEntity[IrrigationCoordinator], SensorE
     @override
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose the native-action installation identifier."""
-        return {
+        snapshot = self.coordinator.data
+        attributes: dict[str, object] = {
             "config_entry_id": self._config_entry_id,
             "card_name": self._card_name,
             "card_entities": registry_card_entities(
                 self._hass, self._installation_id, INSTALLATION_CARD_ROLES
             ),
             "volume_control_available": (
-                self._meter_configured
-                and self.coordinator.data.meter_measurement_quality == "measured"
+                self._meter_configured and snapshot.meter_measurement_quality == "measured"
             ),
-            "recent_history": list(self.coordinator.data.recent_history),
+            "recent_history": list(snapshot.recent_history),
+            "irrigation_processes": [process.as_dict() for process in snapshot.partial_processes],
         }
+        if snapshot.partial_remaining_value is not None:
+            attributes.update(
+                {
+                    "irrigation_process_id": snapshot.active_execution_id,
+                    "irrigation_request_id": snapshot.active_request_id,
+                    "partial_zone_id": snapshot.partial_zone_id,
+                    "target_type": snapshot.partial_processes[0].target_type,
+                    "remaining_target": snapshot.partial_remaining_value,
+                    "next_portion_at": snapshot.partial_next_portion_at,
+                    "current_portion": snapshot.partial_current_portion,
+                    "maximum_portions": snapshot.partial_maximum_portions,
+                    "latest_safe_start": snapshot.partial_latest_safe_start,
+                }
+            )
+        return attributes
 
     @override
     async def async_added_to_hass(self) -> None:
@@ -771,6 +788,7 @@ class ZoneStatusContractSensor(_ZoneSensor):
         self._attr_options = [
             "idle",
             "watering",
+            "soaking",
             "safety_lock",
             "disabled",
             "installation_disabled",
@@ -788,6 +806,10 @@ class ZoneStatusContractSensor(_ZoneSensor):
     @override
     def extra_state_attributes(self) -> dict[str, object]:
         snapshot = self.coordinator.data
+        partial_process = next(
+            (process for process in snapshot.partial_processes if process.zone_id == self._zone_id),
+            None,
+        )
         attributes: dict[str, object] = {
             "config_entry_id": self._config_entry_id,
             "zone_subentry_id": self._zone_subentry_id,
@@ -799,10 +821,26 @@ class ZoneStatusContractSensor(_ZoneSensor):
             "volume_control_available": (
                 self._meter_configured and snapshot.meter_measurement_quality == "measured"
             ),
-            "active_execution": snapshot.active_execution_id is not None,
+            "active_execution": (
+                snapshot.active_zone_id == self._zone_id
+                and snapshot.active_execution_id is not None
+            ),
         }
         if snapshot.active_zone_id == self._zone_id and snapshot.active_execution_id:
             attributes["active_execution_id"] = snapshot.active_execution_id
+        if partial_process is not None:
+            attributes.update(
+                {
+                    "irrigation_process_id": partial_process.execution_id,
+                    "irrigation_request_id": partial_process.request_id,
+                    "target_type": partial_process.target_type,
+                    "remaining_target": partial_process.remaining_value,
+                    "next_portion_at": partial_process.next_portion_at,
+                    "current_portion": partial_process.current_portion,
+                    "maximum_portions": partial_process.maximum_portions,
+                    "latest_safe_start": partial_process.latest_safe_start,
+                }
+            )
         if self._max_manual_volume_runtime_seconds is not None:
             attributes["max_manual_volume_runtime_seconds"] = (
                 self._max_manual_volume_runtime_seconds

@@ -23,7 +23,7 @@ Ein hydraulisch nicht separat schaltbarer Bereich innerhalb einer Bewässerungsz
 _Avoid_: Unterzone
 
 **Teilgabe**:
-Ein begrenzter Abschnitt der Zielmenge oder Zieldauer einer Bewässerungszone. Mehrere Teilgaben können durch Sickerpausen getrennt werden, ohne den verbleibenden Wasserbedarf zu verwerfen.
+Ein begrenzter Abschnitt der Zielmenge oder Zieldauer eines Bewässerungsvorgangs. Mehrere Teilgaben können durch Sickerpausen getrennt werden, ohne das Restziel zu verwerfen. Eine Teilgabe ist kein eigenständiger Bewässerungsauftrag.
 
 **Sickerpause**:
 Eine bewässerungsfreie Zeit zwischen zwei Teilgaben derselben Zone, in der Wasser in den Boden eindringen kann und andere Zonen bewässert werden dürfen.
@@ -38,6 +38,9 @@ Die Ableitung noch nicht begonnener automatischer Bewässerungsaufträge aus den
 **Bewässerungsvorgang**:
 Die Ausführung eines angenommenen Bewässerungsauftrags für genau eine Zone. Ein Vorgang kann mehrere Teilgaben umfassen und besitzt ein gemeinsames Ziel sowie ein abschließendes Ergebnis.
 _Avoid_: Zyklus, Lauf, Session
+
+**Restziel**:
+Der noch nicht gelieferte Anteil des gemeinsamen Bewässerungsziels eines begonnenen Bewässerungsvorgangs. Das Restziel bleibt über Teilgaben und Sickerpausen erhalten und ist kein neuer Bewässerungsauftrag.
 
 **Bewässerungsmodus**:
 Die zonenspezifische Entscheidung, ob ein zulässiger Termin nur bei errechnetem Wasserbedarf ausgeführt wird oder eine garantierte Mindestbewässerung auslöst.

@@ -38,6 +38,7 @@ from homeassistant.helpers.selector import (
     TimeSelector,
 )
 
+from . import const as integration_const
 from .const import (
     CONF_AUTOMATION_ENABLED,
     CONF_BASE_TARGET,
@@ -56,12 +57,16 @@ from .const import (
     CONF_MAIN_VALVE,
     CONF_MAKE_UP_SCHEDULE,
     CONF_MAXIMUM_DEFICIT_MM,
+    CONF_MAXIMUM_LIFETIME_SECONDS,
     CONF_MAXIMUM_MAKE_UP_DAYS,
     CONF_MAXIMUM_MAKE_UP_TARGET,
+    CONF_MAXIMUM_PORTION_TARGET,
+    CONF_MAXIMUM_PORTIONS,
     CONF_METER_ENTITY,
     CONF_METER_TYPE,
     CONF_MINIMUM_FORECAST_PRECIPITATION_MM,
     CONF_MINIMUM_FORECAST_PROBABILITY,
+    CONF_MINIMUM_SOAK_SECONDS,
     CONF_NEEDS_RECONFIGURATION,
     CONF_OPERATION_ENABLED,
     CONF_PLANT_SITE_MODULE_ENABLED,
@@ -74,6 +79,7 @@ from .const import (
     CONF_USE_FORECAST_POSTPONEMENT,
     CONF_USE_PLANT_SITE_MODEL,
     CONF_USE_SEASONAL_ADJUSTMENT,
+    CONF_USE_SOAK_MODULE,
     CONF_USE_SOIL_MOISTURE_FEEDBACK,
     CONF_USE_WEATHER_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
@@ -253,13 +259,14 @@ def _meter_details_schema(meter_type: str) -> vol.Schema:
 
 def _extensions_schema() -> vol.Schema:
     """Expose only extension modules completed in the current stage."""
-    return vol.Schema(
-        {
-            vol.Required(CONF_PLANT_SITE_MODULE_ENABLED, default=False): BooleanSelector(),
-            vol.Required(CONF_SEASONAL_MODULE_ENABLED, default=False): BooleanSelector(),
-            vol.Required(CONF_WEATHER_MODULE_ENABLED, default=False): BooleanSelector(),
-        }
-    )
+    fields: dict[object, object] = {
+        vol.Required(CONF_PLANT_SITE_MODULE_ENABLED, default=False): BooleanSelector(),
+        vol.Required(CONF_SEASONAL_MODULE_ENABLED, default=False): BooleanSelector(),
+        vol.Required(CONF_WEATHER_MODULE_ENABLED, default=False): BooleanSelector(),
+    }
+    if integration_const.PARTIAL_IRRIGATION_RELEASED:
+        fields[vol.Required(CONF_SOAK_MODULE_ENABLED, default=False)] = BooleanSelector()
+    return vol.Schema(fields)
 
 
 def _weather_sources_schema() -> vol.Schema:
@@ -341,6 +348,92 @@ def _soil_moisture_usage_schema(default: bool = False) -> vol.Schema:
     return vol.Schema(
         {vol.Required(CONF_USE_SOIL_MOISTURE_FEEDBACK, default=default): BooleanSelector()}
     )
+
+
+def _soak_usage_schema(default: bool = False) -> vol.Schema:
+    """Choose whether one zone uses the available partial-irrigation module."""
+    return vol.Schema({vol.Required(CONF_USE_SOAK_MODULE, default=default): BooleanSelector()})
+
+
+def _module_usage_schema(installation: Mapping[str, object]) -> vol.Schema:
+    """Collect all available zone-module opt-ins in one compact step."""
+    fields: dict[vol.Marker, object] = {}
+    for availability_key, usage_key in (
+        (CONF_SEASONAL_MODULE_ENABLED, CONF_USE_SEASONAL_ADJUSTMENT),
+        (CONF_WEATHER_MODULE_ENABLED, CONF_USE_WEATHER_ADJUSTMENT),
+        (CONF_SOAK_MODULE_ENABLED, CONF_USE_SOAK_MODULE),
+    ):
+        if installation.get(availability_key) is True and (
+            availability_key != CONF_SOAK_MODULE_ENABLED
+            or integration_const.PARTIAL_IRRIGATION_RELEASED
+        ):
+            fields[vol.Required(usage_key, default=False)] = BooleanSelector()
+    return vol.Schema(fields)
+
+
+def _has_configurable_zone_module(installation: Mapping[str, object]) -> bool:
+    """Return whether a compact module-usage step has at least one field."""
+    return (
+        installation.get(CONF_SEASONAL_MODULE_ENABLED) is True
+        or installation.get(CONF_WEATHER_MODULE_ENABLED) is True
+        or (
+            integration_const.PARTIAL_IRRIGATION_RELEASED
+            and installation.get(CONF_SOAK_MODULE_ENABLED) is True
+        )
+    )
+
+
+def _soak_details_schema(control_type: str) -> vol.Schema:
+    """Collect the four explicit and bounded partial-irrigation limits."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_MAXIMUM_PORTION_TARGET): _target_selector(control_type),
+            vol.Required(CONF_MINIMUM_SOAK_SECONDS): _duration_selector(),
+            vol.Required(CONF_MAXIMUM_PORTIONS): NumberSelector(
+                NumberSelectorConfig(min=1, max=100, step=1, mode=NumberSelectorMode.BOX)
+            ),
+            vol.Required(CONF_MAXIMUM_LIFETIME_SECONDS): _duration_selector(),
+        }
+    )
+
+
+def _soak_details_form_values(zone: Mapping[str, object]) -> dict[str, object]:
+    """Format persisted seconds for native duration selectors."""
+    values = dict(zone)
+    target = positive_number(zone.get(CONF_MAXIMUM_PORTION_TARGET))
+    if zone.get(CONF_CONTROL_TYPE) == CONTROL_TYPE_TIME and target is not None:
+        values[CONF_MAXIMUM_PORTION_TARGET] = format_duration(target)
+    for key in (CONF_MINIMUM_SOAK_SECONDS, CONF_MAXIMUM_LIFETIME_SECONDS):
+        value = positive_number(zone.get(key))
+        if value is not None:
+            values[key] = format_duration(value)
+    return values
+
+
+def _canonical_soak_details(
+    user_input: Mapping[str, object], *, control_type: str
+) -> dict[str, object]:
+    """Validate all partial-irrigation limits as one indivisible contract."""
+    maximum_portion_target = _canonical_target(
+        user_input[CONF_MAXIMUM_PORTION_TARGET], control_type
+    )
+    minimum_soak_seconds = _form_duration(user_input[CONF_MINIMUM_SOAK_SECONDS])
+    maximum_lifetime_seconds = _form_duration(user_input[CONF_MAXIMUM_LIFETIME_SECONDS])
+    raw_maximum_portions = user_input[CONF_MAXIMUM_PORTIONS]
+    if (
+        isinstance(raw_maximum_portions, bool)
+        or not isinstance(raw_maximum_portions, int | float)
+        or not math.isfinite(float(raw_maximum_portions))
+        or not float(raw_maximum_portions).is_integer()
+        or not 1 <= float(raw_maximum_portions) <= 100
+    ):
+        raise ValueError("Maximum portions must be a positive bounded integer")
+    return {
+        CONF_MAXIMUM_PORTION_TARGET: maximum_portion_target,
+        CONF_MINIMUM_SOAK_SECONDS: minimum_soak_seconds,
+        CONF_MAXIMUM_PORTIONS: int(raw_maximum_portions),
+        CONF_MAXIMUM_LIFETIME_SECONDS: maximum_lifetime_seconds,
+    }
 
 
 def _soil_moisture_assignment_schema(zone: Mapping[str, object], language: str) -> vol.Schema:
@@ -1336,7 +1429,11 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_SEASONAL_MODULE_ENABLED: bool(user_input[CONF_SEASONAL_MODULE_ENABLED]),
                     CONF_WEATHER_MODULE_ENABLED: bool(user_input[CONF_WEATHER_MODULE_ENABLED]),
                     CONF_WEATHER_SOURCES: {},
-                    CONF_SOAK_MODULE_ENABLED: False,
+                    CONF_SOAK_MODULE_ENABLED: (
+                        bool(user_input.get(CONF_SOAK_MODULE_ENABLED, False))
+                        if integration_const.PARTIAL_IRRIGATION_RELEASED
+                        else False
+                    ),
                 }
             )
             if self._installation[CONF_WEATHER_MODULE_ENABLED]:
@@ -1464,11 +1561,18 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                         self.hass.config.language, self._recommendation
                     ),
                 )
-            if self._installation.get(CONF_SEASONAL_MODULE_ENABLED) is True:
-                return await self.async_step_first_zone_seasonal()
-            self._first_zone[CONF_USE_SEASONAL_ADJUSTMENT] = False
-            self._first_zone[CONF_SEASONAL_FACTORS] = canonical_seasonal_factors({})
-            return await self._async_first_zone_after_seasonal()
+            if _has_configurable_zone_module(self._installation):
+                return await self.async_step_first_zone_modules()
+            self._first_zone.update(
+                {
+                    CONF_USE_SEASONAL_ADJUSTMENT: False,
+                    CONF_SEASONAL_FACTORS: canonical_seasonal_factors({}),
+                    CONF_USE_WEATHER_ADJUSTMENT: False,
+                    CONF_USE_SOAK_MODULE: False,
+                }
+            )
+            self._first_zone.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
+            return await self.async_step_installation_schedule()
         return self.async_show_form(
             step_id="installation_baseline",
             data_schema=schema,
@@ -1478,22 +1582,34 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             last_step=False,
         )
 
-    async def async_step_first_zone_seasonal(
+    async def async_step_first_zone_modules(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose whether the first zone uses seasonal adjustment."""
+        """Choose every available optional module in one compact zone step."""
         if user_input is None:
             return self.async_show_form(
-                step_id="first_zone_seasonal",
-                data_schema=_seasonal_usage_schema(),
+                step_id="first_zone_modules",
+                data_schema=_module_usage_schema(self._installation),
                 last_step=False,
             )
-        enabled = _apply_seasonal_usage(
-            self._first_zone, user_input, reset_curve_when_disabled=True
+        seasonal = self._installation.get(CONF_SEASONAL_MODULE_ENABLED) is True and bool(
+            user_input.get(CONF_USE_SEASONAL_ADJUSTMENT, False)
         )
-        if not enabled:
-            return await self._async_first_zone_after_seasonal()
-        return await self.async_step_first_zone_seasonal_curve()
+        weather = self._installation.get(CONF_WEATHER_MODULE_ENABLED) is True and bool(
+            user_input.get(CONF_USE_WEATHER_ADJUSTMENT, False)
+        )
+        soak = (
+            integration_const.PARTIAL_IRRIGATION_RELEASED
+            and self._installation.get(CONF_SOAK_MODULE_ENABLED) is True
+            and bool(user_input.get(CONF_USE_SOAK_MODULE, False))
+        )
+        self._first_zone[CONF_USE_SEASONAL_ADJUSTMENT] = seasonal
+        self._first_zone[CONF_USE_WEATHER_ADJUSTMENT] = weather
+        self._first_zone[CONF_USE_SOAK_MODULE] = soak
+        if seasonal:
+            return await self.async_step_first_zone_seasonal_curve()
+        self._first_zone[CONF_SEASONAL_FACTORS] = canonical_seasonal_factors({})
+        return await self._async_first_zone_after_seasonal_details()
 
     async def async_step_first_zone_seasonal_curve(
         self, user_input: dict[str, Any] | None = None
@@ -1530,36 +1646,19 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 data_schema=_seasonal_confirmation_schema(),
                 errors=submission.errors,
                 description_placeholders={"preview": submission.preview},
-                last_step=True,
+                last_step=False,
             )
         self._first_zone[CONF_SEASONAL_FACTORS] = dict(self._seasonal_factors)
-        return await self._async_first_zone_after_seasonal()
+        return await self._async_first_zone_after_seasonal_details()
 
-    async def _async_first_zone_after_seasonal(self) -> ConfigFlowResult:
-        """Route through weather details only when the installation exposes them."""
-        if self._installation.get(CONF_WEATHER_MODULE_ENABLED) is True:
-            return await self.async_step_first_zone_weather()
+    async def _async_first_zone_after_seasonal_details(self) -> ConfigFlowResult:
+        """Route from seasonal details to the selected weather details."""
+        if self._first_zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True:
+            return await self.async_step_first_zone_weather_details()
         self._first_zone[CONF_USE_WEATHER_ADJUSTMENT] = False
         self._first_zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = False
         self._first_zone.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
-        return await self.async_step_installation_schedule()
-
-    async def async_step_first_zone_weather(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Choose whether the first zone uses the measured water balance."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="first_zone_weather",
-                data_schema=_weather_usage_schema(),
-                last_step=False,
-            )
-        self._first_zone[CONF_USE_WEATHER_ADJUSTMENT] = bool(
-            user_input[CONF_USE_WEATHER_ADJUSTMENT]
-        )
-        if not self._first_zone[CONF_USE_WEATHER_ADJUSTMENT]:
-            return await self.async_step_installation_schedule()
-        return await self.async_step_first_zone_weather_details()
+        return await self._async_first_zone_after_weather_details()
 
     async def async_step_first_zone_weather_details(
         self, user_input: dict[str, Any] | None = None
@@ -1582,7 +1681,16 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors={"base": "weather_settings_invalid"},
                 last_step=False,
             )
-        return await self.async_step_installation_schedule()
+        return await self._async_first_zone_after_weather_details()
+
+    async def _async_first_zone_after_weather_details(self) -> ConfigFlowResult:
+        """Route selected forecast behavior before partial details and weekly plan."""
+        if self._first_zone.get(
+            CONF_USE_WEATHER_ADJUSTMENT
+        ) is True and _has_available_forecast_source(self.hass, self._installation):
+            return await self.async_step_first_zone_forecast()
+        self._first_zone[CONF_USE_FORECAST_POSTPONEMENT] = False
+        return await self._async_first_zone_after_forecast()
 
     async def async_step_installation_schedule(
         self, user_input: dict[str, Any] | None = None
@@ -1593,10 +1701,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="installation_schedule",
                 data_schema=schema,
-                last_step=not (
-                    self._first_zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True
-                    and _has_available_forecast_source(self.hass, self._installation)
-                ),
+                last_step=True,
             )
         schedule, error = _canonical_weekly_schedule(
             user_input,
@@ -1612,11 +1717,6 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 last_step=True,
             )
         self._first_zone[CONF_WEEKLY_SCHEDULE] = schedule
-        if self._first_zone.get(
-            CONF_USE_WEATHER_ADJUSTMENT
-        ) is True and _has_available_forecast_source(self.hass, self._installation):
-            return await self.async_step_first_zone_forecast()
-        self._first_zone[CONF_USE_FORECAST_POSTPONEMENT] = False
         return await self._async_create_irrigation_facility()
 
     async def async_step_first_zone_forecast(
@@ -1633,7 +1733,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             user_input[CONF_USE_FORECAST_POSTPONEMENT]
         )
         if not self._first_zone[CONF_USE_FORECAST_POSTPONEMENT]:
-            return await self._async_create_irrigation_facility()
+            return await self._async_first_zone_after_forecast()
         return await self.async_step_first_zone_forecast_details()
 
     async def async_step_first_zone_forecast_details(
@@ -1669,7 +1769,7 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="first_zone_make_up_schedule",
                 data_schema=schema,
-                last_step=True,
+                last_step=False,
             )
         schedule, error = _canonical_make_up_schedule(user_input)
         if error is not None:
@@ -1677,10 +1777,37 @@ class IrrigationManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 step_id="first_zone_make_up_schedule",
                 data_schema=self.add_suggested_values_to_schema(schema, user_input),
                 errors={"base": error},
-                last_step=True,
+                last_step=False,
             )
         self._first_zone[CONF_MAKE_UP_SCHEDULE] = schedule
-        return await self._async_create_irrigation_facility()
+        return await self._async_first_zone_after_forecast()
+
+    async def _async_first_zone_after_forecast(self) -> ConfigFlowResult:
+        """Route partial-irrigation details before the final weekly plan."""
+        if self._first_zone.get(CONF_USE_SOAK_MODULE) is True:
+            return await self.async_step_first_zone_soak_details()
+        return await self.async_step_installation_schedule()
+
+    async def async_step_first_zone_soak_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect the complete first-zone partial-irrigation policy."""
+        control_type = str(self._first_zone[CONF_CONTROL_TYPE])
+        schema = _soak_details_schema(control_type)
+        if user_input is None:
+            return self.async_show_form(
+                step_id="first_zone_soak_details", data_schema=schema, last_step=False
+            )
+        try:
+            self._first_zone.update(_canonical_soak_details(user_input, control_type=control_type))
+        except KeyError, TypeError, ValueError:
+            return self.async_show_form(
+                step_id="first_zone_soak_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "soak_settings_invalid"},
+                last_step=False,
+            )
+        return await self.async_step_installation_schedule()
 
     async def _async_create_irrigation_facility(self) -> ConfigFlowResult:
         """Create the fully collected irrigation facility and first zone atomically."""
@@ -1831,11 +1958,19 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                         self.hass.config.language, self._recommendation
                     ),
                 )
-            if self._get_entry().data.get(CONF_SEASONAL_MODULE_ENABLED) is True:
-                return await self.async_step_seasonal()
-            self._zone[CONF_USE_SEASONAL_ADJUSTMENT] = False
-            self._zone[CONF_SEASONAL_FACTORS] = canonical_seasonal_factors({})
-            return await self._async_new_zone_after_seasonal()
+            installation = self._get_entry().data
+            if _has_configurable_zone_module(installation):
+                return await self.async_step_modules()
+            self._zone.update(
+                {
+                    CONF_USE_SEASONAL_ADJUSTMENT: False,
+                    CONF_SEASONAL_FACTORS: canonical_seasonal_factors({}),
+                    CONF_USE_WEATHER_ADJUSTMENT: False,
+                    CONF_USE_SOAK_MODULE: False,
+                }
+            )
+            self._zone.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
+            return await self.async_step_minimal_schedule()
         return self.async_show_form(
             step_id="baseline",
             data_schema=schema,
@@ -1845,20 +1980,35 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             last_step=False,
         )
 
-    async def async_step_seasonal(
+    async def async_step_modules(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        """Choose whether a new zone uses seasonal adjustment."""
+        """Choose every available optional module in one compact zone step."""
+        installation = self._get_entry().data
         if user_input is None:
             return self.async_show_form(
-                step_id="seasonal",
-                data_schema=_seasonal_usage_schema(),
+                step_id="modules",
+                data_schema=_module_usage_schema(installation),
                 last_step=False,
             )
-        enabled = _apply_seasonal_usage(self._zone, user_input, reset_curve_when_disabled=True)
-        if not enabled:
-            return await self._async_new_zone_after_seasonal()
-        return await self.async_step_seasonal_curve()
+        seasonal = installation.get(CONF_SEASONAL_MODULE_ENABLED) is True and bool(
+            user_input.get(CONF_USE_SEASONAL_ADJUSTMENT, False)
+        )
+        weather = installation.get(CONF_WEATHER_MODULE_ENABLED) is True and bool(
+            user_input.get(CONF_USE_WEATHER_ADJUSTMENT, False)
+        )
+        soak = (
+            integration_const.PARTIAL_IRRIGATION_RELEASED
+            and installation.get(CONF_SOAK_MODULE_ENABLED) is True
+            and bool(user_input.get(CONF_USE_SOAK_MODULE, False))
+        )
+        self._zone[CONF_USE_SEASONAL_ADJUSTMENT] = seasonal
+        self._zone[CONF_USE_WEATHER_ADJUSTMENT] = weather
+        self._zone[CONF_USE_SOAK_MODULE] = soak
+        if seasonal:
+            return await self.async_step_seasonal_curve()
+        self._zone[CONF_SEASONAL_FACTORS] = canonical_seasonal_factors({})
+        return await self._async_new_zone_after_seasonal_details()
 
     async def async_step_seasonal_curve(
         self, user_input: dict[str, Any] | None = None
@@ -1895,34 +2045,19 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 data_schema=_seasonal_confirmation_schema(),
                 errors=submission.errors,
                 description_placeholders={"preview": submission.preview},
-                last_step=True,
+                last_step=False,
             )
         self._zone[CONF_SEASONAL_FACTORS] = dict(self._seasonal_factors)
-        return await self._async_new_zone_after_seasonal()
+        return await self._async_new_zone_after_seasonal_details()
 
-    async def _async_new_zone_after_seasonal(self) -> SubentryFlowResult:
-        """Route a new zone through weather configuration only when available."""
-        if self._get_entry().data.get(CONF_WEATHER_MODULE_ENABLED) is True:
-            return await self.async_step_weather()
+    async def _async_new_zone_after_seasonal_details(self) -> SubentryFlowResult:
+        """Route from seasonal details to the selected weather details."""
+        if self._zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True:
+            return await self.async_step_weather_details()
         self._zone[CONF_USE_WEATHER_ADJUSTMENT] = False
         self._zone[CONF_USE_SOIL_MOISTURE_FEEDBACK] = False
         self._zone.setdefault(CONF_SOIL_MOISTURE_ASSIGNMENTS, [])
-        return await self.async_step_minimal_schedule()
-
-    async def async_step_weather(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Choose whether a newly added zone uses measured water balance."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="weather",
-                data_schema=_weather_usage_schema(),
-                last_step=False,
-            )
-        self._zone[CONF_USE_WEATHER_ADJUSTMENT] = bool(user_input[CONF_USE_WEATHER_ADJUSTMENT])
-        if not self._zone[CONF_USE_WEATHER_ADJUSTMENT]:
-            return await self.async_step_minimal_schedule()
-        return await self.async_step_weather_details()
+        return await self._async_new_zone_after_weather_details()
 
     async def async_step_weather_details(
         self, user_input: dict[str, Any] | None = None
@@ -1945,7 +2080,16 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 errors={"base": "weather_settings_invalid"},
                 last_step=False,
             )
-        return await self.async_step_minimal_schedule()
+        return await self._async_new_zone_after_weather_details()
+
+    async def _async_new_zone_after_weather_details(self) -> SubentryFlowResult:
+        """Route selected forecast behavior before partial details and weekly plan."""
+        if self._zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True and _has_available_forecast_source(
+            self.hass, self._get_entry().data
+        ):
+            return await self.async_step_forecast()
+        self._zone[CONF_USE_FORECAST_POSTPONEMENT] = False
+        return await self._async_new_zone_after_forecast()
 
     async def async_step_minimal_schedule(
         self, user_input: dict[str, Any] | None = None
@@ -1956,10 +2100,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             return self.async_show_form(
                 step_id="minimal_schedule",
                 data_schema=schema,
-                last_step=not (
-                    self._zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True
-                    and _has_available_forecast_source(self.hass, self._get_entry().data)
-                ),
+                last_step=True,
             )
         schedule, error = _canonical_weekly_schedule(
             user_input,
@@ -1975,11 +2116,6 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 last_step=True,
             )
         self._zone[CONF_WEEKLY_SCHEDULE] = schedule
-        if self._zone.get(CONF_USE_WEATHER_ADJUSTMENT) is True and _has_available_forecast_source(
-            self.hass, self._get_entry().data
-        ):
-            return await self.async_step_forecast()
-        self._zone[CONF_USE_FORECAST_POSTPONEMENT] = False
         return await self._async_create_zone()
 
     async def async_step_forecast(
@@ -1996,7 +2132,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             user_input[CONF_USE_FORECAST_POSTPONEMENT]
         )
         if not self._zone[CONF_USE_FORECAST_POSTPONEMENT]:
-            return await self._async_create_zone()
+            return await self._async_new_zone_after_forecast()
         return await self.async_step_forecast_details()
 
     async def async_step_forecast_details(
@@ -2026,7 +2162,7 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
         schema = _make_up_schedule_schema()
         if user_input is None:
             return self.async_show_form(
-                step_id="make_up_schedule", data_schema=schema, last_step=True
+                step_id="make_up_schedule", data_schema=schema, last_step=False
             )
         schedule, error = _canonical_make_up_schedule(user_input)
         if error is not None:
@@ -2034,10 +2170,35 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 step_id="make_up_schedule",
                 data_schema=self.add_suggested_values_to_schema(schema, user_input),
                 errors={"base": error},
-                last_step=True,
+                last_step=False,
             )
         self._zone[CONF_MAKE_UP_SCHEDULE] = schedule
-        return await self._async_create_zone()
+        return await self._async_new_zone_after_forecast()
+
+    async def _async_new_zone_after_forecast(self) -> SubentryFlowResult:
+        """Route partial-irrigation details before the final weekly plan."""
+        if self._zone.get(CONF_USE_SOAK_MODULE) is True:
+            return await self.async_step_soak_details()
+        return await self.async_step_minimal_schedule()
+
+    async def async_step_soak_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect a complete new-zone partial-irrigation policy."""
+        control_type = str(self._zone[CONF_CONTROL_TYPE])
+        schema = _soak_details_schema(control_type)
+        if user_input is None:
+            return self.async_show_form(step_id="soak_details", data_schema=schema, last_step=False)
+        try:
+            self._zone.update(_canonical_soak_details(user_input, control_type=control_type))
+        except KeyError, TypeError, ValueError:
+            return self.async_show_form(
+                step_id="soak_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "soak_settings_invalid"},
+                last_step=False,
+            )
+        return await self.async_step_minimal_schedule()
 
     async def _async_create_zone(self) -> SubentryFlowResult:
         """Create one fully collected zone."""
@@ -2064,6 +2225,11 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
             options.remove("reconfigure_plant")
         if self._get_entry().data.get(CONF_SEASONAL_MODULE_ENABLED) is not True:
             options.remove("reconfigure_seasonal")
+        if (
+            integration_const.PARTIAL_IRRIGATION_RELEASED
+            and self._get_entry().data.get(CONF_SOAK_MODULE_ENABLED) is True
+        ):
+            options.insert(options.index("reconfigure_baseline"), "reconfigure_soak")
         if self._get_entry().data.get(CONF_WEATHER_MODULE_ENABLED) is True:
             options.insert(options.index("reconfigure_baseline"), "reconfigure_weather")
             subentry = self._get_reconfigure_subentry()
@@ -2347,6 +2513,57 @@ class ZoneSubentryFlow(ConfigSubentryFlow):
                 last_step=True,
             )
         return self.async_update_and_abort(self._get_entry(), subentry, data=data)
+
+    async def async_step_reconfigure_soak(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Enable or disable partial irrigation without deleting dormant limits."""
+        subentry = self._get_reconfigure_subentry()
+        if (
+            not integration_const.PARTIAL_IRRIGATION_RELEASED
+            or self._get_entry().data.get(CONF_SOAK_MODULE_ENABLED) is not True
+        ):
+            return self.async_abort(reason="reconfiguration_required")
+        enabled = bool(subentry.data.get(CONF_USE_SOAK_MODULE, False))
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_soak",
+                data_schema=_soak_usage_schema(enabled),
+                last_step=False,
+            )
+        self._zone = dict(subentry.data)
+        self._zone[CONF_USE_SOAK_MODULE] = bool(user_input[CONF_USE_SOAK_MODULE])
+        if not self._zone[CONF_USE_SOAK_MODULE]:
+            return self.async_update_and_abort(self._get_entry(), subentry, data=self._zone)
+        return await self.async_step_reconfigure_soak_details()
+
+    async def async_step_reconfigure_soak_details(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Persist a complete partial-irrigation policy after strict validation."""
+        control_type = str(self._zone[CONF_CONTROL_TYPE])
+        schema = _soak_details_schema(control_type)
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure_soak_details",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema, _soak_details_form_values(self._zone)
+                ),
+                last_step=True,
+            )
+        try:
+            settings = _canonical_soak_details(user_input, control_type=control_type)
+        except KeyError, TypeError, ValueError:
+            return self.async_show_form(
+                step_id="reconfigure_soak_details",
+                data_schema=self.add_suggested_values_to_schema(schema, user_input),
+                errors={"base": "soak_settings_invalid"},
+                last_step=True,
+            )
+        self._zone.update(settings)
+        return self.async_update_and_abort(
+            self._get_entry(), self._get_reconfigure_subentry(), data=self._zone
+        )
 
     async def async_step_reconfigure_weather(
         self, user_input: dict[str, Any] | None = None
@@ -3161,22 +3378,24 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
         """Enable or disable completed comfort modules without deleting zone data."""
         schema = _extensions_schema()
         if user_input is None:
+            suggested = {
+                CONF_PLANT_SITE_MODULE_ENABLED: bool(
+                    self.config_entry.data.get(CONF_PLANT_SITE_MODULE_ENABLED, False)
+                ),
+                CONF_SEASONAL_MODULE_ENABLED: bool(
+                    self.config_entry.data.get(CONF_SEASONAL_MODULE_ENABLED, False)
+                ),
+                CONF_WEATHER_MODULE_ENABLED: bool(
+                    self.config_entry.data.get(CONF_WEATHER_MODULE_ENABLED, False)
+                ),
+            }
+            if integration_const.PARTIAL_IRRIGATION_RELEASED:
+                suggested[CONF_SOAK_MODULE_ENABLED] = bool(
+                    self.config_entry.data.get(CONF_SOAK_MODULE_ENABLED, False)
+                )
             return self.async_show_form(
                 step_id="extensions",
-                data_schema=self.add_suggested_values_to_schema(
-                    schema,
-                    {
-                        CONF_PLANT_SITE_MODULE_ENABLED: bool(
-                            self.config_entry.data.get(CONF_PLANT_SITE_MODULE_ENABLED, False)
-                        ),
-                        CONF_SEASONAL_MODULE_ENABLED: bool(
-                            self.config_entry.data.get(CONF_SEASONAL_MODULE_ENABLED, False)
-                        ),
-                        CONF_WEATHER_MODULE_ENABLED: bool(
-                            self.config_entry.data.get(CONF_WEATHER_MODULE_ENABLED, False)
-                        ),
-                    },
-                ),
+                data_schema=self.add_suggested_values_to_schema(schema, suggested),
                 last_step=True,
             )
         data = {
@@ -3184,8 +3403,12 @@ class IrrigationManagerOptionsFlow(OptionsFlow):
             CONF_PLANT_SITE_MODULE_ENABLED: bool(user_input[CONF_PLANT_SITE_MODULE_ENABLED]),
             CONF_SEASONAL_MODULE_ENABLED: bool(user_input[CONF_SEASONAL_MODULE_ENABLED]),
             CONF_WEATHER_MODULE_ENABLED: bool(user_input[CONF_WEATHER_MODULE_ENABLED]),
+            CONF_SOAK_MODULE_ENABLED: (
+                bool(user_input[CONF_SOAK_MODULE_ENABLED])
+                if integration_const.PARTIAL_IRRIGATION_RELEASED
+                else bool(self.config_entry.data.get(CONF_SOAK_MODULE_ENABLED, False))
+            ),
         }
-        data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
         if data[CONF_WEATHER_MODULE_ENABLED] is False:
             for subentry in self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_ZONE):
                 zone_data = {

@@ -31,6 +31,7 @@ from .const import (
     CONF_USE_FORECAST_POSTPONEMENT,
     CONF_USE_PLANT_SITE_MODEL,
     CONF_USE_SEASONAL_ADJUSTMENT,
+    CONF_USE_SOAK_MODULE,
     CONF_USE_SOIL_MOISTURE_FEEDBACK,
     CONF_USE_WEATHER_ADJUSTMENT,
     CONF_WATER_METER,
@@ -250,6 +251,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 CONF_USE_SEASONAL_ADJUSTMENT: False,
                 CONF_USE_WEATHER_ADJUSTMENT: False,
                 CONF_USE_SOIL_MOISTURE_FEEDBACK: False,
+                CONF_USE_SOAK_MODULE: False,
                 CONF_SOIL_MOISTURE_ASSIGNMENTS: [],
                 CONF_SEASONAL_FACTORS: {month: 1.0 for month in MONTHS},
                 CONF_SUBAREAS: [],
@@ -278,6 +280,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             migrated_data[CONF_WEATHER_MODULE_ENABLED] = False
         migrated_data.setdefault(CONF_WEATHER_SOURCES, {})
         migrated_data.setdefault(CONF_SOAK_MODULE_ENABLED, False)
+        if original_minor < 9:
+            migrated_data[CONF_SOAK_MODULE_ENABLED] = False
         for subentry in entry.get_subentries_of_type("zone"):
             zone_data = dict(subentry.data)
             zone_data.setdefault(CONF_USE_PLANT_SITE_MODEL, False)
@@ -291,6 +295,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if original_minor < 7:
                 zone_data[CONF_USE_SOIL_MOISTURE_FEEDBACK] = False
                 zone_data[CONF_SOIL_MOISTURE_ASSIGNMENTS] = []
+            if original_minor < 9:
+                zone_data[CONF_USE_SOAK_MODULE] = False
             if CONF_BASE_TARGET not in zone_data:
                 schedule = zone_data.get(CONF_WEEKLY_SCHEDULE)
                 if isinstance(schedule, list):

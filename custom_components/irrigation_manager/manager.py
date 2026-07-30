@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
+from . import const as integration_const
 from .adapters import HomeAssistantActuators, HomeAssistantClock, HomeAssistantMeter
 from .const import (
     CONF_AUTOMATION_ENABLED,
@@ -36,21 +37,27 @@ from .const import (
     CONF_MAX_DELIVERY_RUNTIME,
     CONF_MAX_OPERATION_LIFETIME,
     CONF_MAXIMUM_DEFICIT_MM,
+    CONF_MAXIMUM_LIFETIME_SECONDS,
     CONF_MAXIMUM_MAKE_UP_DAYS,
     CONF_MAXIMUM_MAKE_UP_TARGET,
+    CONF_MAXIMUM_PORTION_TARGET,
+    CONF_MAXIMUM_PORTIONS,
     CONF_METER_ENTITY,
     CONF_METER_TYPE,
     CONF_MINIMUM_FORECAST_PRECIPITATION_MM,
     CONF_MINIMUM_FORECAST_PROBABILITY,
+    CONF_MINIMUM_SOAK_SECONDS,
     CONF_NEEDS_RECONFIGURATION,
     CONF_OPERATION_ENABLED,
     CONF_SEASONAL_FACTORS,
     CONF_SEASONAL_MODULE_ENABLED,
+    CONF_SOAK_MODULE_ENABLED,
     CONF_SOIL_MOISTURE_ACTIVATION_ID,
     CONF_SOIL_MOISTURE_ASSIGNMENTS,
     CONF_SUBAREAS,
     CONF_USE_FORECAST_POSTPONEMENT,
     CONF_USE_SEASONAL_ADJUSTMENT,
+    CONF_USE_SOAK_MODULE,
     CONF_USE_SOIL_MOISTURE_FEEDBACK,
     CONF_USE_WEATHER_ADJUSTMENT,
     CONF_VOLUME_MAX_RUNTIME,
@@ -91,23 +98,51 @@ from .models import (
     DispatcherDiagnosticState,
     DispatchReason,
     InstallationSnapshot,
+    IrrigationCancellationReason,
     IrrigationExecutionState,
+    IrrigationPortionState,
     ManualIrrigationRequest,
     MeterCorrectionRecord,
+    PartialProcessSnapshot,
     PlanningRejection,
     PlanningRejectionReason,
+    PortionPolicySnapshot,
     StoredInstallationState,
     WaterConsumptionRecord,
     automatic_request_has_unclassified_legacy_cancellation,
     automatic_request_is_terminal_tombstone,
 )
+from .portioning import (
+    CancelProcess,
+    CancelRequested,
+    CompleteProcess,
+    FailClosed,
+    IrrigationProcessModule,
+    NoOp,
+    OrderSnapshot,
+    PortionLimits,
+    PortionOpening,
+    PortionSettled,
+    PortionStarted,
+    PreparePortion,
+    ProcessTransition,
+    RecoveryObserved,
+    ResumeDue,
+    StopActivePortion,
+    TargetType,
+    WaitUntil,
+)
 from .scheduler import (
+    DispatchDecision,
     planned_volume_duration_seconds,
     request_priority,
     resolve_local_wall_time,
+    resume_candidate_from_execution,
+    select_dispatch_work,
     select_manual_request,
 )
 from .soil_moisture import observe_soil_moisture
+from .state_transitions import apply_safety_lock, prepare_execution_state, settle_execution_state
 from .storage import IrrigationStore
 from .target_resolution import TargetResolutionOutcome, resolve_automatic_target
 from .water_balance import (
@@ -123,6 +158,23 @@ from .weather_sources import WeatherSourceRole, observe_weather_sources
 from .zone_config import effective_schedule_target, positive_number
 
 _FINAL_REQUEST_STATUSES = {"completed", "cancelled", "expired"}
+
+_AUTOMATIC_REASON_BY_PROCESS_CANCELLATION = {
+    IrrigationCancellationReason.USER_REQUESTED: AutomaticCancellationReason.USER_REQUESTED,
+    IrrigationCancellationReason.OPERATION_DISABLED: (
+        AutomaticCancellationReason.OPERATION_RELEASE_REVOKED
+    ),
+    IrrigationCancellationReason.AUTOMATION_DISABLED: (
+        AutomaticCancellationReason.AUTOMATION_RELEASE_REVOKED
+    ),
+    IrrigationCancellationReason.ZONE_DISABLED: (
+        AutomaticCancellationReason.ZONE_OPERATION_RELEASE_REVOKED
+    ),
+    IrrigationCancellationReason.ZONE_AUTOMATION_DISABLED: (
+        AutomaticCancellationReason.AUTOMATION_RELEASE_REVOKED
+    ),
+    IrrigationCancellationReason.EMERGENCY_STOP: AutomaticCancellationReason.EMERGENCY_STOP,
+}
 _OPEN_REQUEST_STATUSES = {"pending", "executing"}
 _DISPATCH_DIAGNOSTIC_LIMIT = 100
 _BLOCKING_DISPATCH_REASONS = {
@@ -199,7 +251,7 @@ class _ZoneWeatherPlan:
 
 
 @dataclass(frozen=True, slots=True)
-class _DispatchDecision:
+class _DispatchDiagnosticDecision:
     """One deterministic dispatcher decision at a point in time."""
 
     reason: DispatchReason
@@ -275,6 +327,7 @@ class IrrigationManager:
             meter=self._meter,
             clock=HomeAssistantClock(),
         )
+        self._portioning = IrrigationProcessModule()
 
         self._command_lock = asyncio.Lock()
         self._planning_lock = asyncio.Lock()
@@ -305,6 +358,88 @@ class IrrigationManager:
     @property
     def _installation_reconfiguration_required(self) -> bool:
         return bool(self._installation_data.get(CONF_NEEDS_RECONFIGURATION, False))
+
+    @property
+    def _partial_irrigation_acceptance_enabled(self) -> bool:
+        """Return whether this release may snapshot new partial orders."""
+        return integration_const.PARTIAL_IRRIGATION_RELEASED
+
+    def _portion_policy_for_zone(
+        self, zone: _ZoneConfigSnapshot, *, target_type: str
+    ) -> PortionPolicySnapshot | None:
+        """Snapshot one released and explicitly enabled zone policy for a new order."""
+        configured_target_type = (
+            "volume" if zone.data.get(CONF_CONTROL_TYPE) == CONTROL_TYPE_VOLUME else "duration"
+        )
+        if (
+            not self._partial_irrigation_acceptance_enabled
+            or self._installation_data.get(CONF_SOAK_MODULE_ENABLED) is not True
+            or zone.data.get(CONF_USE_SOAK_MODULE) is not True
+            or target_type != configured_target_type
+        ):
+            return None
+        maximum_portion_target = self._optional_float(zone.data, CONF_MAXIMUM_PORTION_TARGET)
+        minimum_soak_seconds = self._optional_float(zone.data, CONF_MINIMUM_SOAK_SECONDS)
+        maximum_lifetime_seconds = self._optional_float(zone.data, CONF_MAXIMUM_LIFETIME_SECONDS)
+        maximum_portions = zone.data.get(CONF_MAXIMUM_PORTIONS)
+        if (
+            maximum_portion_target is None
+            or maximum_portion_target <= 0
+            or minimum_soak_seconds is None
+            or minimum_soak_seconds <= 0
+            or maximum_lifetime_seconds is None
+            or maximum_lifetime_seconds <= 0
+            or isinstance(maximum_portions, bool)
+            or not isinstance(maximum_portions, int)
+            or not 1 <= maximum_portions <= 100
+        ):
+            raise HomeAssistantError(
+                "Partial irrigation is enabled without a complete valid zone policy"
+            )
+        return PortionPolicySnapshot(
+            target_type=target_type,
+            maximum_portion_target=maximum_portion_target,
+            minimum_soak_seconds=minimum_soak_seconds,
+            maximum_portions=maximum_portions,
+            maximum_lifetime_seconds=maximum_lifetime_seconds,
+        )
+
+    def _partial_order_feasibility_failure(
+        self,
+        *,
+        request_id: str,
+        zone_id: str,
+        target_type: str,
+        target_value: float,
+        operation_deadline: datetime,
+        delivery_runtime_limit_seconds: float | None,
+        portion_policy: PortionPolicySnapshot | None,
+        starts_at: datetime,
+    ) -> str | None:
+        """Return why one snapshotted partial order cannot be accepted."""
+        if portion_policy is None:
+            return None
+        return self._portioning.feasibility_failure(
+            OrderSnapshot(
+                execution_id=f"preflight:{request_id}",
+                request_id=request_id,
+                zone_id=zone_id,
+                target_type=TargetType(target_type),
+                target_value=target_value,
+                operation_deadline_at=operation_deadline,
+                delivery_runtime_limit_seconds=delivery_runtime_limit_seconds,
+                hydraulic_overhead_seconds_per_portion=(
+                    CLEANUP_FEEDBACK_BUDGET_SECONDS * (2 if self._main_valve is not None else 1)
+                ),
+            ),
+            PortionLimits(
+                maximum_portion_target=portion_policy.maximum_portion_target,
+                minimum_soak_seconds=portion_policy.minimum_soak_seconds,
+                maximum_portions=portion_policy.maximum_portions,
+                maximum_lifetime_seconds=portion_policy.maximum_lifetime_seconds,
+            ),
+            now=starts_at,
+        )
 
     @staticmethod
     def _zone_reconfiguration_required(data: Mapping[str, object]) -> bool:
@@ -364,7 +499,21 @@ class IrrigationManager:
         await self._async_initialize_releases()
         await self._async_cancel_stale_pending_snapshots()
         active = self._stored_state.active_execution
-        if active is not None:
+        if self._partial_recovery_required:
+            valves_confirmed_closed = True
+            try:
+                await self._async_close_entities(self._managed_recovery_valves())
+            except Exception:
+                valves_confirmed_closed = False
+                _LOGGER.exception(
+                    "Partial irrigation startup recovery could not confirm every valve closed"
+                )
+            await self._async_recover_partial_execution(
+                valves_confirmed_closed=valves_confirmed_closed,
+            )
+            if self._stored_state.active_execution is not None:
+                await self._async_recover_interrupted_execution()
+        elif active is not None:
             entities = [active.zone_valve]
             if active.main_valve is not None:
                 entities.append(active.main_valve)
@@ -492,7 +641,21 @@ class IrrigationManager:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-            if self._stored_state.active_execution is not None:
+            if self._partial_recovery_required:
+                valves_confirmed_closed = True
+                try:
+                    await self._async_close_entities(self._managed_recovery_valves())
+                except Exception:
+                    valves_confirmed_closed = False
+                    _LOGGER.exception(
+                        "Partial irrigation shutdown could not confirm every valve closed"
+                    )
+                await self._async_recover_partial_execution(
+                    valves_confirmed_closed=valves_confirmed_closed,
+                )
+                if self._stored_state.active_execution is not None:
+                    await self._async_recover_interrupted_execution()
+            elif self._stored_state.active_execution is not None:
                 await self._async_recover_interrupted_execution()
             await self._async_close_boot_diagnostics(
                 DispatchReason.CONFIG_RELOAD
@@ -1649,6 +1812,35 @@ class IrrigationManager:
                         )
                     if expected_start + timedelta(seconds=required_duration) > end:
                         continue
+                    target_type = "volume" if control_type == CONTROL_TYPE_VOLUME else "duration"
+                    portion_policy = self._portion_policy_for_zone(
+                        zone,
+                        target_type=target_type,
+                    )
+                    partial_failure = self._partial_order_feasibility_failure(
+                        request_id=request_id,
+                        zone_id=zone.zone_id,
+                        target_type=target_type,
+                        target_value=target,
+                        operation_deadline=end,
+                        delivery_runtime_limit_seconds=hard_limit or target,
+                        portion_policy=portion_policy,
+                        starts_at=expected_start,
+                    )
+                    if partial_failure is not None:
+                        rejection_reason = (
+                            PlanningRejectionReason.PARTIAL_IRRIGATION_PORTION_LIMIT_EXCEEDED
+                            if partial_failure == "portion_limit_exceeded"
+                            else PlanningRejectionReason.PARTIAL_IRRIGATION_WINDOW_DOES_NOT_FIT
+                        )
+                        not_plannable.append(
+                            PlanningRejection(
+                                request_id=request_id,
+                                zone_id=zone.zone_id,
+                                reason=rejection_reason,
+                            )
+                        )
+                        continue
                     candidates.append(
                         ManualIrrigationRequest(
                             request_id=request_id,
@@ -1658,9 +1850,7 @@ class IrrigationManager:
                             zone_name=zone.title,
                             zone_valve=str(zone.data[CONF_ZONE_VALVE]),
                             main_valve=self._main_valve,
-                            target_type=(
-                                "volume" if control_type == CONTROL_TYPE_VOLUME else "duration"
-                            ),
+                            target_type=target_type,
                             target_value=target,
                             remaining_value=target,
                             created_at=planning_now.isoformat(),
@@ -1671,6 +1861,7 @@ class IrrigationManager:
                             hard_time_limit_seconds=hard_limit,
                             delivery_runtime_limit_seconds=hard_limit or target,
                             operation_deadline_at=end.isoformat(),
+                            portion_policy=portion_policy,
                             resolved_inputs={
                                 "target_resolution_outcome": (target_resolution.outcome.value),
                                 "base_target": target_resolution.base_target,
@@ -2044,8 +2235,24 @@ class IrrigationManager:
                     )
                 ),
             )
+            request_id = uuid4().hex
+            portion_policy = self._portion_policy_for_zone(zone, target_type=target_type)
+            partial_failure = self._partial_order_feasibility_failure(
+                request_id=request_id,
+                zone_id=zone.zone_id,
+                target_type=target_type,
+                target_value=target_value,
+                operation_deadline=operation_deadline,
+                delivery_runtime_limit_seconds=runtime_limit,
+                portion_policy=portion_policy,
+                starts_at=start,
+            )
+            if partial_failure is not None:
+                raise HomeAssistantError(
+                    f"Partial irrigation order is not feasible: {partial_failure}"
+                )
             request = ManualIrrigationRequest(
-                request_id=uuid4().hex,
+                request_id=request_id,
                 sequence=self._stored_state.next_request_sequence,
                 zone_id=zone.zone_id,
                 zone_subentry_id=zone.subentry_id,
@@ -2061,6 +2268,7 @@ class IrrigationManager:
                 hard_time_limit_seconds=(runtime_limit if amount_liters is not None else None),
                 delivery_runtime_limit_seconds=runtime_limit,
                 operation_deadline_at=operation_deadline.isoformat(),
+                portion_policy=portion_policy,
             )
             next_state = replace(
                 self._stored_state,
@@ -2097,26 +2305,95 @@ class IrrigationManager:
         consecutive_failures = 0
         while not self._shutting_down:
             selected: ManualIrrigationRequest | None = None
+            task: asyncio.Task[ExecutionResult] | None = None
             forecast_preflight = False
             retry_delay: float | None = None
             try:
                 async with self._command_lock:
                     self._queue_event.clear()
                     await self._async_expire_requests()
-                    selected = select_manual_request(
-                        now=datetime.now(UTC),
-                        requests=self._stored_state.manual_requests,
-                    )
-                    decision = self._dispatch_decision(selected, now=datetime.now(UTC))
-                    await self._async_record_dispatch_decision(decision)
-                    if decision.reason == DispatchReason.READY and selected is not None:
-                        forecast_preflight = self._forecast_preflight_required(
-                            selected, now=datetime.now(UTC)
-                        )
-                        if not forecast_preflight:
-                            task = await self._async_prepare_execution(selected)
+                    if self._partial_dispatch_required:
+                        recovered_prepared = self._recovered_prepared_transition()
+                        work = self._select_partial_dispatch_work(now=datetime.now(UTC))
+                        if recovered_prepared is not None:
+                            selected, process, portions, action = recovered_prepared
+                            decision = self._dispatch_decision(
+                                selected,
+                                now=datetime.now(UTC),
+                                continuing_execution=True,
+                            )
+                            await self._async_record_dispatch_decision(decision)
+                            if decision.reason != DispatchReason.READY:
+                                selected = None
+                            else:
+                                task = await self._async_prepare_partial_transition(
+                                    request=selected,
+                                    process=process,
+                                    portions=portions,
+                                    action=action,
+                                )
+                        elif work is not None and work.resumption is not None:
+                            selected = self._request(work.resumption.request_id)
+                            if selected is None:
+                                raise HomeAssistantError("The paused irrigation order is missing")
+                            decision = self._dispatch_decision(
+                                selected,
+                                now=datetime.now(UTC),
+                                continuing_execution=True,
+                            )
+                            await self._async_record_dispatch_decision(decision)
+                            if decision.reason != DispatchReason.READY:
+                                selected = None
+                            else:
+                                task = await self._async_prepare_partial_resumption(
+                                    selected,
+                                    execution_id=work.resumption.execution_id,
+                                )
+                                if task is None:
+                                    selected = None
+                        elif work is not None and work.order is not None:
+                            selected = work.order
+                            decision = self._dispatch_decision(
+                                selected,
+                                now=datetime.now(UTC),
+                            )
+                            await self._async_record_dispatch_decision(decision)
+                            if decision.reason != DispatchReason.READY:
+                                selected = None
+                            else:
+                                forecast_preflight = self._forecast_preflight_required(
+                                    selected,
+                                    now=datetime.now(UTC),
+                                )
+                                if not forecast_preflight:
+                                    task = (
+                                        await self._async_prepare_partial_start(selected)
+                                        if selected.portion_policy is not None
+                                        else await self._async_prepare_execution(selected)
+                                    )
+                                    if task is None:
+                                        selected = None
+                        else:
+                            selected = None
                     else:
-                        selected = None
+                        selected = select_manual_request(
+                            now=datetime.now(UTC),
+                            requests=(
+                                request
+                                for request in self._stored_state.manual_requests
+                                if request.portion_policy is None
+                            ),
+                        )
+                        decision = self._dispatch_decision(selected, now=datetime.now(UTC))
+                        await self._async_record_dispatch_decision(decision)
+                        if decision.reason == DispatchReason.READY and selected is not None:
+                            forecast_preflight = self._forecast_preflight_required(
+                                selected, now=datetime.now(UTC)
+                            )
+                            if not forecast_preflight:
+                                task = await self._async_prepare_execution(selected)
+                        else:
+                            selected = None
                 if forecast_preflight:
                     selected = None
                     await self.async_plan_automatic(now=datetime.now(UTC))
@@ -2129,9 +2406,16 @@ class IrrigationManager:
                     with suppress(TimeoutError):
                         await asyncio.wait_for(self._queue_event.wait(), timeout=timeout)
                 else:
+                    assert task is not None
                     result = await asyncio.shield(task)
                     async with self._command_lock:
-                        await self._async_finish_execution(selected.request_id, result)
+                        if selected.portion_policy is not None:
+                            await self._async_finish_partial_execution(
+                                selected.request_id,
+                                result,
+                            )
+                        else:
+                            await self._async_finish_execution(selected.request_id, result)
                     consecutive_failures = 0
             except asyncio.CancelledError:
                 return
@@ -2188,6 +2472,385 @@ class IrrigationManager:
 
     def _request_released(self, request: ManualIrrigationRequest) -> bool:
         return self._dispatch_decision(request, now=datetime.now(UTC)).reason == "ready"
+
+    @property
+    def _partial_dispatch_required(self) -> bool:
+        """Enter the new dispatcher whenever durable partial work exists."""
+        return any(
+            request.portion_policy is not None and request.status in {"pending", "executing"}
+            for request in self._stored_state.manual_requests
+        ) or any(
+            execution.portion_policy is not None and execution.status in {"watering", "soaking"}
+            for execution in self._stored_state.irrigation_executions
+        )
+
+    @property
+    def _partial_recovery_required(self) -> bool:
+        """Return whether startup owns a persisted partial process boundary."""
+        active = self._stored_state.active_execution
+        if active is not None and active.portion_id is not None:
+            return True
+        if active is not None and active.execution_id is not None:
+            linked = self._execution(active.execution_id)
+            if linked is not None and linked.portion_policy is not None:
+                return True
+        return any(
+            execution.portion_policy is not None and execution.status in {"watering", "soaking"}
+            for execution in self._stored_state.irrigation_executions
+        )
+
+    def _managed_recovery_valves(self) -> tuple[str, ...]:
+        """Return every configured and durably snapshotted valve to close at boot."""
+        entities = [
+            str(zone.data[CONF_ZONE_VALVE])
+            for zone in self._zone_configs
+            if isinstance(zone.data.get(CONF_ZONE_VALVE), str)
+        ]
+        if self._main_valve is not None:
+            entities.append(self._main_valve)
+        active = self._stored_state.active_execution
+        if active is not None:
+            entities.append(active.zone_valve)
+            if active.main_valve is not None:
+                entities.append(active.main_valve)
+        return tuple(dict.fromkeys(entities))
+
+    def _recovered_prepared_transition(
+        self,
+    ) -> (
+        tuple[
+            ManualIrrigationRequest,
+            IrrigationExecutionState,
+            tuple[IrrigationPortionState, ...],
+            PreparePortion,
+        ]
+        | None
+    ):
+        """Expose one safely recovered prepared portion to the normal dispatcher."""
+        if self._stored_state.active_execution is not None:
+            return None
+        for process in self._stored_state.irrigation_executions:
+            if process.portion_policy is None or process.status != "watering":
+                continue
+            request = self._request(process.request_id)
+            portions = tuple(
+                portion
+                for portion in self._stored_state.irrigation_portions
+                if portion.execution_id == process.execution_id
+            )
+            prepared = tuple(portion for portion in portions if portion.status == "prepared")
+            if (
+                request is None
+                or request.status != "executing"
+                or request.execution_id != process.execution_id
+                or len(prepared) != 1
+            ):
+                continue
+            portion = prepared[0]
+            runtime_limit = (
+                None
+                if portion.target_type == "duration"
+                else max(
+                    0.0,
+                    (process.delivery_runtime_limit_seconds or 0.0)
+                    - process.delivered_duration_seconds,
+                )
+            )
+            return (
+                request,
+                process,
+                portions,
+                PreparePortion(
+                    portion_id=portion.portion_id,
+                    target_type=TargetType(portion.target_type),
+                    target_value=portion.target_value,
+                    hard_time_limit_seconds=runtime_limit,
+                ),
+            )
+        return None
+
+    def _select_partial_dispatch_work(self, *, now: datetime) -> DispatchDecision | None:
+        """Select one safe order or continuation while durable partial work exists."""
+        resumptions = tuple(
+            resume_candidate_from_execution(execution)
+            for execution in self._stored_state.irrigation_executions
+            if execution.portion_policy is not None
+            and execution.status == "soaking"
+            and (request := self._request(execution.request_id)) is not None
+            and self._dispatch_decision(
+                request,
+                now=now,
+                continuing_execution=True,
+            ).reason
+            == DispatchReason.READY
+        )
+        return select_dispatch_work(
+            now=now,
+            orders=(
+                request
+                for request in self._stored_state.manual_requests
+                if self._dispatch_decision(request, now=now).reason == DispatchReason.READY
+            ),
+            resumptions=resumptions,
+            hydraulic_overhead_seconds=CLEANUP_FEEDBACK_BUDGET_SECONDS * 2,
+        )
+
+    async def _async_prepare_partial_start(
+        self,
+        request: ManualIrrigationRequest,
+    ) -> asyncio.Task[ExecutionResult] | None:
+        """Create one durable process and hand off only its first bounded portion."""
+        current = self._request(request.request_id)
+        if current != request or current is None or request.portion_policy is None:
+            raise HomeAssistantError("The partial irrigation order changed before execution")
+        self._require_reconfigured(self._zone_for_subentry(request.zone_subentry_id))
+        if self._stored_state.emergency_stop:
+            raise HomeAssistantError("The irrigation installation emergency stop is active")
+        if self._stored_state.active_execution is not None:
+            raise HomeAssistantError("The irrigation installation is busy")
+        now = datetime.now(UTC)
+        deadline = datetime.fromisoformat(request.operation_deadline_at or request.expires_at)
+        execution_id = uuid4().hex
+        policy = request.portion_policy
+        transition = self._portioning.start(
+            OrderSnapshot(
+                execution_id=execution_id,
+                request_id=request.request_id,
+                zone_id=request.zone_id,
+                target_type=TargetType(request.target_type),
+                target_value=request.remaining_value,
+                operation_deadline_at=deadline,
+                delivery_runtime_limit_seconds=(
+                    request.delivery_runtime_limit_seconds or request.hard_time_limit_seconds
+                ),
+                hydraulic_overhead_seconds_per_portion=(
+                    CLEANUP_FEEDBACK_BUDGET_SECONDS * (2 if request.main_valve is not None else 1)
+                ),
+            ),
+            PortionLimits(
+                maximum_portion_target=policy.maximum_portion_target,
+                minimum_soak_seconds=policy.minimum_soak_seconds,
+                maximum_portions=policy.maximum_portions,
+                maximum_lifetime_seconds=policy.maximum_lifetime_seconds,
+            ),
+            now=now,
+        )
+        if isinstance(transition.action, FailClosed):
+            await self._async_persist_partial_fail_closed(request, transition)
+            await self._async_record_partial_recovery_diagnostic(
+                request=request,
+                reason=self._partial_transition_diagnostic_reason(transition),
+                transition=transition,
+            )
+            return None
+        if not isinstance(transition.action, PreparePortion):
+            raise HomeAssistantError("unexpected_partial_start_transition")
+        claimed = replace(
+            request,
+            execution_id=execution_id,
+            status="executing",
+            revision=request.revision + 1,
+        )
+        return await self._async_prepare_partial_transition(
+            request=claimed,
+            process=transition.process,
+            portions=transition.portions,
+            action=transition.action,
+        )
+
+    async def _async_prepare_partial_resumption(
+        self,
+        request: ManualIrrigationRequest,
+        *,
+        execution_id: str,
+    ) -> asyncio.Task[ExecutionResult] | None:
+        """Persist and hand off the next due portion of one soaking process."""
+        process = self._execution(execution_id)
+        if (
+            process is None
+            or request.execution_id != execution_id
+            or request.portion_policy is None
+            or process.status != "soaking"
+        ):
+            raise HomeAssistantError("The paused irrigation process changed before resumption")
+        portions = tuple(
+            portion
+            for portion in self._stored_state.irrigation_portions
+            if portion.execution_id == execution_id
+        )
+        transition = self._portioning.advance(
+            process,
+            portions,
+            ResumeDue(),
+            now=datetime.now(UTC),
+        )
+        if isinstance(transition.action, FailClosed):
+            await self._async_persist_partial_fail_closed(request, transition)
+            await self._async_record_partial_recovery_diagnostic(
+                request=request,
+                reason=self._partial_transition_diagnostic_reason(transition),
+                transition=transition,
+            )
+            return None
+        if not isinstance(transition.action, PreparePortion):
+            raise HomeAssistantError("unexpected_partial_resume_transition")
+        return await self._async_prepare_partial_transition(
+            request=request,
+            process=transition.process,
+            portions=transition.portions,
+            action=transition.action,
+        )
+
+    async def _async_persist_partial_fail_closed(
+        self,
+        request: ManualIrrigationRequest,
+        transition: ProcessTransition,
+    ) -> None:
+        """Persist a non-actuating terminal process decision with its evidence."""
+        action = transition.action
+        if not isinstance(action, FailClosed):
+            raise ValueError("A terminal partial transition must be fail-closed")
+        failed_request = _with_automatic_cancellation_reason(
+            replace(
+                request,
+                execution_id=transition.process.execution_id,
+                remaining_value=transition.process.remaining_value,
+                status="cancelled",
+                revision=request.revision + 1,
+            ),
+            AutomaticCancellationReason.EXECUTION_FAILED,
+        )
+        execution_exists = any(
+            item.execution_id == transition.process.execution_id
+            for item in self._stored_state.irrigation_executions
+        )
+        executions = (
+            self._with_execution(transition.process)
+            if execution_exists
+            else (*self._stored_state.irrigation_executions, transition.process)
+        )
+        portions = (
+            *(
+                item
+                for item in self._stored_state.irrigation_portions
+                if item.execution_id != transition.process.execution_id
+            ),
+            *transition.portions,
+        )
+        next_state = replace(
+            self._stored_state,
+            manual_requests=self._with_request(failed_request),
+            irrigation_executions=executions,
+            irrigation_portions=portions,
+            active_execution=None,
+        )
+        if action.safety_lock_required:
+            next_state = apply_safety_lock(
+                next_state,
+                reason=action.reason,
+                recorded_at=datetime.now(UTC).isoformat(),
+            )
+        await self._store.async_save(next_state)
+        self._stored_state = next_state
+        if request.request_id in self._request_error_waiters:
+            self._request_errors[request.request_id] = HomeAssistantError(action.reason)
+        self._signal_terminal(request.request_id)
+        self._queue_event.set()
+        self._planning_event.set()
+        self._refresh_complete_idle_event()
+
+    async def _async_prepare_partial_transition(
+        self,
+        *,
+        request: ManualIrrigationRequest,
+        process: IrrigationExecutionState,
+        portions: tuple[IrrigationPortionState, ...],
+        action: PreparePortion,
+    ) -> asyncio.Task[ExecutionResult]:
+        """Commit one process transition before invoking the hydraulic adapter."""
+        portion = next(item for item in portions if item.portion_id == action.portion_id)
+        amount = action.target_value if action.target_type == TargetType.VOLUME else None
+        duration = action.target_value if action.target_type == TargetType.DURATION else None
+        runtime_limit = action.hard_time_limit_seconds
+        if amount is not None and runtime_limit is None:
+            raise HomeAssistantError("Volume irrigation requires a hard time limit")
+        meter_baseline: float | None = None
+        if self._has_meter:
+            try:
+                meter_baseline = await self._meter.read_liters()
+            except Exception as err:
+                if amount is not None:
+                    raise HomeAssistantError(
+                        "Volume irrigation water meter is unavailable"
+                    ) from err
+        checkpoint_at = datetime.now(UTC)
+        active = ActiveExecutionState(
+            zone_id=request.zone_id,
+            zone_valve=request.zone_valve,
+            main_valve=request.main_valve,
+            meter_raw_baseline_liters=meter_baseline,
+            prepared_at=portion.prepared_at,
+            watering_started_at=None,
+            requested_duration_seconds=duration or cast(float, runtime_limit),
+            requested_amount_liters=amount,
+            hard_time_limit_seconds=runtime_limit if amount is not None else None,
+            delivery_deadline_at=(
+                checkpoint_at + timedelta(seconds=duration or cast(float, runtime_limit))
+            ).isoformat(),
+            operation_deadline_at=request.operation_deadline_at,
+            request_id=request.request_id,
+            execution_id=process.execution_id,
+            portion_id=portion.portion_id,
+            portion_sequence=portion.sequence,
+        )
+        next_state = prepare_execution_state(
+            self._stored_state,
+            request=request,
+            execution=process,
+            active=active,
+            portion=portion,
+        )
+        await self._store.async_save(next_state)
+        self._stored_state = next_state
+        await self._async_record_dispatch_decision(
+            _DispatchDiagnosticDecision(
+                reason=DispatchReason.PORTION_READY,
+                request=request,
+                next_wake_at=None,
+                releases={
+                    "operation": self._operation_enabled,
+                    "automation": self._automation_enabled,
+                },
+                locks={},
+                record_per_request=True,
+            )
+        )
+        self._watering = True
+        task = self._hass.async_create_task(
+            self._async_execute(
+                ExecutionRequest(
+                    zone_id=request.zone_id,
+                    zone_valve=request.zone_valve,
+                    main_valve=request.main_valve,
+                    duration_seconds=duration,
+                    amount_liters=amount,
+                    hard_time_limit_seconds=runtime_limit if amount is not None else None,
+                    monitor_interval_seconds=(
+                        min(1.0, cast(float, runtime_limit)) if amount else 0
+                    ),
+                    require_meter_progress=amount is not None,
+                    on_zone_opening=self._async_mark_zone_opening,
+                    on_zone_opened=self._async_mark_zone_opened,
+                    on_zone_closed=self._async_mark_zone_closed,
+                    on_progress=self._async_update_progress,
+                    on_actuator_command=self._async_authorize_actuator_command,
+                )
+            ),
+            f"Irrigation Manager portion for {request.zone_name}",
+        )
+        self._active_task = task
+        self._publish(status="watering", active_zone_id=request.zone_id)
+        return task
 
     async def _async_prepare_execution(
         self, request: ManualIrrigationRequest
@@ -2256,11 +2919,11 @@ class IrrigationManager:
             request_id=request.request_id,
             execution_id=execution_id,
         )
-        next_state = replace(
+        next_state = prepare_execution_state(
             self._stored_state,
-            manual_requests=self._with_request(claimed),
-            irrigation_executions=(*self._stored_state.irrigation_executions, execution),
-            active_execution=active,
+            request=claimed,
+            execution=execution,
+            active=active,
         )
         await self._store.async_save(next_state)
         self._stored_state = next_state
@@ -2300,16 +2963,56 @@ class IrrigationManager:
     async def _async_authorize_actuator_command(self, entity_id: str, open_: bool) -> None:
         """Fail every opening command after emergency stop becomes durable."""
         del entity_id
-        if open_ and self._stored_state.emergency_stop:
+        if not open_:
+            return
+        if self._stored_state.emergency_stop:
             raise HomeAssistantError("The irrigation installation emergency stop is active")
+        active = self._stored_state.active_execution
+        if active is None or active.portion_id is None:
+            return
+        if active.request_id is None:
+            raise HomeAssistantError("The durable partial irrigation request is missing")
+        request = self._request(active.request_id)
+        process = self._execution(active.execution_id)
+        if request is None or process is None or process.process_deadline_at is None:
+            raise HomeAssistantError("The durable partial irrigation checkpoint is incomplete")
+        now = datetime.now(UTC)
+        decision = self._dispatch_decision(
+            request,
+            now=now,
+            continuing_execution=True,
+        )
+        if decision.reason != DispatchReason.READY:
+            raise HomeAssistantError(f"Partial irrigation opening denied: {decision.reason.value}")
+        if now >= datetime.fromisoformat(process.process_deadline_at):
+            raise HomeAssistantError("Partial irrigation opening denied: process deadline expired")
 
     async def _async_mark_zone_opening(self) -> None:
         active = self._stored_state.active_execution
         if active is None:
             raise HomeAssistantError("The durable irrigation execution is missing")
+        observed_at = datetime.now(UTC)
+        now = observed_at.isoformat()
+        transition = (
+            self._active_portion_observation(
+                active,
+                PortionOpening(portion_id=active.portion_id),
+                now=observed_at,
+            )
+            if active.portion_id is not None
+            else None
+        )
         self._stored_state = replace(
             self._stored_state,
-            active_execution=replace(active, zone_opening_at=datetime.now(UTC).isoformat()),
+            active_execution=replace(active, zone_opening_at=now),
+            irrigation_portions=(
+                self._with_process_portions(
+                    transition.process.execution_id,
+                    transition.portions,
+                )
+                if transition is not None
+                else self._stored_state.irrigation_portions
+            ),
         )
         await self._store.async_save(self._stored_state)
 
@@ -2320,13 +3023,65 @@ class IrrigationManager:
         execution = self._execution(active.execution_id)
         if execution is None:
             raise HomeAssistantError("The durable irrigation execution record is missing")
-        now = datetime.now(UTC).isoformat()
+        observed_at = datetime.now(UTC)
+        now = observed_at.isoformat()
+        transition = (
+            self._active_portion_observation(
+                active,
+                PortionStarted(portion_id=active.portion_id),
+                now=observed_at,
+            )
+            if active.portion_id is not None
+            else None
+        )
+        observed_execution = transition.process if transition is not None else execution
         self._stored_state = replace(
             self._stored_state,
             active_execution=replace(active, watering_started_at=now),
-            irrigation_executions=self._with_execution(replace(execution, watering_started_at=now)),
+            irrigation_executions=self._with_execution(
+                replace(
+                    observed_execution,
+                    watering_started_at=observed_execution.watering_started_at or now,
+                )
+            ),
+            irrigation_portions=(
+                self._with_process_portions(
+                    transition.process.execution_id,
+                    transition.portions,
+                )
+                if transition is not None
+                else self._stored_state.irrigation_portions
+            ),
         )
         await self._store.async_save(self._stored_state)
+
+    def _active_portion_observation(
+        self,
+        active: ActiveExecutionState,
+        event: PortionOpening | PortionStarted,
+        *,
+        now: datetime,
+    ) -> ProcessTransition | None:
+        """Advance a partial process for one hydraulic observation."""
+        if active.portion_id is None:
+            return None
+        process = self._execution(active.execution_id)
+        if process is None:
+            raise HomeAssistantError("The durable irrigation execution record is missing")
+        portions = tuple(
+            portion
+            for portion in self._stored_state.irrigation_portions
+            if portion.execution_id == process.execution_id
+        )
+        transition = self._portioning.advance(process, portions, event, now=now)
+        if not isinstance(transition.action, NoOp):
+            reason = (
+                transition.action.reason
+                if isinstance(transition.action, FailClosed)
+                else "unexpected_partial_observation_transition"
+            )
+            raise HomeAssistantError(reason)
+        return transition
 
     async def _async_mark_zone_closed(self) -> None:
         """Persist the verified zone-valve closure before settling and meter reads."""
@@ -2337,10 +3092,16 @@ class IrrigationManager:
         if execution is None:
             raise HomeAssistantError("The durable irrigation execution record is missing")
         now = datetime.now(UTC).isoformat()
+        portion = self._portion(active.portion_id)
         self._stored_state = replace(
             self._stored_state,
             active_execution=replace(active, watering_ended_at=now),
             irrigation_executions=self._with_execution(replace(execution, watering_ended_at=now)),
+            irrigation_portions=(
+                self._with_portion(replace(portion, watering_ended_at=now))
+                if portion is not None
+                else self._stored_state.irrigation_portions
+            ),
         )
         await self._store.async_save(self._stored_state)
 
@@ -2412,52 +3173,16 @@ class IrrigationManager:
             ),
             warnings=((result.safety_violation,) if result.safety_violation is not None else ()),
         )
-        zone_totals = dict(self._stored_state.zone_totals_liters)
-        zone_totals[request.zone_id] = (
-            zone_totals.get(request.zone_id, 0.0) + result.delivered_liters
-        )
-        qualities = dict(self._stored_state.zone_measurement_quality)
-        qualities[request.zone_id] = result.measurement_quality
-        last_liters = dict(self._stored_state.zone_last_delivered_liters)
-        last_liters[request.zone_id] = result.delivered_liters
-        last_duration = dict(self._stored_state.zone_last_duration_seconds)
-        last_duration[request.zone_id] = result.duration_seconds
-        installation_lock = self._stored_state.installation_safety_lock
-        installation_lock_at = self._stored_state.installation_safety_lock_at
-        if failed:
-            installation_lock = completion
-            installation_lock_at = now.isoformat()
-            if request_id in self._request_error_waiters:
-                self._request_errors[request_id] = HomeAssistantError(str(completion))
-        history = self._stored_state.water_consumption_history
-        if result.delivered_liters > 0:
-            history = (
-                *history,
-                WaterConsumptionRecord(
-                    recorded_at=now.isoformat(),
-                    amount_liters=result.delivered_liters,
-                    zone_id=request.zone_id,
-                    source=request.source,
-                    quality=result.measurement_quality,
-                    request_id=request.request_id,
-                    execution_id=execution.execution_id,
-                ),
-            )[-50_000:]
-        next_state = replace(
+        if failed and request_id in self._request_error_waiters:
+            self._request_errors[request_id] = HomeAssistantError(str(completion))
+        next_state = settle_execution_state(
             self._stored_state,
-            installation_total_liters=(
-                self._stored_state.installation_total_liters + result.delivered_liters
-            ),
-            zone_totals_liters=zone_totals,
-            zone_measurement_quality=qualities,
-            zone_last_delivered_liters=last_liters,
-            zone_last_duration_seconds=last_duration,
-            installation_safety_lock=installation_lock,
-            installation_safety_lock_at=installation_lock_at,
-            manual_requests=self._with_request(request),
-            irrigation_executions=self._with_execution(execution),
-            active_execution=None,
-            water_consumption_history=history,
+            request=request,
+            execution=execution,
+            delivered_liters=result.delivered_liters,
+            delivered_duration_seconds=result.duration_seconds,
+            recorded_at=now.isoformat(),
+            safety_lock_reason=completion if failed else None,
         )
         self._stored_state = self._with_meter_continuity(next_state)
         await self._store.async_save(self._stored_state)
@@ -2472,6 +3197,112 @@ class IrrigationManager:
         self._cancel_requested.discard(request_id)
         self._signal_terminal(request_id)
         self._planning_event.set()
+        self._refresh_complete_idle_event()
+
+    async def _async_finish_partial_execution(
+        self,
+        request_id: str,
+        result: ExecutionResult,
+    ) -> None:
+        """Settle one bounded portion and persist pause or terminal process state."""
+        request = self._request(request_id)
+        if request is None or request.execution_id is None:
+            return
+        process = self._execution(request.execution_id)
+        active = self._stored_state.active_execution
+        if (
+            process is None
+            or request.status != "executing"
+            or process.status != "watering"
+            or active is None
+            or active.request_id != request_id
+            or active.execution_id != process.execution_id
+            or active.portion_id is None
+        ):
+            return
+        portions = tuple(
+            portion
+            for portion in self._stored_state.irrigation_portions
+            if portion.execution_id == process.execution_id
+        )
+        now = datetime.now(UTC)
+        transition = self._portioning.advance(
+            process,
+            portions,
+            PortionSettled(
+                portion_id=active.portion_id,
+                delivered_liters=result.delivered_liters,
+                delivered_duration_seconds=result.duration_seconds,
+                target_reached=result.target_reached,
+                measurement_quality=result.measurement_quality,
+                safety_violation=result.safety_violation,
+                stopped=result.stopped,
+            ),
+            now=now,
+        )
+        updated_process = transition.process
+        settled_portion = next(
+            portion for portion in transition.portions if portion.portion_id == active.portion_id
+        )
+        if updated_process.status == "completed":
+            request_status = "completed"
+        elif updated_process.status == "soaking":
+            request_status = "executing"
+        else:
+            request_status = "cancelled"
+        updated_request = replace(
+            request,
+            remaining_value=updated_process.remaining_value,
+            status=request_status,
+            revision=request.revision + 1,
+        )
+        if updated_process.status == "failed":
+            updated_request = _with_automatic_cancellation_reason(
+                updated_request,
+                AutomaticCancellationReason.EXECUTION_FAILED,
+            )
+        elif updated_process.status == "cancelled":
+            try:
+                cancellation_reason = IrrigationCancellationReason(
+                    updated_process.cancellation_reason or "stopped"
+                )
+            except ValueError:
+                automatic_reason = AutomaticCancellationReason.EXECUTION_FAILED
+            else:
+                automatic_reason = _AUTOMATIC_REASON_BY_PROCESS_CANCELLATION[cancellation_reason]
+            updated_request = _with_automatic_cancellation_reason(
+                updated_request,
+                automatic_reason,
+            )
+        safety_lock_reason = (
+            transition.action.reason
+            if isinstance(transition.action, FailClosed) and transition.action.safety_lock_required
+            else None
+        )
+        next_state = settle_execution_state(
+            self._stored_state,
+            request=updated_request,
+            execution=updated_process,
+            portion=settled_portion,
+            delivered_liters=result.delivered_liters,
+            delivered_duration_seconds=result.duration_seconds,
+            recorded_at=now.isoformat(),
+            safety_lock_reason=safety_lock_reason,
+        )
+        self._stored_state = self._with_meter_continuity(next_state)
+        await self._store.async_save(self._stored_state)
+        await self._async_record_partial_recovery_diagnostic(
+            request=updated_request,
+            reason=self._partial_transition_diagnostic_reason(transition),
+            transition=transition,
+        )
+        if isinstance(transition.action, WaitUntil):
+            self._queue_event.set()
+        else:
+            if isinstance(transition.action, CompleteProcess | CancelProcess | FailClosed):
+                self._signal_terminal(request_id)
+            self._cancel_requested.discard(request_id)
+            self._planning_event.set()
         self._refresh_complete_idle_event()
 
     async def _async_fail_request(self, request_id: str, error: Exception) -> None:
@@ -2491,10 +3322,27 @@ class IrrigationManager:
             if execution is not None
             else self._stored_state.irrigation_executions
         )
+        portions = (
+            tuple(
+                replace(
+                    portion,
+                    status="interrupted",
+                    watering_ended_at=now,
+                    result=str(error),
+                )
+                if portion.execution_id == execution.execution_id
+                and portion.status in {"prepared", "watering"}
+                else portion
+                for portion in self._stored_state.irrigation_portions
+            )
+            if request.portion_policy is not None and execution is not None
+            else self._stored_state.irrigation_portions
+        )
         self._stored_state = replace(
             self._stored_state,
             manual_requests=self._with_request(failed),
             irrigation_executions=executions,
+            irrigation_portions=portions,
             active_execution=None,
             installation_safety_lock=str(error),
             installation_safety_lock_at=now,
@@ -2506,6 +3354,478 @@ class IrrigationManager:
             self._request_errors[request_id] = error
         self._signal_terminal(request_id)
         self._refresh_complete_idle_event()
+
+    async def _async_recover_partial_execution(
+        self,
+        *,
+        valves_confirmed_closed: bool,
+    ) -> None:
+        """Recover every durable partial process after one fail-closed valve sweep."""
+        active = self._stored_state.active_execution
+        candidates = tuple(
+            execution
+            for execution in self._stored_state.irrigation_executions
+            if execution.portion_policy is not None
+            and (
+                execution.status in {"watering", "soaking"}
+                or (active is not None and active.execution_id == execution.execution_id)
+            )
+        )
+        if (
+            active is not None
+            and active.portion_id is not None
+            and not any(process.execution_id == active.execution_id for process in candidates)
+        ):
+            await self._async_fail_ambiguous_partial_recovery(
+                (),
+                reason="portion_state_inconsistent",
+            )
+            active = None
+        if not candidates:
+            if active is not None:
+                await self._async_fail_ambiguous_partial_recovery(
+                    (),
+                    reason="portion_state_inconsistent",
+                )
+            return
+        ordered = tuple(
+            sorted(
+                candidates,
+                key=lambda process: (
+                    active is None or process.execution_id != active.execution_id,
+                    process.created_at,
+                ),
+            )
+        )
+        for process in ordered:
+            current_active = self._stored_state.active_execution
+            await self._async_recover_one_partial_execution(
+                process=process,
+                active=(
+                    current_active
+                    if current_active is not None
+                    and current_active.execution_id == process.execution_id
+                    else None
+                ),
+                valves_confirmed_closed=valves_confirmed_closed,
+            )
+
+    async def _async_recover_one_partial_execution(
+        self,
+        *,
+        process: IrrigationExecutionState,
+        active: ActiveExecutionState | None,
+        valves_confirmed_closed: bool,
+    ) -> None:
+        """Recover one independent process while preserving other hardware-free pauses."""
+        request = self._request(process.request_id)
+        portions = tuple(
+            portion
+            for portion in self._stored_state.irrigation_portions
+            if portion.execution_id == process.execution_id
+        )
+        if request is None:
+            await self._async_fail_ambiguous_partial_recovery(
+                (process,),
+                reason="portion_state_inconsistent",
+            )
+            return
+        observation = await self._async_partial_recovery_observation(
+            request=request,
+            process=process,
+            portions=portions,
+            active=active,
+            valves_confirmed_closed=valves_confirmed_closed,
+            now=datetime.now(UTC),
+        )
+        observed_at = datetime.now(UTC)
+        transition = self._portioning.advance(
+            process,
+            portions,
+            observation,
+            now=observed_at,
+        )
+        recovered_portion = next(
+            (
+                portion
+                for portion in transition.portions
+                if portion.portion_id == observation.portion_id
+                and portion.status == "settled"
+                and any(
+                    previous.portion_id == portion.portion_id
+                    and previous.status in {"prepared", "watering"}
+                    for previous in portions
+                )
+            ),
+            None,
+        )
+        if recovered_portion is not None:
+            await self._async_persist_recovered_partial_settlement(
+                request=request,
+                transition=transition,
+                portion=recovered_portion,
+                recorded_at=observed_at,
+            )
+        elif isinstance(transition.action, FailClosed):
+            await self._async_persist_partial_fail_closed(request, transition)
+        else:
+            self._stored_state = replace(
+                self._stored_state,
+                irrigation_executions=self._with_execution(transition.process),
+                irrigation_portions=self._with_process_portions(
+                    transition.process.execution_id,
+                    transition.portions,
+                ),
+                active_execution=(
+                    None if active is not None else self._stored_state.active_execution
+                ),
+            )
+            await self._store.async_save(self._stored_state)
+            self._queue_event.set()
+        reason = self._partial_transition_diagnostic_reason(transition)
+        await self._async_record_partial_recovery_diagnostic(
+            request=request,
+            reason=reason,
+            transition=transition,
+        )
+        _LOGGER.info(
+            "Recovered irrigation process request_id=%s execution_id=%s portion_id=%s reason=%s",
+            request.request_id,
+            process.execution_id,
+            observation.portion_id,
+            reason.value,
+        )
+
+    async def _async_partial_recovery_observation(
+        self,
+        *,
+        request: ManualIrrigationRequest,
+        process: IrrigationExecutionState,
+        portions: tuple[IrrigationPortionState, ...],
+        active: ActiveExecutionState | None,
+        valves_confirmed_closed: bool,
+        now: datetime,
+    ) -> RecoveryObserved:
+        """Build recovery facts without deciding whether the process may continue."""
+        checkpoint_present = active is not None
+        portion_id = active.portion_id if active is not None else None
+        base = RecoveryObserved(
+            valves_confirmed_closed=valves_confirmed_closed,
+            portion_id=portion_id,
+            active_checkpoint_present=checkpoint_present,
+        )
+        inconsistent = replace(base, checkpoint_consistent=False)
+        if (
+            request.status != "executing"
+            or request.execution_id != process.execution_id
+            or request.zone_id != process.zone_id
+            or request.target_type != process.target_type
+            or request.target_value != process.target_value
+            or request.remaining_value != process.remaining_value
+            or request.portion_policy != process.portion_policy
+            or request.operation_deadline_at != process.operation_deadline_at
+            or request.delivery_runtime_limit_seconds != process.delivery_runtime_limit_seconds
+        ):
+            return inconsistent
+        if not valves_confirmed_closed or active is None or process.status == "soaking":
+            return base
+        if (
+            active.execution_id != process.execution_id
+            or active.request_id != process.request_id
+            or active.request_id != request.request_id
+            or active.portion_id is None
+            or active.zone_valve != request.zone_valve
+            or active.main_valve != request.main_valve
+        ):
+            return inconsistent
+        portion = next(
+            (item for item in portions if item.portion_id == active.portion_id),
+            None,
+        )
+        if (
+            portion is None
+            or active.portion_sequence != portion.sequence
+            or active.zone_id != process.zone_id
+        ):
+            return inconsistent
+        opening_at = portion.opening_attempted_at
+        if opening_at != active.zone_opening_at and (
+            opening_at is not None or active.zone_opening_at is not None
+        ):
+            return inconsistent
+        if portion.status == "prepared" and opening_at is None:
+            if any(
+                value is not None
+                for value in (
+                    active.watering_started_at,
+                    active.watering_ended_at,
+                    portion.watering_started_at,
+                    portion.watering_ended_at,
+                )
+            ):
+                return inconsistent
+            return base
+        if portion.status == "prepared":
+            if any(
+                value is not None
+                for value in (
+                    active.watering_started_at,
+                    active.watering_ended_at,
+                    portion.watering_started_at,
+                    portion.watering_ended_at,
+                )
+            ):
+                return inconsistent
+            meter_delta = await self._async_recovery_meter_delta(active)
+            if meter_delta == 0.0:
+                return RecoveryObserved(
+                    valves_confirmed_closed=True,
+                    portion_id=portion.portion_id,
+                    delivery_reliable=True,
+                    delivered_liters=0.0,
+                    delivered_duration_seconds=0.0,
+                    measurement_quality="measured",
+                    active_checkpoint_present=True,
+                )
+            return base
+        if portion.status != "watering":
+            return inconsistent
+        if (
+            active.watering_started_at is None
+            or portion.watering_started_at is None
+            or active.watering_started_at != portion.watering_started_at
+        ):
+            return inconsistent
+        started_at = self._valid_recovery_timestamp(active.watering_started_at, now=now)
+        if started_at is None:
+            return inconsistent
+        if active.watering_ended_at is None and portion.watering_ended_at is None:
+            ended_at = now
+        elif (
+            active.watering_ended_at is None
+            or portion.watering_ended_at is None
+            or active.watering_ended_at != portion.watering_ended_at
+        ):
+            return inconsistent
+        else:
+            parsed_ended_at = self._valid_recovery_timestamp(
+                active.watering_ended_at,
+                now=now,
+            )
+            if parsed_ended_at is None:
+                return inconsistent
+            ended_at = parsed_ended_at
+        if ended_at < started_at:
+            return inconsistent
+        if (
+            active.watering_ended_at is not None
+            and process.watering_ended_at != active.watering_ended_at
+        ):
+            return inconsistent
+        delivered_duration = min(
+            active.requested_duration_seconds,
+            max(0.0, (ended_at - started_at).total_seconds()),
+        )
+        meter_delta = await self._async_recovery_meter_delta(active)
+        if process.target_type == "volume" and meter_delta is None:
+            return base
+        return RecoveryObserved(
+            valves_confirmed_closed=True,
+            portion_id=portion.portion_id,
+            delivery_reliable=True,
+            delivered_liters=meter_delta or 0.0,
+            delivered_duration_seconds=delivered_duration,
+            measurement_quality="measured" if meter_delta is not None else "unavailable",
+            active_checkpoint_present=True,
+        )
+
+    async def _async_recovery_meter_delta(
+        self,
+        active: ActiveExecutionState,
+    ) -> float | None:
+        """Return a trustworthy non-negative meter delta, or no evidence."""
+        if not self._has_meter or active.meter_raw_baseline_liters is None:
+            return None
+        try:
+            current = await self._meter.read_liters()
+        except Exception:  # noqa: BLE001
+            return None
+        delta = current - active.meter_raw_baseline_liters
+        return delta if math.isfinite(delta) and delta >= 0 else None
+
+    @staticmethod
+    def _valid_recovery_timestamp(value: str, *, now: datetime) -> datetime | None:
+        """Parse one persisted recovery timestamp and reject future or naive values."""
+        try:
+            observed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if observed.utcoffset() is None or observed > now:
+            return None
+        return observed
+
+    async def _async_persist_recovered_partial_settlement(
+        self,
+        *,
+        request: ManualIrrigationRequest,
+        transition: ProcessTransition,
+        portion: IrrigationPortionState,
+        recorded_at: datetime,
+    ) -> None:
+        """Atomically account for one recovered portion using the normal settlement primitive."""
+        process = transition.process
+        request_status = (
+            "completed"
+            if process.status == "completed"
+            else "executing"
+            if process.status == "soaking"
+            else "cancelled"
+        )
+        updated_request = replace(
+            request,
+            remaining_value=process.remaining_value,
+            status=request_status,
+            revision=request.revision + 1,
+        )
+        if process.status in {"failed", "cancelled"}:
+            updated_request = _with_automatic_cancellation_reason(
+                updated_request,
+                AutomaticCancellationReason.EXECUTION_FAILED,
+            )
+        action = transition.action
+        safety_lock_reason = (
+            action.reason
+            if isinstance(action, FailClosed) and action.safety_lock_required
+            else None
+        )
+        next_state = settle_execution_state(
+            self._stored_state,
+            request=updated_request,
+            execution=process,
+            portion=portion,
+            delivered_liters=portion.delivered_liters,
+            delivered_duration_seconds=portion.delivered_duration_seconds,
+            recorded_at=recorded_at.isoformat(),
+            safety_lock_reason=safety_lock_reason,
+        )
+        self._stored_state = self._with_meter_continuity(next_state)
+        await self._store.async_save(self._stored_state)
+        if isinstance(action, WaitUntil):
+            self._queue_event.set()
+        elif isinstance(action, CompleteProcess | CancelProcess | FailClosed):
+            self._signal_terminal(request.request_id)
+
+    async def _async_fail_ambiguous_partial_recovery(
+        self,
+        processes: tuple[IrrigationExecutionState, ...],
+        *,
+        reason: str,
+    ) -> None:
+        """Persist one installation lock when no unique process can own recovery."""
+        now = datetime.now(UTC).isoformat()
+        execution_ids = {process.execution_id for process in processes}
+        request_ids = {process.request_id for process in processes}
+        active = self._stored_state.active_execution
+        if active is not None and active.request_id is not None:
+            request_ids.add(active.request_id)
+        requests = tuple(
+            _with_automatic_cancellation_reason(
+                replace(request, status="cancelled", revision=request.revision + 1),
+                AutomaticCancellationReason.EXECUTION_FAILED,
+            )
+            if request.request_id in request_ids and request.status not in _FINAL_REQUEST_STATUSES
+            else request
+            for request in self._stored_state.manual_requests
+        )
+        executions = tuple(
+            replace(process, status="failed", ended_at=now, result=reason)
+            if process.execution_id in execution_ids
+            else process
+            for process in self._stored_state.irrigation_executions
+        )
+        portions = tuple(
+            replace(portion, status="interrupted", watering_ended_at=now, result=reason)
+            if portion.execution_id in execution_ids and portion.status in {"prepared", "watering"}
+            else portion
+            for portion in self._stored_state.irrigation_portions
+        )
+        self._stored_state = apply_safety_lock(
+            replace(
+                self._stored_state,
+                manual_requests=requests,
+                irrigation_executions=executions,
+                irrigation_portions=portions,
+                active_execution=None,
+            ),
+            reason=reason,
+            recorded_at=now,
+        )
+        await self._store.async_save(self._stored_state)
+        request = next((item for item in requests if item.request_id in request_ids), None)
+        if request is not None:
+            transition = _DispatchDiagnosticDecision(
+                reason=DispatchReason.PORTION_STATE_INCONSISTENT,
+                request=request,
+                next_wake_at=None,
+                releases={},
+                locks={"safety_lock": reason},
+                record_per_request=True,
+            )
+            await self._async_record_dispatch_decision(transition)
+
+    @staticmethod
+    def _partial_transition_diagnostic_reason(
+        transition: ProcessTransition,
+    ) -> DispatchReason:
+        """Map internal process outcomes to the stable external diagnostic vocabulary."""
+        action = transition.action
+        if isinstance(action, WaitUntil):
+            return DispatchReason.SOAK_PAUSE
+        if isinstance(action, PreparePortion):
+            return DispatchReason.PORTION_READY
+        if isinstance(action, CompleteProcess):
+            return DispatchReason.COMPLETED
+        if isinstance(action, CancelProcess):
+            return DispatchReason.CANCELLED
+        if isinstance(action, NoOp):
+            return DispatchReason.PORTION_READY
+        reason = action.reason if isinstance(action, FailClosed) else "portion_ready"
+        return {
+            "portion_limit_exceeded": DispatchReason.PORTION_LIMIT_REACHED,
+            "process_lifetime_exceeded": DispatchReason.PROCESS_LIFETIME_EXCEEDED,
+            "process_deadline_exceeded": DispatchReason.PROCESS_DEADLINE_EXCEEDED,
+            "process_window_not_fit": DispatchReason.PROCESS_DEADLINE_EXCEEDED,
+            "process_state_inconsistent": DispatchReason.PORTION_STATE_INCONSISTENT,
+            "portion_state_inconsistent": DispatchReason.PORTION_STATE_INCONSISTENT,
+            "portion_recovery_unsafe": DispatchReason.PORTION_RECOVERY_UNSAFE,
+        }.get(reason, DispatchReason.PORTION_STATE_INCONSISTENT)
+
+    async def _async_record_partial_recovery_diagnostic(
+        self,
+        *,
+        request: ManualIrrigationRequest,
+        reason: DispatchReason,
+        transition: ProcessTransition,
+    ) -> None:
+        """Persist one bounded recovery decision with stable process identities."""
+        action = transition.action
+        next_wake_at = action.when.isoformat() if isinstance(action, WaitUntil) else None
+        locks: dict[str, str | bool] = {}
+        if isinstance(action, FailClosed) and action.safety_lock_required:
+            locks["safety_lock"] = action.reason
+        await self._async_record_dispatch_decision(
+            _DispatchDiagnosticDecision(
+                reason=reason,
+                request=request,
+                next_wake_at=next_wake_at,
+                releases={
+                    "operation": self._operation_enabled,
+                    "automation": self._automation_enabled,
+                },
+                locks=locks,
+                record_per_request=True,
+            )
+        )
 
     async def _async_recover_interrupted_execution(self) -> None:
         active = self._stored_state.active_execution
@@ -2682,17 +4002,23 @@ class IrrigationManager:
                 raise HomeAssistantError("Irrigation reconfiguration must be completed first")
         if not enabled:
             await self.async_stop_calibration(require_active=False)
-        active_request_id: str | None
+        request_ids_to_stop: set[str]
         async with self._command_lock:
             active = self._stored_state.active_execution
-            active_request_id = active.request_id if active is not None else None
+            request_ids_to_stop = set(self._partial_open_request_ids())
+            if active is not None and active.request_id is not None:
+                request_ids_to_stop.add(active.request_id)
             next_state = replace(self._stored_state, operation_enabled=enabled)
             await self._store.async_save(next_state)
             self._stored_state = next_state
             self._publish(status="idle", active_zone_id=None)
             self._queue_event.set()
-        if not enabled and active_request_id is not None:
-            await self.async_stop(request_id=active_request_id)
+        if not enabled:
+            for request_id in sorted(request_ids_to_stop):
+                await self.async_cancel_request(
+                    request_id,
+                    reason=IrrigationCancellationReason.OPERATION_DISABLED,
+                )
         return {"operation_enabled": enabled}
 
     async def async_set_installation_automation(
@@ -2704,11 +4030,13 @@ class IrrigationManager:
             if any(self._zone_reconfiguration_required(zone.data) for zone in self._zone_configs):
                 raise HomeAssistantError("Irrigation reconfiguration must be completed first")
         active_request: ManualIrrigationRequest | None = None
+        partial_request_ids: tuple[str, ...] = ()
         async with self._command_lock:
             active = self._stored_state.active_execution
             active_request = (
                 self._request(active.request_id) if active and active.request_id else None
             )
+            partial_request_ids = self._partial_open_request_ids(source="automatic")
             cancelled_ids = {
                 request.request_id
                 for request in self._stored_state.manual_requests
@@ -2736,13 +4064,15 @@ class IrrigationManager:
             )
             self._publish(status="idle", active_zone_id=None)
             self._queue_event.set()
-        if (
-            not enabled
-            and stop_active
-            and active_request is not None
-            and active_request.source == "automatic"
-        ):
-            await self.async_stop(request_id=active_request.request_id)
+        if not enabled and stop_active:
+            request_ids_to_stop = set(partial_request_ids)
+            if active_request is not None and active_request.source == "automatic":
+                request_ids_to_stop.add(active_request.request_id)
+            for request_id in sorted(request_ids_to_stop):
+                await self.async_cancel_request(
+                    request_id,
+                    reason=IrrigationCancellationReason.AUTOMATION_DISABLED,
+                )
         replan = await self.async_plan_automatic() if enabled else None
         return {"automation_enabled": enabled, "replan": replan}
 
@@ -2756,20 +4086,29 @@ class IrrigationManager:
         active = self._stored_state.active_execution
         if not enabled and active is not None and active.zone_id == zone.zone_id:
             await self.async_stop_calibration(require_active=False)
-        active_request_id: str | None = None
+        request_ids_to_stop: set[str] = set()
         async with self._command_lock:
             releases = dict(self._stored_state.zone_operation_enabled)
             releases[zone.zone_id] = enabled
             active = self._stored_state.active_execution
-            if active is not None and active.zone_id == zone.zone_id:
-                active_request_id = active.request_id
+            request_ids_to_stop.update(self._partial_open_request_ids(zone_id=zone.zone_id))
+            if (
+                active is not None
+                and active.zone_id == zone.zone_id
+                and active.request_id is not None
+            ):
+                request_ids_to_stop.add(active.request_id)
             next_state = replace(self._stored_state, zone_operation_enabled=releases)
             await self._store.async_save(next_state)
             self._stored_state = next_state
             self._publish(status="idle", active_zone_id=None)
             self._queue_event.set()
-        if not enabled and active_request_id is not None:
-            await self.async_stop(request_id=active_request_id)
+        if not enabled:
+            for request_id in sorted(request_ids_to_stop):
+                await self.async_cancel_request(
+                    request_id,
+                    reason=IrrigationCancellationReason.ZONE_DISABLED,
+                )
         return {"zone_id": zone.zone_id, "operation_enabled": enabled}
 
     async def async_set_zone_automation(
@@ -2780,12 +4119,17 @@ class IrrigationManager:
         if enabled:
             self._require_reconfigured(zone)
         active_request: ManualIrrigationRequest | None = None
+        partial_request_ids: tuple[str, ...] = ()
         async with self._command_lock:
             releases = dict(self._stored_state.zone_automation_enabled)
             releases[zone.zone_id] = enabled
             active = self._stored_state.active_execution
             active_request = (
                 self._request(active.request_id) if active and active.request_id else None
+            )
+            partial_request_ids = self._partial_open_request_ids(
+                zone_id=zone.zone_id,
+                source="automatic",
             )
             cancelled_ids = {
                 request.request_id
@@ -2820,14 +4164,19 @@ class IrrigationManager:
             )
             self._publish(status="idle", active_zone_id=None)
             self._queue_event.set()
-        if (
-            not enabled
-            and stop_active
-            and active_request is not None
-            and active_request.zone_id == zone.zone_id
-            and active_request.source == "automatic"
-        ):
-            await self.async_stop(request_id=active_request.request_id)
+        if not enabled and stop_active:
+            request_ids_to_stop = set(partial_request_ids)
+            if (
+                active_request is not None
+                and active_request.zone_id == zone.zone_id
+                and active_request.source == "automatic"
+            ):
+                request_ids_to_stop.add(active_request.request_id)
+            for request_id in sorted(request_ids_to_stop):
+                await self.async_cancel_request(
+                    request_id,
+                    reason=IrrigationCancellationReason.ZONE_AUTOMATION_DISABLED,
+                )
         replan = await self.async_plan_automatic() if enabled else None
         return {"zone_id": zone.zone_id, "automation_enabled": enabled, "replan": replan}
 
@@ -2839,6 +4188,28 @@ class IrrigationManager:
             request is not None
             and request.source == "automatic"
             and (zone_subentry_id is None or request.zone_subentry_id == zone_subentry_id)
+        )
+
+    def _partial_open_request_ids(
+        self,
+        *,
+        zone_id: str | None = None,
+        source: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return every partial process that still owns future hydraulic work."""
+        execution_ids = {
+            execution.execution_id
+            for execution in self._stored_state.irrigation_executions
+            if execution.portion_policy is not None
+            and execution.status in {"watering", "soaking"}
+            and (zone_id is None or execution.zone_id == zone_id)
+        }
+        return tuple(
+            request.request_id
+            for request in self._stored_state.manual_requests
+            if request.execution_id in execution_ids
+            and request.status == "executing"
+            and (source is None or request.source == source)
         )
 
     async def async_emergency_stop(self) -> None:
@@ -2853,7 +4224,13 @@ class IrrigationManager:
             )
             await self._store.async_save(self._stored_state)
             active = self._stored_state.active_execution
+            partial_request_ids = self._partial_open_request_ids()
         await self.async_stop_calibration(require_active=False)
+        for request_id in partial_request_ids:
+            await self.async_cancel_request(
+                request_id,
+                reason=IrrigationCancellationReason.EMERGENCY_STOP,
+            )
         active = self._stored_state.active_execution
         if active is not None:
             if active.request_id is not None and self._request(active.request_id) is not None:
@@ -2861,7 +4238,13 @@ class IrrigationManager:
             await self._async_close_entities(
                 [entity for entity in (active.zone_valve, active.main_valve) if entity]
             )
-            if self._stored_state.active_execution is not None:
+            if self._partial_recovery_required:
+                await self._async_recover_partial_execution(
+                    valves_confirmed_closed=True,
+                )
+                if self._stored_state.active_execution is not None:
+                    await self._async_recover_interrupted_execution()
+            elif self._stored_state.active_execution is not None:
                 await self._async_recover_interrupted_execution()
         self._publish(status="emergency_stop", active_zone_id=None)
 
@@ -2904,10 +4287,16 @@ class IrrigationManager:
                 with suppress(HomeAssistantError):
                     await self.async_cancel_request(request.request_id)
 
-    async def async_cancel_request(self, request_id: str) -> None:
+    async def async_cancel_request(
+        self,
+        request_id: str,
+        *,
+        reason: IrrigationCancellationReason = IrrigationCancellationReason.USER_REQUESTED,
+    ) -> None:
         """Cancel a pending or executing request."""
         task: asyncio.Task[ExecutionResult] | None = None
         terminal: asyncio.Event | None = None
+        settle_cancelled_partial = False
         async with self._command_lock:
             request = self._request(request_id)
             if request is None:
@@ -2915,11 +4304,90 @@ class IrrigationManager:
             if request.status in _FINAL_REQUEST_STATUSES:
                 raise HomeAssistantError("The irrigation request is already final")
             if request.status == "executing":
-                self._cancel_requested.add(request_id)
-                task = self._active_task
-                if task is not None:
-                    terminal = self._terminal_events.setdefault(request_id, asyncio.Event())
-                    task.cancel()
+                process = self._execution(request.execution_id)
+                if (
+                    request.portion_policy is not None
+                    and process is not None
+                    and process.status == "soaking"
+                ):
+                    portions = tuple(
+                        portion
+                        for portion in self._stored_state.irrigation_portions
+                        if portion.execution_id == process.execution_id
+                    )
+                    transition = self._portioning.advance(
+                        process,
+                        portions,
+                        CancelRequested(reason=reason.value),
+                        now=datetime.now(UTC),
+                    )
+                    if not isinstance(transition.action, CancelProcess):
+                        raise HomeAssistantError(
+                            "The soaking irrigation process could not be cancelled safely"
+                        )
+                    cancelled = _with_automatic_cancellation_reason(
+                        replace(
+                            request,
+                            remaining_value=transition.process.remaining_value,
+                            status="cancelled",
+                            revision=request.revision + 1,
+                        ),
+                        _AUTOMATIC_REASON_BY_PROCESS_CANCELLATION[reason],
+                    )
+                    self._stored_state = replace(
+                        self._stored_state,
+                        manual_requests=self._with_request(cancelled),
+                        irrigation_executions=self._with_execution(transition.process),
+                        irrigation_portions=self._with_process_portions(
+                            process.execution_id,
+                            transition.portions,
+                        ),
+                        active_execution=None,
+                    )
+                    await self._store.async_save(self._stored_state)
+                    self._signal_terminal(request_id)
+                    self._queue_event.set()
+                    self._planning_event.set()
+                    self._refresh_complete_idle_event()
+                else:
+                    if (
+                        request.portion_policy is not None
+                        and process is not None
+                        and process.status == "watering"
+                    ):
+                        portions = tuple(
+                            portion
+                            for portion in self._stored_state.irrigation_portions
+                            if portion.execution_id == process.execution_id
+                        )
+                        transition = self._portioning.advance(
+                            process,
+                            portions,
+                            CancelRequested(reason=reason.value),
+                            now=datetime.now(UTC),
+                        )
+                        if not isinstance(transition.action, StopActivePortion):
+                            raise HomeAssistantError(
+                                "The active irrigation process could not be stopped safely"
+                            )
+                        self._stored_state = replace(
+                            self._stored_state,
+                            irrigation_executions=self._with_execution(transition.process),
+                            irrigation_portions=self._with_process_portions(
+                                process.execution_id,
+                                transition.portions,
+                            ),
+                        )
+                        # The executor may react to cancellation immediately. Persist the
+                        # whole-process intent first so every observer sees why the active
+                        # hydraulic portion is being interrupted.
+                        await self._store.async_save(self._stored_state)
+                        settle_cancelled_partial = True
+                    self._cancel_requested.add(request_id)
+                    task = self._active_task
+                    if task is not None:
+                        terminal = self._terminal_events.setdefault(request_id, asyncio.Event())
+                        task.cancel()
             else:
                 cancelled = _with_automatic_cancellation_reason(
                     replace(
@@ -2927,7 +4395,7 @@ class IrrigationManager:
                         status="cancelled",
                         revision=request.revision + 1,
                     ),
-                    AutomaticCancellationReason.USER_REQUESTED,
+                    _AUTOMATIC_REASON_BY_PROCESS_CANCELLATION[reason],
                 )
                 self._stored_state = replace(
                     self._stored_state, manual_requests=self._with_request(cancelled)
@@ -2946,6 +4414,10 @@ class IrrigationManager:
         if task is not None:
             assert terminal is not None
             try:
+                if settle_cancelled_partial:
+                    result = await task
+                    async with self._command_lock:
+                        await self._async_finish_partial_execution(request_id, result)
                 await terminal.wait()
             finally:
                 self._terminal_events.pop(request_id, None)
@@ -3032,6 +4504,14 @@ class IrrigationManager:
                 continue
             if result is not None and result not in {execution.status, execution.result}:
                 continue
+            portions = sorted(
+                (
+                    portion
+                    for portion in self._stored_state.irrigation_portions
+                    if portion.execution_id == execution.execution_id
+                ),
+                key=lambda portion: (portion.sequence, portion.portion_id),
+            )
             items.append(
                 {
                     "execution_id": execution.execution_id,
@@ -3048,6 +4528,26 @@ class IrrigationManager:
                         else None
                     ),
                     "completion_reason": execution.result,
+                    "portion_count": len(portions),
+                    "portions": [
+                        {
+                            "portion_id": portion.portion_id,
+                            "sequence": portion.sequence,
+                            "status": portion.status,
+                            "target_type": portion.target_type,
+                            "target_value": portion.target_value,
+                            "started_at": portion.watering_started_at,
+                            "ended_at": portion.watering_ended_at,
+                            "actual_duration": portion.delivered_duration_seconds,
+                            "actual_water": (
+                                portion.delivered_liters
+                                if portion.measurement_quality == "measured"
+                                else None
+                            ),
+                            "result": portion.result,
+                        }
+                        for portion in portions
+                    ],
                 }
             )
         page = items[offset : offset + limit]
@@ -3515,8 +5015,62 @@ class IrrigationManager:
         self._publish(status=self._coordinator.data.status, active_zone_id=self._active_zone_id)
         return record.as_dict()
 
+    def _partial_process_projections(self) -> tuple[PartialProcessSnapshot, ...]:
+        """Project every live partial process in deterministic dispatch urgency order."""
+        active = self._stored_state.active_execution
+        projections: list[PartialProcessSnapshot] = []
+        for process in self._stored_state.irrigation_executions:
+            policy = process.portion_policy
+            if policy is None or process.status not in {"watering", "soaking"}:
+                continue
+            latest_safe_start: str | None = None
+            if process.status == "soaking":
+                with suppress(ValueError):
+                    latest_safe_start = resume_candidate_from_execution(
+                        process
+                    ).latest_safe_start.isoformat()
+            current_portion = (
+                active.portion_sequence
+                if active is not None
+                and active.execution_id == process.execution_id
+                and active.portion_sequence is not None
+                else process.completed_portion_count + 1
+            )
+            projections.append(
+                PartialProcessSnapshot(
+                    request_id=process.request_id,
+                    execution_id=process.execution_id,
+                    zone_id=process.zone_id,
+                    target_type=process.target_type,
+                    status=process.status,
+                    remaining_value=process.remaining_value,
+                    next_portion_at=process.next_portion_at,
+                    current_portion=current_portion,
+                    maximum_portions=policy.maximum_portions,
+                    latest_safe_start=latest_safe_start,
+                )
+            )
+        return tuple(
+            sorted(
+                projections,
+                key=lambda projection: (
+                    active is None or projection.execution_id != active.execution_id,
+                    projection.latest_safe_start or projection.next_portion_at or "",
+                    projection.execution_id,
+                ),
+            )
+        )
+
     def _publish(self, *, status: str, active_zone_id: str | None) -> None:
         """Publish the compact v2 state derived from durable records."""
+        partial_processes = self._partial_process_projections()
+        partial_process = partial_processes[0] if partial_processes else None
+        if (
+            status == "idle"
+            and partial_processes
+            and all(process.status == "soaking" for process in partial_processes)
+        ):
+            status = "soaking"
         if self._stored_state.emergency_stop:
             status = "emergency_stop"
         elif self._stored_state.installation_safety_lock is not None:
@@ -3541,6 +5095,11 @@ class IrrigationManager:
                 if not self._zone_operation_released(zone)
                 else "watering"
                 if active_zone_id == zone.zone_id
+                else "soaking"
+                if any(
+                    process.status == "soaking" and process.zone_id == zone.zone_id
+                    for process in partial_processes
+                )
                 else "automatic_disabled"
                 if not self._automation_enabled or not self._zone_automation_released(zone)
                 else "idle"
@@ -3576,6 +5135,7 @@ class IrrigationManager:
             zone_runtime_month.setdefault(zone.zone_id, 0.0)
         orders = self.card_open_orders()
         continuity = self._meter.continuity
+        active = self._stored_state.active_execution
         self._coordinator.set_snapshot(
             InstallationSnapshot(
                 installation_total_liters=self._stored_state.installation_total_liters,
@@ -3601,15 +5161,36 @@ class IrrigationManager:
                     for request in self._stored_state.manual_requests
                 ),
                 active_request_id=(
-                    self._stored_state.active_execution.request_id
-                    if self._stored_state.active_execution
+                    active.request_id
+                    if active is not None
+                    else partial_process.request_id
+                    if partial_process is not None
                     else None
                 ),
                 active_execution_id=(
-                    self._stored_state.active_execution.execution_id
-                    if self._stored_state.active_execution
+                    active.execution_id
+                    if active is not None
+                    else partial_process.execution_id
+                    if partial_process is not None
                     else None
                 ),
+                partial_zone_id=(partial_process.zone_id if partial_process is not None else None),
+                partial_remaining_value=(
+                    partial_process.remaining_value if partial_process is not None else None
+                ),
+                partial_next_portion_at=(
+                    partial_process.next_portion_at if partial_process is not None else None
+                ),
+                partial_current_portion=(
+                    partial_process.current_portion if partial_process is not None else None
+                ),
+                partial_maximum_portions=(
+                    partial_process.maximum_portions if partial_process is not None else None
+                ),
+                partial_latest_safe_start=(
+                    partial_process.latest_safe_start if partial_process is not None else None
+                ),
+                partial_processes=partial_processes,
                 automation_enabled=self._automation_enabled,
                 operation_enabled=self._operation_enabled,
                 zone_operation_enabled={
@@ -3704,7 +5285,8 @@ class IrrigationManager:
         request: ManualIrrigationRequest | None,
         *,
         now: datetime,
-    ) -> _DispatchDecision:
+        continuing_execution: bool = False,
+    ) -> _DispatchDiagnosticDecision:
         """Explain whether the selected due request may execute."""
         next_change = self._next_request_change_at(now)
         next_wake_at = next_change.isoformat() if next_change is not None else None
@@ -3746,15 +5328,24 @@ class IrrigationManager:
         elif not self._zone_operation_released(zone):
             reason = DispatchReason.ZONE_DISABLED
         elif (
-            request.source == "automatic"
+            not continuing_execution
+            and request.source == "automatic"
             and request.automatic_window_end is not None
             and now + self._request_expected_duration(request)
             > datetime.fromisoformat(request.automatic_window_end)
         ):
             reason = DispatchReason.WINDOW_NO_LONGER_FITS
-        elif request.source == "automatic" and not self._automation_enabled:
+        elif (
+            not continuing_execution
+            and request.source == "automatic"
+            and not self._automation_enabled
+        ):
             reason = DispatchReason.AUTOMATION_DISABLED
-        elif request.source == "automatic" and not self._zone_automation_released(zone):
+        elif (
+            not continuing_execution
+            and request.source == "automatic"
+            and not self._zone_automation_released(zone)
+        ):
             reason = DispatchReason.ZONE_AUTOMATION_DISABLED
 
         releases = {
@@ -3780,7 +5371,7 @@ class IrrigationManager:
             locks["actuator_snapshot_mismatch"] = True
         if reason == DispatchReason.WINDOW_NO_LONGER_FITS:
             locks["window_no_longer_fits"] = True
-        return _DispatchDecision(
+        return _DispatchDiagnosticDecision(
             reason=reason,
             request=request,
             next_wake_at=next_wake_at,
@@ -3795,10 +5386,10 @@ class IrrigationManager:
         reason: DispatchReason,
         next_wake_at: str | None,
         locks: dict[str, str | bool] | None = None,
-    ) -> _DispatchDecision:
+    ) -> _DispatchDiagnosticDecision:
         """Build an explicit terminal transition for one irrigation order."""
         zone = self._zone_configs_by_subentry_id.get(request.zone_subentry_id)
-        return _DispatchDecision(
+        return _DispatchDiagnosticDecision(
             reason=reason,
             request=request,
             next_wake_at=next_wake_at,
@@ -3898,7 +5489,7 @@ class IrrigationManager:
         self._append_dispatch_diagnostic(diagnostic, event)
         await self._async_save_diagnostics()
 
-    async def _async_record_dispatch_decision(self, decision: _DispatchDecision) -> None:
+    async def _async_record_dispatch_decision(self, decision: _DispatchDiagnosticDecision) -> None:
         """Persist and log only a changed dispatcher decision."""
         previous = self._stored_state.dispatcher_diagnostic
         request_id = decision.request.request_id if decision.request is not None else None
@@ -4039,6 +5630,72 @@ class IrrigationManager:
         """Return only v2 state needed to explain current decisions."""
         snapshot = self.snapshot()
         diagnostic = self._stored_state.dispatcher_diagnostic
+        partial_reasons = {
+            DispatchReason.SOAK_PAUSE,
+            DispatchReason.PORTION_READY,
+            DispatchReason.PORTION_LIMIT_REACHED,
+            DispatchReason.PROCESS_LIFETIME_EXCEEDED,
+            DispatchReason.PROCESS_DEADLINE_EXCEEDED,
+            DispatchReason.PORTION_STATE_INCONSISTENT,
+            DispatchReason.PORTION_RECOVERY_UNSAFE,
+        }
+
+        def partial_reason(request_id: str) -> str | None:
+            event = next(
+                (
+                    item
+                    for item in reversed(self._stored_state.dispatcher_diagnostic_history)
+                    if item.request_id == request_id and item.new_reason in partial_reasons
+                ),
+                None,
+            )
+            return event.new_reason if event is not None else None
+
+        partial_processes = [
+            {
+                **projection.as_dict(),
+                "reason": partial_reason(projection.request_id),
+                "portions": [
+                    portion.as_dict()
+                    for portion in self._stored_state.irrigation_portions
+                    if portion.execution_id == projection.execution_id
+                ],
+            }
+            for projection in snapshot.partial_processes
+        ]
+        failed_process = next(
+            (
+                process
+                for process in reversed(self._stored_state.irrigation_executions)
+                if process.portion_policy is not None and process.status == "failed"
+            ),
+            None,
+        )
+        failed_partial_diagnostic = (
+            {
+                "reason": partial_reason(failed_process.request_id),
+                "request_id": failed_process.request_id,
+                "execution_id": failed_process.execution_id,
+                "zone_id": failed_process.zone_id,
+                "status": failed_process.status,
+                "remaining_value": failed_process.remaining_value,
+                "next_portion_at": failed_process.next_portion_at,
+                "current_portion": failed_process.completed_portion_count + 1,
+                "maximum_portions": (
+                    failed_process.portion_policy.maximum_portions
+                    if failed_process.portion_policy is not None
+                    else None
+                ),
+                "latest_safe_start": None,
+                "portions": [
+                    portion.as_dict()
+                    for portion in self._stored_state.irrigation_portions
+                    if portion.execution_id == failed_process.execution_id
+                ],
+            }
+            if failed_process is not None
+            else None
+        )
         return {
             "status": snapshot.status,
             "operation_enabled": snapshot.operation_enabled,
@@ -4047,6 +5704,10 @@ class IrrigationManager:
             "zone_status": snapshot.zone_status,
             "pending_request_count": snapshot.pending_request_count,
             "active_request_id": snapshot.active_request_id,
+            "partial_irrigation": (
+                partial_processes[0] if partial_processes else failed_partial_diagnostic
+            ),
+            "partial_irrigation_processes": partial_processes,
             "dispatcher": diagnostic.as_dict() if diagnostic is not None else None,
             "dispatcher_history": [
                 event.as_dict() for event in self._stored_state.dispatcher_diagnostic_history
@@ -4148,6 +5809,16 @@ class IrrigationManager:
             None,
         )
 
+    def _portion(self, portion_id: str | None) -> IrrigationPortionState | None:
+        return next(
+            (
+                portion
+                for portion in self._stored_state.irrigation_portions
+                if portion.portion_id == portion_id
+            ),
+            None,
+        )
+
     def _with_request(
         self, request: ManualIrrigationRequest
     ) -> tuple[ManualIrrigationRequest, ...]:
@@ -4162,6 +5833,27 @@ class IrrigationManager:
         return tuple(
             execution if item.execution_id == execution.execution_id else item
             for item in self._stored_state.irrigation_executions
+        )
+
+    def _with_portion(self, portion: IrrigationPortionState) -> tuple[IrrigationPortionState, ...]:
+        return tuple(
+            portion if item.portion_id == portion.portion_id else item
+            for item in self._stored_state.irrigation_portions
+        )
+
+    def _with_process_portions(
+        self,
+        execution_id: str,
+        portions: tuple[IrrigationPortionState, ...],
+    ) -> tuple[IrrigationPortionState, ...]:
+        """Replace one process's subordinate records without touching competitors."""
+        return (
+            *(
+                item
+                for item in self._stored_state.irrigation_portions
+                if item.execution_id != execution_id
+            ),
+            *portions,
         )
 
     def _with_meter_continuity(self, state: StoredInstallationState) -> StoredInstallationState:
@@ -4273,6 +5965,20 @@ class IrrigationManager:
             )
             if requested_start > now:
                 moments.append(requested_start)
+        for execution in self._stored_state.irrigation_executions:
+            if (
+                execution.status != "soaking"
+                or execution.portion_policy is None
+                or execution.next_portion_at is None
+            ):
+                continue
+            next_portion_at = datetime.fromisoformat(execution.next_portion_at)
+            if next_portion_at > now:
+                moments.append(next_portion_at)
+            with suppress(ValueError):
+                latest_safe_start = resume_candidate_from_execution(execution).latest_safe_start
+                if latest_safe_start > now:
+                    moments.append(latest_safe_start)
         return min(moments) if moments else None
 
     async def _async_close_entities(self, entity_ids: Iterable[str]) -> None:

@@ -133,6 +133,38 @@ describe("dashboard card interactions", () => {
     expect(card.shadowRoot.querySelectorAll(".actions > button")).toHaveLength(2);
   });
 
+  it("shows a soaking process as read-only subordinate status details", async () => {
+    const hass = home([
+      state("sensor.lawn_status", "soaking", {
+        config_entry_id: "garden",
+        zone_subentry_id: "lawn",
+        card_name: "Rasen",
+        irrigation_process_id: "execution-1",
+        irrigation_request_id: "request-1",
+        target_type: "duration",
+        remaining_target: 900,
+        next_portion_at: "2026-07-24T06:30:00+00:00",
+        current_portion: 2,
+        maximum_portions: 4,
+        latest_safe_start: "2026-07-24T07:00:00+00:00",
+        card_entities: { anchor: "sensor.lawn_status", status: "sensor.lawn_status" },
+      }),
+    ], undefined, "Europe/Zurich");
+    const card = await renderCard("irrigation-manager-zone-card", hass, {
+      type: "custom:irrigation-manager-zone-card",
+      entity: "sensor.lawn_status",
+    });
+
+    const details = (
+      card.shadowRoot.querySelector("[data-testid=partial-process]")?.textContent ?? ""
+    ).replace(/\s+/g, " ");
+    expect(details).toContain("Teilgabe 2 von 4");
+    expect(details).toContain("Restziel: 00:15:00");
+    expect(details).toContain("24.07.2026, 08:30:00");
+    expect(details).toContain("24.07.2026, 09:00:00");
+    expect(card.shadowRoot.querySelector("[data-testid=stop-watering]")).toBeNull();
+  });
+
   it("executes the mandatory emergency stop immediately without confirmation", async () => {
     const callService = vi.fn(async () => undefined);
     const confirm = vi.spyOn(window, "confirm");
@@ -583,6 +615,30 @@ describe("dashboard card interactions", () => {
           actual_duration: 600,
           actual_water: 1044.0001487731902,
           completion_reason: "target_reached",
+          portion_count: 2,
+          portions: [{
+            portion_id: "execution-1:1",
+            sequence: 1,
+            status: "settled",
+            target_type: "duration",
+            target_value: 300,
+            started_at: "2026-07-24T05:00:00+00:00",
+            ended_at: "2026-07-24T05:05:00+00:00",
+            actual_duration: 300,
+            actual_water: 500.25,
+            result: "target_reached",
+          }, {
+            portion_id: "execution-1:2",
+            sequence: 2,
+            status: "settled",
+            target_type: "duration",
+            target_value: 300,
+            started_at: "2026-07-24T05:05:00+00:00",
+            ended_at: "2026-07-24T05:10:00+00:00",
+            actual_duration: 300,
+            actual_water: 543.7501487731902,
+            result: "target_reached",
+          }],
         }],
         offset: 0,
         limit: 20,
@@ -615,6 +671,10 @@ describe("dashboard card interactions", () => {
     expect(dialogText).toContain("1.044,00 L");
     expect(dialogText).toContain("Seite 1 von 1");
     expect(dialogText).toContain("Einträge 1–1 von 1");
+    expect(dialogText).toContain("2 Teilgaben");
+    expect(dialogText).toContain("Teilgabe 1");
+    expect(dialogText).toContain("00:05:00");
+    expect(dialogText).toContain("500,25 L");
     expect(dialogText).not.toContain("2026-07-24T05:00:00+00:00");
     expect(dialogText).not.toContain("600 s");
     expect(callService).toHaveBeenCalledWith(
