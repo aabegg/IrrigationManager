@@ -1,6 +1,10 @@
 # Sicherheitsdesign für Teilgaben und Sickerpausen
 
-Status: Pakete 1–6 im Release Candidate implementiert. Automatisierte Release-Gates sind erfüllt; Installation sowie reale Trocken-, Hardware- und Neustarttests stehen vor der Veröffentlichung noch aus.
+Status: Pakete 1–6 sind in `v0.1.0-rc30` implementiert. Automatisierte Release-Gates,
+Installation, Trockenlauf, kurzer Hardwaretest und der reale Neustart während einer
+Sickerpause wurden am 30. Juli 2026 erfolgreich geprüft. Der produktionsnahe
+Null-Warnungs-Lauf und der mehrwöchige Feldtest stehen noch aus; der vollständige reale
+Nachweis ist in `docs/19_Feldtest_rc30.md` festgehalten.
 
 Geltungsbereich: Stufe 7 aus `docs/17_Neukonzept.md`
 
@@ -402,7 +406,20 @@ Implementierungsnachweis: Die bestehende anlagenweite Konfiguration `soak_module
 
 Implementierungsnachweis: `PARTIAL_IRRIGATION_RELEASED` ist das einzige codebasierte Release-Gate für neue Teilgabensnapshots und die zugehörigen Home-Assistant-Konfigurationsschritte. Der Release Candidate schaltet es frei, während Anlagen- und Zonen-Opt-in bei Migration und Neuanlage weiterhin `False` bleiben. Die Minor-Migration auf Version 9 setzt beide Opt-ins auch für bereits mit einem Vorabstand gespeicherte Konfigurationen erneut auf `False`, erhält aber alle Detailwerte; dadurch ist nach dem Release eine bewusste neue Doppelaktivierung erforderlich. Ein Rollback des Release-Gates blendet die UI-Schritte aus und leitet neue Aufträge über den unveränderten Legacy-Pfad, ohne gespeicherte Opt-ins oder Detailwerte zu löschen. Bereits angenommene Aufträge und begonnene Vorgänge mit Teilgabensnapshot bleiben unabhängig vom aktuellen Release-Gate disponierbar, abbrechbar und wiederherstellbar; damit kann ein Rollback keinen persistenten Vorgang stranden. Die automatisierte HA-Matrix deckt Kernzustände, Store-Commit vor Executor-Aufruf, Fault Injection, Recovery-Grenzen, Abbruchphasen, Lückenplanung, Busy-Loop-Schutz, Golden-Trace, Migration, Aggregation und Gate-Rollback ab.
 
-Noch nicht als bestanden markiert werden die umgebungsabhängigen Freigaben: Installation des Candidates, Test ohne Ventilöffnung, beaufsichtigter kurzer Hardwaretest, echter Neustart während einer Sickerpause sowie die anschliessende Prüfung von Home-Assistant-Protokoll und Systemdiagnose. Diese Schritte erfolgen erst im ausdrücklich gestarteten Release-/Installationstest.
+Der ausdrücklich gestartete Release-/Installationstest wurde am 30. Juli 2026 auf der
+Referenzanlage mit Zone 2 `Rasen` durchgeführt. Installation, Trockenlauf, ein
+zusammenhängender 10-Sekunden-Lauf und ein 10-Sekunden-Vorgang mit zwei Teilgaben wurden
+erfolgreich abgeschlossen. Home Assistant wurde während der Sickerpause neu gestartet;
+die zweite Teilgabe wurde danach genau einmal fortgesetzt und der gemeinsame Vorgang mit
+`target_reached` beendet. Sicherheitssperre und Not-Aus blieben inaktiv.
+
+Die absichtlich unrealistische Testkonfiguration mit maximal fünf Sekunden pro Teilgabe
+und höchstens drei Teilgaben konnte das reguläre 2700-Sekunden-Tagesziel nicht aufnehmen.
+Die automatische Planung protokollierte deshalb dreizehn erwartete Warnungen mit
+`partial_irrigation_portion_limit_exceeded`. Es gab keine Recovery-Exception und nach der
+Rückstellung entstanden keine weiteren Warnungen. Das strenge Null-Warnungs-Gate wird
+dennoch erst in einem produktionsnahen Lauf mit vollständig machbarer Konfiguration als
+bestanden markiert. Details und Rückstellnachweis stehen in `docs/19_Feldtest_rc30.md`.
 
 Die Pakete werden in dieser Reihenfolge integriert und jeder Release-Schritt bleibt durch den frühen Feature-Gate zurückrollbar. Bis Paket 6 aktiviert kein Paket das Teilgabenverhalten für bestehende Anlagen.
 

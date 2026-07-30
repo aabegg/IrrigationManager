@@ -2,7 +2,7 @@
 
 > **Historisches Archiv:** Dieses Dokument ist vollständig fachlich irrelevant. Ausschließlich `docs/17_Neukonzept.md` ist verbindlich. Bestehende Regressionstests sind technische Nachweise, aber keine Quelle zusätzlicher Pflichten und dürfen keine Lücken im Neukonzept schließen.
 
-Stand: 2026-07-24
+Stand: 2026-07-30
 
 ## Umfang
 
@@ -97,7 +97,6 @@ nicht als Gesamtprodukt oder Feldfreigabe abgeschlossen. Insbesondere bleiben:
 - Installation und Lasttest eines unabhängigen Hardware-Abschalttimers
 - visueller Mobil-/Desktop-Browsertest der Karten und Editoren
 - beaufsichtigter mehrwöchiger Feldtest aller sechs realen Zonen
-- tatsächliche Remote-Ergebnisse der HACS- und Hassfest-Workflows
 - ein vollständiger produktionsnaher Mehrwochenlauf, der alle Wetter-, Planungs-, Executor- und Fehlerereignisse in einer einzigen Zeitachse kombiniert
 
 Die Mindestversion ist Home Assistant 2026.7.2. HACS erzwingt sie über `hacs.json`.
@@ -117,6 +116,30 @@ Lokal am 2026-07-24 tatsächlich ausgeführt:
 | `npm run check` | TypeScript-Prüfung und 24 Vitest-Tests bestanden |
 | `npm run build` | Vite-Build bestanden; Bundle 79,45 kB, gzip 20,02 kB |
 
-Auf diesem Rechner waren weder `hassfest` noch ein lokaler HACS-Validator noch Docker
-verfügbar. `.github/workflows/home-assistant.yml` führt beide offiziellen Actions aus;
-deren Erfolg ist hier ausdrücklich **nicht** behauptet.
+Die Tabelle hält den historischen lokalen Lauf vom 24. Juli fest. Für
+`v0.1.0-rc30` wurden die Remote-Workflows für Backend, Frontend, HACS/Hassfest und das
+Release-Paket am 30. Juli 2026 erfolgreich ausgeführt. Der veröffentlichte Candidate
+verweist auf Commit `458b390c16a2c14e6d52332f031617d94b929d38`.
+
+## Reale Candidate-Qualifikation rc30
+
+Die Referenzanlage lief beim Test mit Home Assistant Core 2026.7.4 auf Home Assistant OS
+18.1. Vor der Installation wurde das Backup `Before_IrrigationManager_v0.1.0-rc30`
+erstellt. Danach wurden Installation, Migration, Trockenlauf, ein beaufsichtigter
+10-Sekunden-Hardwaretest und ein echter Neustart während der Sickerpause eines
+zweiteiligen 10-Sekunden-Vorgangs geprüft.
+
+Der gemeinsame Vorgang lieferte zweimal 5 Sekunden, insgesamt 10 Sekunden und gemessene
+7,00 Liter. Er endete mit `target_reached`; es blieben weder ein aktiver Vorgang noch eine
+Sicherheitssperre, ein Not-Aus oder unzugeordneter Verbrauch zurück. Home Assistants
+Konfigurationsprüfung war gültig und Repairs meldete keine Probleme. Die physische
+Öffnung und Schliessung beider Teilgaben wurde vor Ort bestätigt.
+
+Die Testgrenzen waren absichtlich nicht mit dem regulären 2700-Sekunden-Auftrag
+vereinbar. Dadurch entstanden erwartete Planungswarnungen, aber keine Ausnahme oder
+Recovery-Störung. Das Null-Warnungs-Gate wird deshalb mit den produktionsnahen Grenzen
+aus `docs/19_Feldtest_rc30.md` erneut geprüft. Alle temporären Freigaben und Testwerte
+wurden nach dem Test zunächst deaktiviert; die Integration blieb geladen und fail-closed.
+Anschliessend wurde die produktionsnahe Feldtestkonfiguration ohne Betriebs- oder
+Automatikfreigabe vorbereitet. Auch danach blieb die Integration geladen und erzeugte
+keine neue IrrigationManager-Warnung.

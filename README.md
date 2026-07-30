@@ -39,6 +39,13 @@ Mindestversion. Dort wird deshalb bewusst kein nicht standardkonformer Schlüsse
 
 Die fachliche und technische Planung befindet sich im Ordner [`docs`](docs/).
 
+Für Einrichtung und Bedienung stehen folgende deutschsprachige Benutzerunterlagen zur
+Verfügung:
+
+- [Schritt-für-Schritt-Bedienungsanleitung](docs/20_Bedienungsanleitung.md)
+- [Funktionsübersicht mit Pflicht- und optionalen Funktionen](docs/21_Funktionsuebersicht.md)
+- [Prüfcheckliste für Konfiguration und UI](docs/22_UI_Pruefcheckliste.md)
+
 Die mitgelieferten Lovelace-Karten, ihre grafischen Editoren und Beispiele sind unter
 [`custom_components/irrigation_manager/frontend`](custom_components/irrigation_manager/frontend/README.md)
 dokumentiert. Das Frontend-Modul wird von der Integration automatisch registriert.

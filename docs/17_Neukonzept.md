@@ -967,7 +967,7 @@ Abnahmekriterien sind ein reproduzierter fälliger, aber blockierter Auftrag ohn
 - Bodenfeuchte nur als nachvollziehbare Rückmeldung oder Korrektur der Wasserbilanz verwenden
 - ein unabhängiges Deaktivieren der Bodenfeuchterückmeldung ohne Verlust der Sensorkonfiguration ermöglichen
 
-### Stufe 7: Teilgaben und Sickerpausen
+### Stufe 7: Teilgaben und Sickerpausen (umgesetzt ab rc30)
 
 - persistenten Bewässerungsvorgang mit disponierbaren Teilgaben modellieren
 - andere Zonen während Sickerpausen ausführen

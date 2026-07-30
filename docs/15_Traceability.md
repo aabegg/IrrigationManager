@@ -2,7 +2,7 @@
 
 > **Archivierte Version-1-Matrix:** Sie beschreibt nicht den aktuellen Implementierungsstand. Für Version 2 ist ausschließlich `docs/17_Neukonzept.md` maßgeblich.
 
-Stand: 2026-07-22
+Stand: 2026-07-30
 
 ## Leseregel
 
@@ -105,8 +105,13 @@ kein `A`, `H` oder `R` auf.
 | HW-03 unabhängige Abschaltung | REQ-SAF-13, SAFE-HW-01 | unabhängigen Hardware-Abschalttimer installieren und mit Ventil unter Last prüfen |
 | FIELD-01 beaufsichtigter Betrieb | alle H-markierten Anforderungen | sechs Zonen nacheinander anbinden und mehrere Wochen beaufsichtigt betreiben |
 | UI-01 Browsergeräte | REQ-UI-07..09 | visuelle Bedienprüfung auf unterstütztem Mobil- und Desktop-Browser |
-| REL-01 Validatoren | REQ-UI-16 | tatsächliche erfolgreiche HACS-/Hassfest-GitHub-Actions-Läufe; lokal nicht behauptet |
 | REL-02 Feldtest vor HACS | REQ-UI-16 | privater Feldtest abgeschlossen und Ergebnisse eingearbeitet |
+
+`REL-01` ist für `v0.1.0-rc30` erfüllt: Die tatsächlichen Remote-Workflows für Backend,
+Frontend, HACS/Hassfest und das Release-Paket waren am 30. Juli 2026 erfolgreich. Der
+veröffentlichte Candidate basiert auf Commit
+`458b390c16a2c14e6d52332f031617d94b929d38`. Der kurze reale Neustarttest reduziert
+`FIELD-01`, schliesst den geforderten mehrwöchigen Betrieb aller sechs Zonen aber nicht.
 
 ## Mindestversion und Manifestgrenze
 
